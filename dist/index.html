@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GitHub Stars Manager For uTools</title>
+    <script>
+      // 防止主题闪烁 - 检测系统主题
+      // 注意：uTools 存储在 dbCryptoStorage 中，无法在此读取用户设置
+      // 此脚本仅能根据系统主题设置初始值，用户设置加载后会被覆盖
+      (function() {
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="./assets/index-DeWd2Qbl.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CRV1VV9V.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

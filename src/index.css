@@ -1,0 +1,444 @@
+@import "tailwindcss";
+
+/* ==================== 主题变量 ==================== */
+
+/* 浅色主题 (默认) */
+@theme {
+  --color-primary: #6366f1;
+  --color-primary-light: #818cf8;
+  --color-primary-dark: #4f46e5;
+  --color-accent: #f59e0b;
+  --color-surface: #fafafa;
+  --color-surface-secondary: #f5f5f5;
+  --color-surface-hover: #eeeeee;
+  --color-border: #e0e0e0;
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #64748b;
+  --color-text-muted: #94a3b8;
+  --color-success: #10b981;
+  --color-error: #ef4444;
+  --color-warning: #f59e0b;
+  /* 🆕 v1.6.0 NEW 徽章渐变色 */
+  --color-new-badge-start: #ff6b6b;
+  --color-new-badge-end: #ee5a24;
+}
+
+/* 深色主题 - 通过 class 切换 (用户手动选择) */
+:root.dark {
+  --color-primary: #818cf8;
+  --color-primary-light: #a5b4fc;
+  --color-primary-dark: #6366f1;
+  --color-accent: #fbbf24;
+  --color-surface: #0f172a;
+  --color-surface-secondary: #1e293b;
+  --color-surface-hover: #334155;
+  --color-border: #334155;
+  --color-text-primary: #f1f5f9;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #64748b;
+  --color-success: #34d399;
+  --color-error: #f87171;
+  --color-warning: #fbbf24;
+  /* 🆕 v1.6.0 NEW 徽章渐变色 - 深色主题适配 */
+  --color-new-badge-start: #ff8787;
+  --color-new-badge-end: #ff6b35;
+}
+
+/* 浅色主题 - 通过 class 切换 (强制浅色模式) */
+:root.light {
+  /* 继承默认 @theme 变量，无需重复定义 */
+}
+
+/* 自动模式 - 跟随系统 (当未设置 .light 或 .dark 时生效) */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light):not(.dark) {
+    --color-primary: #818cf8;
+    --color-primary-light: #a5b4fc;
+    --color-primary-dark: #6366f1;
+    --color-accent: #fbbf24;
+    --color-surface: #0f172a;
+    --color-surface-secondary: #1e293b;
+    --color-surface-hover: #334155;
+    --color-border: #334155;
+    --color-text-primary: #f1f5f9;
+    --color-text-secondary: #94a3b8;
+    --color-text-muted: #64748b;
+    --color-success: #34d399;
+    --color-error: #f87171;
+    --color-warning: #fbbf24;
+    /* 🆕 v1.6.0 NEW 徽章渐变色 - 深色主题适配 */
+    --color-new-badge-start: #ff8787;
+    --color-new-badge-end: #ff6b35;
+  }
+}
+
+/* ==================== 全局样式 ==================== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial,
+    sans-serif;
+  background-color: var(--color-surface);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* 主题切换动画 */
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* ==================== 滚动条美化 ==================== */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-text-muted);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-secondary);
+}
+
+/* ==================== 动画 ==================== */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(99, 102, 241, 0); }
+}
+
+/* 🆕 v1.6.0 NEW 徽章脉冲动画 */
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(0.98); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.animate-slide-in {
+  animation: slideIn 0.3s ease-out;
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ==================== 组件样式 ==================== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+  outline: none;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark));
+  color: white;
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, var(--color-primary-light), var(--color-primary));
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+}
+
+.btn-secondary {
+  background: var(--color-surface-secondary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+}
+
+.btn-secondary:hover {
+  background: var(--color-surface-hover);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.btn-ghost:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.input {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: 14px;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+}
+
+.input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 16px;
+  transition: all 0.2s ease;
+}
+
+.card:hover {
+  border-color: var(--color-primary);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  transform: translateY(-1px);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--color-surface-secondary);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  transition: all 0.15s ease;
+}
+
+.tag:hover {
+  background: var(--color-primary);
+  color: white;
+  border-color: var(--color-primary);
+  cursor: pointer;
+}
+
+.tag-active {
+  background: var(--color-primary);
+  color: white;
+  border-color: var(--color-primary);
+}
+
+/* ==================== 进度条 ==================== */
+.progress-bar {
+  height: 4px;
+  background: var(--color-surface-secondary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-primary), var(--color-primary-light));
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* ==================== 语言指示器 ==================== */
+.lang-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* ==================== Token 帮助组件 ==================== */
+/* 标题旁按钮样式 */
+.token-header-btn {
+    margin-left: auto;
+    font-size: 12px;
+    padding: 4px 8px;
+    gap: 4px;
+    color: var(--color-text-muted);
+}
+
+.token-header-btn:hover {
+    color: var(--color-primary);
+}
+
+.token-help-panel {
+    margin-top: 8px;
+    padding: 12px;
+    animation: slideDown 0.2s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.token-help-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 8px;
+}
+
+.token-help-tabs button {
+  background: none;
+  border: none;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  transition: color 0.2s;
+}
+
+.token-help-tabs button.active {
+  color: var(--color-primary);
+  border-bottom: 2px solid var(--color-primary);
+}
+
+.token-help-content {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.help-steps ol {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.help-steps li {
+  margin-bottom: 6px;
+}
+
+.help-steps .btn {
+  margin-top: 12px;
+}
+
+.help-permissions .permission-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.help-permissions .permission-item .check {
+  flex-shrink: 0;
+}
+
+.help-permissions .permission-item.required .check {
+  color: var(--color-success);
+}
+
+.help-permissions .permission-item .badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.help-permissions .permission-item .badge.required {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.help-permissions .permission-item .badge.optional {
+  background: var(--color-surface-secondary);
+  color: var(--color-text-muted);
+}
+
+.permission-section {
+  margin-bottom: 16px;
+}
+
+.permission-section:last-child {
+  margin-bottom: 0;
+}
+
+.permission-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+  color: var(--color-text);
+}
+
+.permission-section-desc {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin: 0 0 8px 0;
+}
+
+.permission-note {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--color-surface-secondary);
+  border-radius: 4px;
+}
+
+.help-security p {
+  margin: 8px 0;
+}
+
+.help-security .warning {
+  color: var(--color-warning);
+}
+
+.help-security .info {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.collapse-btn {
+  margin-top: 12px;
+  width: 100%;
+}
