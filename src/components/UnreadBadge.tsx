@@ -5,9 +5,12 @@ import type { Language } from '../locales';
 interface UnreadBadgeProps {
     lang: Language;
     onClick?: () => void;
+    isActive?: boolean;
+    onMouseEnter?: () => void;
+    onFocus?: () => void;
 }
 
-export function UnreadBadge({ lang, onClick }: UnreadBadgeProps) {
+export function UnreadBadge({ lang, onClick, isActive = false, onMouseEnter, onFocus }: UnreadBadgeProps) {
     const unreadCount = useStore((state) => state.getUnreadCount)();
     const releaseCheckStatus = useStore((state) => state.releaseCheckStatus);
 
@@ -18,11 +21,17 @@ export function UnreadBadge({ lang, onClick }: UnreadBadgeProps) {
     return (
         <button
             onClick={onClick}
+            onMouseEnter={onMouseEnter}
+            onFocus={onFocus}
             className="relative inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg
                 text-sm font-medium transition-colors duration-200
                 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300
                 hover:bg-blue-200 dark:hover:bg-blue-800/40"
             title={t('releases', lang)}
+            style={isActive ? {
+                boxShadow: '0 0 0 2px rgba(99, 102, 241, 0.22)',
+                outline: 'none',
+            } : undefined}
         >
             {/* 铃铛图标 */}
             <svg

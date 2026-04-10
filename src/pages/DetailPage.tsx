@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../stores/useStore';
 import { aiService } from '../services/aiService';
 import { t } from '../locales';
 import { TagBadge } from '../components/TagBadge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { checkAnalysisNeeded, getCooldownHours } from '../utils/analysis';
+import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
 import {
     ArrowLeft, ExternalLink, Star, GitFork, Sparkles,
     Bell, BellOff, Loader2, CheckCircle2, XCircle,
@@ -78,8 +79,57 @@ export const DetailPage: React.FC = () => {
         }
     }, [selectedRepo?.id, currentNote?.id]);
 
-    if (!selectedRepo) {
+    const handleBack = useCallback(() => {
+        setSelectedRepo(null);
         setCurrentPage('home');
+    }, [setCurrentPage, setSelectedRepo]);
+
+    useEffect(() => {
+        if (!selectedRepo) {
+            setCurrentPage('home');
+        }
+    }, [selectedRepo, setCurrentPage]);
+
+    useEffect(() => {
+        if (!selectedRepo) return;
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (shouldIgnoreGlobalKeydown(event)) return;
+
+            if (event.key === 'Backspace') {
+                event.preventDefault();
+
+                if (showDeleteConfirm) {
+                    setShowDeleteConfirm(false);
+                    return;
+                }
+
+                if (showReanalyzeConfirm) {
+                    setShowReanalyzeConfirm(false);
+                    return;
+                }
+
+                if (editingAlias) {
+                    setAliasValue('');
+                    setEditingAlias(false);
+                    return;
+                }
+
+                handleBack();
+                return;
+            }
+
+            if (event.key === 'ArrowLeft') {
+                event.preventDefault();
+                handleBack();
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown, true);
+        return () => document.removeEventListener('keydown', handleKeyDown, true);
+    }, [editingAlias, handleBack, selectedRepo, showDeleteConfirm, showReanalyzeConfirm]);
+
+    if (!selectedRepo) {
         return null;
     }
 
@@ -89,11 +139,6 @@ export const DetailPage: React.FC = () => {
         const ids = window.githubStarsAPI.getReleaseSubscriptions();
         return ids.includes(repo.id);
     }, [repo.id, subscriptionVersion]);
-
-    const handleBack = () => {
-        setSelectedRepo(null);
-        setCurrentPage('home');
-    };
 
     const handleOpenGithub = () => {
         window.githubStarsAPI.openExternal(repo.htmlUrl);

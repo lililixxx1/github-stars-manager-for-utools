@@ -7,6 +7,7 @@ interface RepositoryCardProps {
     repo: Repository;
     onClick: (repo: Repository) => void;
     language: 'zh' | 'en';
+    isActive?: boolean;
 }
 
 function formatNumber(num: number): string {
@@ -38,7 +39,7 @@ function timeAgo(dateStr: string, lang: 'zh' | 'en'): string {
  * const handleClick = useCallback((repo) => { ... }, []);
  * <RepositoryCard repo={repo} onClick={handleClick} language="zh" />
  */
-export const RepositoryCard = memo<RepositoryCardProps>(({ repo, onClick, language }) => {
+export const RepositoryCard = memo<RepositoryCardProps>(({ repo, onClick, language, isActive = false }) => {
     // 使用 useMemo 缓存计算结果
     const displayName = useMemo(() => repo.alias || repo.name, [repo.alias, repo.name]);
 
@@ -63,7 +64,15 @@ export const RepositoryCard = memo<RepositoryCardProps>(({ repo, onClick, langua
     }, [onClick, repo]);
 
     return (
-        <div className="card cursor-pointer animate-fade-in" onClick={handleClick}>
+        <div
+            className="card cursor-pointer animate-fade-in"
+            onClick={handleClick}
+            style={isActive ? {
+                borderColor: 'var(--color-primary)',
+                boxShadow: '0 0 0 2px rgba(99, 102, 241, 0.18), 0 4px 16px rgba(0, 0, 0, 0.06)',
+                transform: 'translateY(-1px)',
+            } : undefined}
+        >
             <div style={{ display: 'flex', gap: '12px' }}>
                 {/* 头像 */}
                 <img

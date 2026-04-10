@@ -2,11 +2,9 @@ import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react'
 import { useStore } from '../stores/useStore';
 import { RepositoryCard } from '../components/RepositoryCard';
 import { SyncProgress } from '../components/SyncProgress';
-import { UnreadBadge } from '../components/UnreadBadge';
-import { githubService } from '../services/githubService';
 import { t } from '../locales';
-import type { SortBy, ViewMode } from '../types';
-import { logger } from '../utils/logger';
+import type { SortBy } from '../types';
+import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
 import { FilterBar } from './home/components/FilterBar';
 import {
     RefreshCw, ChevronLeft, ChevronRight,
@@ -15,10 +13,10 @@ import {
 
 export const HomePage: React.FC = () => {
     const {
-        repositories, setRepositories, saveRepositories, token, settings,
-        syncStatus, setSyncStatus, syncProgress, setSyncProgress,
+        repositories, token, settings,
+        syncStatus, syncProgress,
         syncError, setSyncError,
-        searchFilter, setSearchFilter, getFilteredRepos,
+        searchFilter, getFilteredRepos,
         setCurrentPage, setSelectedRepo,
         currentPageNum, setCurrentPageNum,
         tags, loadTags, viewMode, setViewMode,
@@ -32,6 +30,11 @@ export const HomePage: React.FC = () => {
         (currentPageNum - 1) * itemsPerPage,
         currentPageNum * itemsPerPage
     );
+    const [activeRepoIndex, setActiveRepoIndex] = useState<number | null>(null);
+    const [keyboardArea, setKeyboardArea] = useState<'toolbar' | 'list'>('list');
+    const itemRefs = useRef<Record<number, HTMLDivElement | null>>({});
+    const listContainerRef = useRef<HTMLDivElement | null>(null);
+    const activeRepo = activeRepoIndex === null ? null : currentRepos[activeRepoIndex] ?? null;
 
     // 获取所有语言
     const allLanguages = useMemo(() => {
@@ -43,24 +46,92 @@ export const HomePage: React.FC = () => {
     // 加载标签
     useEffect(() => {
         loadTags();
-    }, []);
+    }, [loadTags]);
+
+    useEffect(() => {
+        if (currentRepos.length === 0) {
+            setActiveRepoIndex(null);
+            setKeyboardArea('toolbar');
+            return;
+        }
+
+        setActiveRepoIndex((prev) => {
+            if (prev === null) return 0;
+            return Math.min(prev, currentRepos.length - 1);
+        });
+    }, [currentRepos.length, currentPageNum, viewMode]);
+
+    useEffect(() => {
+        if (!activeRepo) return;
+
+        itemRefs.current[activeRepo.id]?.scrollIntoView({
+            block: 'nearest',
+            inline: 'nearest',
+        });
+    }, [activeRepo?.id]);
 
     const handleSync = useCallback(async () => {
         await useStore.getState().syncRepositories();
     }, []);
 
-    const handleRepoClick = (repo: typeof repositories[0]) => {
+    const handleRepoClick = useCallback((repo: typeof repositories[0]) => {
         setSelectedRepo(repo);
         setCurrentPage('detail');
-    };
+    }, [setCurrentPage, setSelectedRepo]);
 
-    // 🆕 v1.6.2 排序选项（移除 created 和 alias）
-    const sortOptions: { value: SortBy; label: string }[] = useMemo(() => [
-        { value: 'stars', label: t('sortByStars', lang) },
-        { value: 'updated', label: t('sortByUpdated', lang) },
-        { value: 'name', label: t('sortByName', lang) },
-        { value: 'starredAt', label: t('sortByStarredAt', lang) },
-    ], [lang]);
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (shouldIgnoreGlobalKeydown(event)) return;
+            if (keyboardArea !== 'list') return;
+
+            if (event.key === 'ArrowDown') {
+                if (currentRepos.length === 0) return;
+                event.preventDefault();
+                setActiveRepoIndex((prev) => {
+                    if (prev === null) return 0;
+                    return Math.min(prev + 1, currentRepos.length - 1);
+                });
+                return;
+            }
+
+            if (event.key === 'ArrowUp') {
+                if (currentRepos.length === 0) return;
+                event.preventDefault();
+                setActiveRepoIndex((prev) => {
+                    if (prev === null || prev <= 0) {
+                        setKeyboardArea('toolbar');
+                        return 0;
+                    }
+                    return Math.max(prev - 1, 0);
+                });
+                return;
+            }
+
+            if (event.key === 'ArrowRight') {
+                if (currentPageNum >= totalPages) return;
+                event.preventDefault();
+                setCurrentPageNum(currentPageNum + 1);
+                setActiveRepoIndex(0);
+                return;
+            }
+
+            if (event.key === 'ArrowLeft') {
+                if (currentPageNum <= 1) return;
+                event.preventDefault();
+                setCurrentPageNum(currentPageNum - 1);
+                setActiveRepoIndex(0);
+                return;
+            }
+
+            if (event.key === 'Enter' && activeRepo) {
+                event.preventDefault();
+                handleRepoClick(activeRepo);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [activeRepo, currentPageNum, currentRepos.length, handleRepoClick, keyboardArea, totalPages]);
 
     // 🆕 v1.6.2 初始化时从 settings 恢复排序设置
     // 使用 useRef 确保只恢复一次，避免每次 settings 变化都重置
@@ -125,6 +196,15 @@ export const HomePage: React.FC = () => {
                 syncStatus={syncStatus}
                 viewMode={viewMode}
                 onViewModeToggle={toggleViewMode}
+                keyboardArea={keyboardArea}
+                onRequestListArea={() => {
+                    if (currentRepos.length === 0) return;
+                    setKeyboardArea('list');
+                    setActiveRepoIndex((prev) => prev ?? 0);
+                    listContainerRef.current?.focus();
+                }}
+                onRequestToolbarArea={() => setKeyboardArea('toolbar')}
+                hasListResults={currentRepos.length > 0}
             />
 
             {/* 同步进度 */}
@@ -151,7 +231,14 @@ export const HomePage: React.FC = () => {
             )}
 
             {/* 仓库列表 */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'card' ? '8px 16px' : '0' }}>
+            <div
+                ref={listContainerRef}
+                style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'card' ? '8px 16px' : '0' }}
+                role="listbox"
+                aria-label={t('repositories', lang)}
+                aria-activedescendant={activeRepo ? `repo-option-${activeRepo.id}` : undefined}
+                tabIndex={0}
+            >
                 {currentRepos.length === 0 ? (
                     <div style={{
                         display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -168,30 +255,55 @@ export const HomePage: React.FC = () => {
                 ) : viewMode === 'card' ? (
                     // 卡片视图
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        {currentRepos.map((repo) => (
-                            <RepositoryCard
-                                key={repo.id}
-                                repo={repo}
-                                onClick={handleRepoClick}
-                                language={lang}
-                            />
-                        ))}
+                        {currentRepos.map((repo, index) => {
+                            const isActive = activeRepoIndex === index;
+                            return (
+                                <div
+                                    key={repo.id}
+                                    id={`repo-option-${repo.id}`}
+                                    role="option"
+                                    aria-selected={isActive}
+                                    ref={(element) => { itemRefs.current[repo.id] = element; }}
+                                    onMouseEnter={() => {
+                                        setActiveRepoIndex(index);
+                                        setKeyboardArea('list');
+                                    }}
+                                >
+                                    <RepositoryCard
+                                        repo={repo}
+                                        onClick={handleRepoClick}
+                                        language={lang}
+                                        isActive={isActive}
+                                    />
+                                </div>
+                            );
+                        })}
                     </div>
                 ) : (
                     // 列表视图
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        {currentRepos.map((repo) => (
+                        {currentRepos.map((repo, index) => {
+                            const isActive = activeRepoIndex === index;
+                            return (
                             <div
                                 key={repo.id}
+                                id={`repo-option-${repo.id}`}
+                                role="option"
+                                aria-selected={isActive}
+                                ref={(element) => { itemRefs.current[repo.id] = element; }}
                                 onClick={() => handleRepoClick(repo)}
+                                onMouseEnter={() => {
+                                    setActiveRepoIndex(index);
+                                    setKeyboardArea('list');
+                                }}
                                 style={{
                                     padding: '12px 16px',
                                     borderBottom: '1px solid var(--color-border)',
                                     cursor: 'pointer',
                                     transition: 'background 0.15s',
+                                    background: isActive ? 'var(--color-surface-hover)' : 'transparent',
+                                    borderLeft: isActive ? '3px solid var(--color-primary)' : '3px solid transparent',
                                 }}
-                                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--color-surface-hover)'}
-                                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                             >
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                     <span style={{ fontSize: 14, fontWeight: 500 }}>
@@ -238,7 +350,8 @@ export const HomePage: React.FC = () => {
                                     })}
                                 </div>
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </div>

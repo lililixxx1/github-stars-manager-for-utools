@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Box, ArrowLeft } from 'lucide-react';
 import { useStore } from '../stores/useStore';
 import { ReleaseCard } from '../components/ReleaseCard';
@@ -8,6 +8,7 @@ import { releaseService } from '../services/releaseService';
 import { t } from '../locales';
 import type { Language } from '../locales';
 import type { Release, Repository } from '../types';
+import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
 
 type TabType = 'updates' | 'subscriptions';
 
@@ -61,6 +62,9 @@ export function ReleasesPage() {
     const [toast, setToast] = useState<{ message: string; showUndo: boolean } | null>(null);
     const undoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingUnsubscribeRef = useRef<{ repoId: number; repoName: string } | null>(null);
+    const handleBack = useCallback(() => {
+        setCurrentPage('home');
+    }, [setCurrentPage]);
 
     useEffect(() => {
         loadReleases();
@@ -80,6 +84,30 @@ export function ReleasesPage() {
         setActiveTab(tab);
         localStorage.setItem('releasesTab', tab);
     };
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (shouldIgnoreGlobalKeydown(event)) return;
+            if (event.key !== 'Backspace') return;
+
+            event.preventDefault();
+
+            if (selectedRelease) {
+                setSelectedRelease(null);
+                return;
+            }
+
+            if (showConfirmDialog) {
+                setShowConfirmDialog(false);
+                return;
+            }
+
+            handleBack();
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [handleBack, selectedRelease, showConfirmDialog]);
 
     // 筛选版本
     const subscribedRepoIds = window.githubStarsAPI.getReleaseSubscriptions();
@@ -214,7 +242,7 @@ export function ReleasesPage() {
                 padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)',
             }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => setCurrentPage('home')}>
+                <button className="btn btn-ghost btn-sm" onClick={handleBack}>
                     <ArrowLeft size={16} />
                     {t('back', lang)}
                 </button>

@@ -1,17 +1,34 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useCallback } from 'react';
 import { useStore } from '../stores/useStore';
 import { TagManager } from '../components/TagManager';
 import { t } from '../locales';
+import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
 import { ArrowLeft } from 'lucide-react';
 
 export const TagsPage: React.FC = () => {
     const { settings, loadTags, loadRepositories, setCurrentPage } = useStore();
     const lang = (settings.language || 'zh') as 'zh' | 'en';
+    const handleBack = useCallback(() => {
+        setCurrentPage('home');
+    }, [setCurrentPage]);
 
     useEffect(() => {
         loadTags();
         loadRepositories();  // TagManager 需要统计标签关联的仓库数量
-    }, []);
+    }, [loadRepositories, loadTags]);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (shouldIgnoreGlobalKeydown(event)) return;
+            if (event.key !== 'Backspace') return;
+
+            event.preventDefault();
+            handleBack();
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [handleBack]);
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -23,7 +40,7 @@ export const TagsPage: React.FC = () => {
             }}>
                 <button
                     className="btn btn-ghost btn-sm"
-                    onClick={() => setCurrentPage('home')}
+                    onClick={handleBack}
                 >
                     <ArrowLeft size={16} />
                     {t('back', lang)}

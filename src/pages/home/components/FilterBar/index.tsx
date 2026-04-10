@@ -4,11 +4,12 @@
  * @since v1.7.0
  */
 
-import React, { memo, useState, useCallback } from 'react';
+import React, { memo, useState, useCallback, useEffect } from 'react';
 import { useStore } from '@/stores/useStore';
 import { t, type TranslationKey } from '@/locales';
 import { PLATFORM_OPTIONS, PLATFORM_NONE } from '@/constants/platforms';
 import type { SortBy, SortOrder, Tag as TagType, Repository } from '@/types';
+import { shouldIgnoreGlobalKeydown } from '@/utils/keyboard';
 import {
     ArrowUpDown, Tag as TagIcon, Filter, RefreshCw, Settings,
     LayoutGrid, List, Bell, Edit3, Plus
@@ -25,6 +26,10 @@ interface FilterBarProps {
     syncStatus: string;
     viewMode: 'card' | 'list';
     onViewModeToggle: () => void;
+    keyboardArea: 'toolbar' | 'list';
+    onRequestListArea: () => void;
+    onRequestToolbarArea: () => void;
+    hasListResults: boolean;
 }
 
 /**
@@ -50,14 +55,24 @@ export const FilterBar = memo<FilterBarProps>(({
     onRefresh,
     syncStatus,
     viewMode,
-    onViewModeToggle
+    onViewModeToggle,
+    keyboardArea,
+    onRequestListArea,
+    onRequestToolbarArea,
+    hasListResults
 }) => {
     const { searchFilter, setSearchFilter, setCurrentPage } = useStore();
+    const unreadCount = useStore((state) => state.getUnreadCount)();
+    const releaseCheckStatus = useStore((state) => state.releaseCheckStatus);
 
     // UI 状态
     const [showSortMenu, setShowSortMenu] = useState(false);
     const [showTagFilter, setShowTagFilter] = useState(false);
     const [showPlatformFilter, setShowPlatformFilter] = useState(false);
+    const [activeControlIndex, setActiveControlIndex] = useState(0);
+    const [activeSortMenuIndex, setActiveSortMenuIndex] = useState(0);
+
+    const showUnreadBadge = unreadCount > 0 || releaseCheckStatus.checking;
 
     // 排序操作
     const handleSortChange = useCallback((sortBy: SortBy) => {
@@ -68,6 +83,157 @@ export const FilterBar = memo<FilterBarProps>(({
     const toggleSortOrder = useCallback(() => {
         setSearchFilter({ sortOrder: searchFilter.sortOrder === 'asc' ? 'desc' : 'asc' });
     }, [searchFilter.sortOrder, setSearchFilter]);
+
+    const handleOpenReleases = useCallback(() => {
+        setCurrentPage('releases');
+    }, [setCurrentPage]);
+
+    const openSortMenu = useCallback(() => {
+        const currentSortIndex = SORT_OPTIONS.findIndex((option) => option.value === searchFilter.sortBy);
+        setActiveSortMenuIndex(currentSortIndex >= 0 ? currentSortIndex : 0);
+        setShowSortMenu(true);
+    }, [searchFilter.sortBy]);
+
+    const closeSortMenu = useCallback(() => {
+        setShowSortMenu(false);
+    }, []);
+
+    const onToggleOrderAndClose = useCallback(() => {
+        toggleSortOrder();
+        closeSortMenu();
+    }, [closeSortMenu, toggleSortOrder]);
+
+    const toolbarControls = [
+        { key: 'releases', action: handleOpenReleases },
+        ...(showUnreadBadge ? [{ key: 'unread', action: handleOpenReleases }] : []),
+        { key: 'view', action: onViewModeToggle },
+        {
+            key: 'sort',
+            action: () => {
+                if (showSortMenu) {
+                    closeSortMenu();
+                    return;
+                }
+                openSortMenu();
+            }
+        },
+        { key: 'tags', action: () => setShowTagFilter((prev) => !prev) },
+        { key: 'platforms', action: () => setShowPlatformFilter((prev) => !prev) },
+        { key: 'refresh', action: onRefresh },
+        { key: 'settings', action: () => setCurrentPage('settings') },
+    ];
+
+    useEffect(() => {
+        setActiveControlIndex((prev) => Math.min(prev, toolbarControls.length - 1));
+    }, [toolbarControls.length]);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (shouldIgnoreGlobalKeydown(event)) return;
+            if (event.key !== 'Escape') return;
+            if (!showSortMenu && !showTagFilter && !showPlatformFilter) return;
+
+            event.preventDefault();
+            setShowSortMenu(false);
+            setShowTagFilter(false);
+            setShowPlatformFilter(false);
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [showPlatformFilter, showSortMenu, showTagFilter]);
+
+    useEffect(() => {
+        if (keyboardArea !== 'toolbar') return;
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (shouldIgnoreGlobalKeydown(event)) return;
+
+            if (showSortMenu) {
+                if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setActiveSortMenuIndex((prev) => Math.min(prev + 1, SORT_OPTIONS.length));
+                    return;
+                }
+
+                if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setActiveSortMenuIndex((prev) => Math.max(prev - 1, 0));
+                    return;
+                }
+
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    if (activeSortMenuIndex < SORT_OPTIONS.length) {
+                        handleSortChange(SORT_OPTIONS[activeSortMenuIndex].value);
+                        return;
+                    }
+
+                    onToggleOrderAndClose();
+                    return;
+                }
+
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeSortMenu();
+                }
+
+                return;
+            }
+
+            if (
+                (event.key === 'Enter' || event.key === ' ')
+                && event.target instanceof HTMLButtonElement
+            ) {
+                return;
+            }
+
+            if (event.key === 'ArrowRight') {
+                event.preventDefault();
+                setActiveControlIndex((prev) => (prev + 1) % toolbarControls.length);
+                return;
+            }
+
+            if (event.key === 'ArrowLeft') {
+                event.preventDefault();
+                setActiveControlIndex((prev) => (prev - 1 + toolbarControls.length) % toolbarControls.length);
+                return;
+            }
+
+            if (event.key === 'ArrowDown' && hasListResults) {
+                event.preventDefault();
+                onRequestListArea();
+                return;
+            }
+
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                toolbarControls[activeControlIndex]?.action();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [
+        activeControlIndex,
+        activeSortMenuIndex,
+        closeSortMenu,
+        handleSortChange,
+        hasListResults,
+        keyboardArea,
+        onRequestListArea,
+        onToggleOrderAndClose,
+        showSortMenu,
+        toolbarControls
+    ]);
+
+    const getToolbarButtonStyle = useCallback((index: number, style?: React.CSSProperties): React.CSSProperties => ({
+        ...style,
+        boxShadow: keyboardArea === 'toolbar' && activeControlIndex === index
+            ? '0 0 0 2px rgba(99, 102, 241, 0.22)'
+            : style?.boxShadow,
+        outline: 'none',
+    }), [activeControlIndex, keyboardArea]);
 
     return (
         <>
@@ -80,13 +246,22 @@ export const FilterBar = memo<FilterBarProps>(({
                 <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>
                     {t('totalRepos', lang, { count: filteredCount })}
                 </span>
-                <div style={{ display: 'flex', gap: 4, position: 'relative' }}>
+                <div style={{ display: 'flex', gap: 4, position: 'relative' }} role="toolbar" aria-label={lang === 'zh' ? '首页工具栏' : 'Home toolbar'}>
                     {/* 版本追踪入口 - 显示订阅数量 */}
                     <button
                         className="btn btn-ghost btn-sm"
-                        onClick={() => setCurrentPage('releases')}
+                        onClick={handleOpenReleases}
+                        onMouseEnter={() => {
+                            setActiveControlIndex(0);
+                            onRequestToolbarArea();
+                        }}
+                        onFocus={() => {
+                            setActiveControlIndex(0);
+                            onRequestToolbarArea();
+                        }}
                         title={t('releases', lang)}
                         aria-label={t('releases', lang)}
+                        style={getToolbarButtonStyle(0)}
                     >
                         <Bell size={14} />
                         {(() => {
@@ -98,13 +273,36 @@ export const FilterBar = memo<FilterBarProps>(({
                     </button>
 
                     {/* 未读标识 */}
-                    <UnreadBadge lang={lang} onClick={() => setCurrentPage('releases')} />
+                    {showUnreadBadge && (
+                        <UnreadBadge
+                            lang={lang}
+                            onClick={handleOpenReleases}
+                            isActive={keyboardArea === 'toolbar' && activeControlIndex === 1}
+                            onMouseEnter={() => {
+                                setActiveControlIndex(1);
+                                onRequestToolbarArea();
+                            }}
+                            onFocus={() => {
+                                setActiveControlIndex(1);
+                                onRequestToolbarArea();
+                            }}
+                        />
+                    )}
 
                     {/* 视图切换 */}
                     <button
                         className="btn btn-ghost btn-sm"
                         onClick={onViewModeToggle}
+                        onMouseEnter={() => {
+                            setActiveControlIndex(showUnreadBadge ? 2 : 1);
+                            onRequestToolbarArea();
+                        }}
+                        onFocus={() => {
+                            setActiveControlIndex(showUnreadBadge ? 2 : 1);
+                            onRequestToolbarArea();
+                        }}
                         title={t('viewMode', lang)}
+                        style={getToolbarButtonStyle(showUnreadBadge ? 2 : 1)}
                     >
                         {viewMode === 'card' ? <LayoutGrid size={14} /> : <List size={14} />}
                     </button>
@@ -113,8 +311,23 @@ export const FilterBar = memo<FilterBarProps>(({
                     <div style={{ position: 'relative' }}>
                         <button
                             className="btn btn-ghost btn-sm"
-                            onClick={() => setShowSortMenu(!showSortMenu)}
+                            onClick={() => {
+                                if (showSortMenu) {
+                                    closeSortMenu();
+                                    return;
+                                }
+                                openSortMenu();
+                            }}
+                            onMouseEnter={() => {
+                                setActiveControlIndex(showUnreadBadge ? 3 : 2);
+                                onRequestToolbarArea();
+                            }}
+                            onFocus={() => {
+                                setActiveControlIndex(showUnreadBadge ? 3 : 2);
+                                onRequestToolbarArea();
+                            }}
                             title={t((SORT_OPTIONS.find(s => s.value === searchFilter.sortBy)?.labelKey || 'sortByStars') as TranslationKey, lang)}
+                            style={getToolbarButtonStyle(showUnreadBadge ? 3 : 2)}
                         >
                             <ArrowUpDown size={14} />
                             <span style={{ fontSize: 12, marginLeft: 2 }}>
@@ -125,10 +338,12 @@ export const FilterBar = memo<FilterBarProps>(({
                             <SortMenu
                                 sortBy={searchFilter.sortBy}
                                 sortOrder={searchFilter.sortOrder}
+                                activeIndex={activeSortMenuIndex}
                                 lang={lang}
                                 onSortChange={handleSortChange}
-                                onToggleOrder={toggleSortOrder}
-                                onClose={() => setShowSortMenu(false)}
+                                onToggleOrder={onToggleOrderAndClose}
+                                onClose={closeSortMenu}
+                                onHoverItem={setActiveSortMenuIndex}
                             />
                         )}
                     </div>
@@ -137,11 +352,19 @@ export const FilterBar = memo<FilterBarProps>(({
                     <button
                         className="btn btn-ghost btn-sm"
                         onClick={() => setShowTagFilter(!showTagFilter)}
+                        onMouseEnter={() => {
+                            setActiveControlIndex(showUnreadBadge ? 4 : 3);
+                            onRequestToolbarArea();
+                        }}
+                        onFocus={() => {
+                            setActiveControlIndex(showUnreadBadge ? 4 : 3);
+                            onRequestToolbarArea();
+                        }}
                         title={t('tags', lang)}
-                        style={{
+                        style={getToolbarButtonStyle(showUnreadBadge ? 4 : 3, {
                             background: searchFilter.customTags.length > 0 ? 'var(--color-primary)' : undefined,
                             color: searchFilter.customTags.length > 0 ? 'white' : undefined,
-                        }}
+                        })}
                     >
                         <TagIcon size={14} />
                         {searchFilter.customTags.length > 0 && (
@@ -153,11 +376,19 @@ export const FilterBar = memo<FilterBarProps>(({
                     <button
                         className="btn btn-ghost btn-sm"
                         onClick={() => setShowPlatformFilter(!showPlatformFilter)}
+                        onMouseEnter={() => {
+                            setActiveControlIndex(showUnreadBadge ? 5 : 4);
+                            onRequestToolbarArea();
+                        }}
+                        onFocus={() => {
+                            setActiveControlIndex(showUnreadBadge ? 5 : 4);
+                            onRequestToolbarArea();
+                        }}
                         title={lang === 'zh' ? '平台筛选' : 'Platform Filter'}
-                        style={{
+                        style={getToolbarButtonStyle(showUnreadBadge ? 5 : 4, {
                             background: searchFilter.platforms.length > 0 ? 'var(--color-primary)' : undefined,
                             color: searchFilter.platforms.length > 0 ? 'white' : undefined,
-                        }}
+                        })}
                     >
                         <Filter size={14} />
                         {searchFilter.platforms.length > 0 && (
@@ -169,13 +400,34 @@ export const FilterBar = memo<FilterBarProps>(({
                     <button
                         className="btn btn-ghost btn-sm"
                         onClick={onRefresh}
+                        onMouseEnter={() => {
+                            setActiveControlIndex(showUnreadBadge ? 6 : 5);
+                            onRequestToolbarArea();
+                        }}
+                        onFocus={() => {
+                            setActiveControlIndex(showUnreadBadge ? 6 : 5);
+                            onRequestToolbarArea();
+                        }}
                         disabled={syncStatus === 'syncing'}
+                        style={getToolbarButtonStyle(showUnreadBadge ? 6 : 5)}
                     >
                         <RefreshCw size={14} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />
                     </button>
 
                     {/* 设置 */}
-                    <button className="btn btn-ghost btn-sm" onClick={() => setCurrentPage('settings')}>
+                    <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setCurrentPage('settings')}
+                        onMouseEnter={() => {
+                            setActiveControlIndex(showUnreadBadge ? 7 : 6);
+                            onRequestToolbarArea();
+                        }}
+                        onFocus={() => {
+                            setActiveControlIndex(showUnreadBadge ? 7 : 6);
+                            onRequestToolbarArea();
+                        }}
+                        style={getToolbarButtonStyle(showUnreadBadge ? 7 : 6)}
+                    >
                         <Settings size={14} />
                     </button>
                 </div>
@@ -256,26 +508,31 @@ FilterBar.displayName = 'FilterBar';
 const SortMenu = memo<{
     sortBy: SortBy;
     sortOrder: SortOrder;
+    activeIndex: number;
     lang: 'zh' | 'en';
     onSortChange: (sortBy: SortBy) => void;
     onToggleOrder: () => void;
     onClose: () => void;
-}>(({ sortBy, sortOrder, lang, onSortChange, onToggleOrder, onClose }) => (
+    onHoverItem: (index: number) => void;
+}>(({ sortBy, sortOrder, activeIndex, lang, onSortChange, onToggleOrder, onClose, onHoverItem }) => (
     <div style={{
         position: 'absolute', top: '100%', right: 0, marginTop: 4,
         background: 'var(--color-surface)', border: '1px solid var(--color-border)',
         borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
         minWidth: 160, zIndex: 100, overflow: 'hidden',
     }}>
-        {SORT_OPTIONS.map((opt) => (
+        {SORT_OPTIONS.map((opt, index) => (
             <button
                 key={opt.value}
                 className="btn btn-ghost btn-sm"
                 style={{
                     width: '100%', justifyContent: 'flex-start',
-                    background: sortBy === opt.value ? 'var(--color-surface-hover)' : 'transparent',
+                    background: activeIndex === index
+                        ? 'var(--color-surface-hover)'
+                        : sortBy === opt.value ? 'var(--color-surface-secondary)' : 'transparent',
                 }}
                 onClick={() => onSortChange(opt.value)}
+                onMouseEnter={() => onHoverItem(index)}
             >
                 <span style={{
                     width: 20, display: 'inline-block', textAlign: 'center',
@@ -290,8 +547,13 @@ const SortMenu = memo<{
         <div style={{ height: 1, background: 'var(--color-border)' }} />
         <button
             className="btn btn-ghost btn-sm"
-            style={{ width: '100%', justifyContent: 'flex-start' }}
-            onClick={() => { onToggleOrder(); onClose(); }}
+            style={{
+                width: '100%',
+                justifyContent: 'flex-start',
+                background: activeIndex === SORT_OPTIONS.length ? 'var(--color-surface-hover)' : 'transparent',
+            }}
+            onClick={onToggleOrder}
+            onMouseEnter={() => onHoverItem(SORT_OPTIONS.length)}
         >
             <span style={{ width: 20, display: 'inline-block' }} />
             {sortOrder === 'asc' ? t('sortAsc', lang) : t('sortDesc', lang)}
