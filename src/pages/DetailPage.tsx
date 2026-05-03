@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../stores/useStore';
 import { aiService } from '../services/aiService';
 import { t } from '../locales';
@@ -6,7 +6,8 @@ import { TagBadge } from '../components/TagBadge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { checkAnalysisNeeded, getCooldownHours } from '../utils/analysis';
 import { useBackShortcut } from '../hooks/useBackShortcut';
-import { useGlobalShortcut } from '../hooks/useGlobalShortcut';
+import { useRovingControls } from '../hooks/useRovingControls';
+import type { RovingControl } from '../hooks/useRovingControls';
 import {
     ArrowLeft, ExternalLink, Star, GitFork, Sparkles,
     Bell, BellOff, Loader2, CheckCircle2, XCircle,
@@ -40,8 +41,8 @@ export const DetailPage: React.FC = () => {
     const [showTagSelector, setShowTagSelector] = useState(false);
 
     // 🆕 v1.6.1 标签/笔记区块展开状态（智能初始化）
-    const hasTags = selectedRepo && (selectedRepo.customTags?.length ?? 0) > 0;
-    const hasNotes = !!currentNote?.content;
+    const hasTags = Boolean(selectedRepo && (selectedRepo.customTags?.length ?? 0) > 0);
+    const hasNotes = Boolean(currentNote?.content);
     const [showTagsSection, setShowTagsSection] = useState(hasTags);
     const [showNotesSection, setShowNotesSection] = useState(hasNotes);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -50,6 +51,18 @@ export const DetailPage: React.FC = () => {
     const [showReanalyzeConfirm, setShowReanalyzeConfirm] = useState(false);
 
     const lang = (settings.language || 'zh') as 'zh' | 'en';
+    const repo = selectedRepo;
+    const controlRefs = useRef<Record<string, HTMLElement | null>>({});
+
+    const getControlRef = useCallback((id: string) => ({
+        get current() {
+            return controlRefs.current[id] ?? null;
+        },
+    }), []);
+
+    const bindControlRef = useCallback((id: string) => (element: HTMLElement | null) => {
+        controlRefs.current[id] = element;
+    }, []);
 
     // 订阅状态从 dbStorage 派生（单一数据源）
     const subscriptionVersion = useStore(state => state.subscriptionVersion);
@@ -85,68 +98,55 @@ export const DetailPage: React.FC = () => {
         setCurrentPage('home');
     }, [setCurrentPage, setSelectedRepo]);
 
+    const isSubscribed = useMemo(() => {
+        if (!repo) return false;
+
+        const ids = window.githubStarsAPI.getReleaseSubscriptions();
+        return ids.includes(repo.id);
+    }, [repo?.id, subscriptionVersion]);
+
     useEffect(() => {
         if (!selectedRepo) {
             setCurrentPage('home');
         }
     }, [selectedRepo, setCurrentPage]);
 
+    const consumeDetailBackState = useCallback(() => {
+        if (showDeleteConfirm) {
+            setShowDeleteConfirm(false);
+            return true;
+        }
+
+        if (showReanalyzeConfirm) {
+            setShowReanalyzeConfirm(false);
+            return true;
+        }
+
+        if (editingAlias) {
+            setAliasValue('');
+            setEditingAlias(false);
+            return true;
+        }
+
+        return false;
+    }, [editingAlias, showDeleteConfirm, showReanalyzeConfirm]);
+
     useBackShortcut({
         enabled: !!selectedRepo,
         capture: true,
         target: document,
         onBack: handleBack,
-        beforeBack: () => {
-            if (showDeleteConfirm) {
-                setShowDeleteConfirm(false);
-                return true;
-            }
-
-            if (showReanalyzeConfirm) {
-                setShowReanalyzeConfirm(false);
-                return true;
-            }
-
-            if (editingAlias) {
-                setAliasValue('');
-                setEditingAlias(false);
-                return true;
-            }
-
-            return false;
-        },
-        deps: [editingAlias, handleBack, selectedRepo, showDeleteConfirm, showReanalyzeConfirm],
+        beforeBack: consumeDetailBackState,
+        deps: [consumeDetailBackState, handleBack, selectedRepo],
     });
-
-    useGlobalShortcut((event) => {
-        if (event.key !== 'ArrowLeft') return;
-
-        event.preventDefault();
-        handleBack();
-    }, {
-        enabled: !!selectedRepo,
-        capture: true,
-        target: document,
-        deps: [handleBack, selectedRepo],
-    });
-
-    if (!selectedRepo) {
-        return null;
-    }
-
-    const repo = selectedRepo;
-
-    const isSubscribed = useMemo(() => {
-        const ids = window.githubStarsAPI.getReleaseSubscriptions();
-        return ids.includes(repo.id);
-    }, [repo.id, subscriptionVersion]);
 
     const handleOpenGithub = () => {
+        if (!repo) return;
         window.githubStarsAPI.openExternal(repo.htmlUrl);
     };
 
     const handleAIAnalyze = async () => {
-        if (!token || analyzing) return;
+        if (!repo || !token || analyzing) return;
 
         // 🆕 v1.6.2 使用公共函数检查分析状态
         const { needsAnalyze, reason } = checkAnalysisNeeded(repo);
@@ -173,7 +173,7 @@ export const DetailPage: React.FC = () => {
 
     // 🆕 v1.6.2 执行 AI 分析
     const executeAnalyze = async () => {
-        if (!token || analyzing) return;
+        if (!repo || !token || analyzing) return;
         setAnalyzing(true);
 
         try {
@@ -204,16 +204,19 @@ export const DetailPage: React.FC = () => {
     };
 
     const handleToggleSubscribe = () => {
+        if (!repo) return;
         toggleSubscription(repo.id);
     };
 
     // 别名操作
     const handleStartEditAlias = () => {
+        if (!repo) return;
         setAliasValue(repo.alias || '');
         setEditingAlias(true);
     };
 
     const handleSaveAlias = () => {
+        if (!repo) return;
         const trimmed = aliasValue.trim();
         setSelectedRepo({ ...repo, alias: trimmed || undefined });
         updateRepository(repo.id, { alias: trimmed || undefined });
@@ -259,6 +262,7 @@ export const DetailPage: React.FC = () => {
 
     // 标签操作
     const handleToggleTag = (tagId: string) => {
+        if (!repo) return;
         const currentTags = repo.customTags || [];
         const newTags = currentTags.includes(tagId)
             ? currentTags.filter(id => id !== tagId)
@@ -266,6 +270,165 @@ export const DetailPage: React.FC = () => {
         setSelectedRepo({ ...repo, customTags: newTags });
         updateRepository(repo.id, { customTags: newTags });
     };
+
+    const handleOpenHomepage = useCallback(() => {
+        if (!repo?.homepage) return;
+        window.githubStarsAPI.openExternal(repo.homepage);
+    }, [repo?.homepage]);
+
+    const handleViewReleases = useCallback(() => {
+        setCurrentPage('releases');
+    }, [setCurrentPage]);
+
+    const rovingControls = useMemo<RovingControl[]>(() => {
+        if (!repo) return [];
+
+        const controls: RovingControl[] = [
+            { id: 'back', group: 'topbar', ref: getControlRef('back'), action: handleBack },
+            { id: 'alias', group: 'topbar', ref: getControlRef('alias'), action: handleStartEditAlias },
+            { id: 'subscribe', group: 'topbar', ref: getControlRef('subscribe'), action: handleToggleSubscribe },
+            { id: 'releases', group: 'topbar', ref: getControlRef('releases'), action: handleViewReleases, visible: isSubscribed },
+            { id: 'open-github', group: 'topbar', ref: getControlRef('open-github'), action: handleOpenGithub },
+            {
+                id: 'tags-toggle',
+                group: 'quick',
+                ref: getControlRef('tags-toggle'),
+                action: () => setShowTagsSection(value => !value),
+            },
+            {
+                id: 'notes-toggle',
+                group: 'quick',
+                ref: getControlRef('notes-toggle'),
+                action: () => setShowNotesSection(value => !value),
+            },
+            {
+                id: 'tag-add',
+                group: 'tags',
+                ref: getControlRef('tag-add'),
+                action: () => setShowTagSelector(value => !value),
+                visible: showTagsSection,
+            },
+            ...((repo.customTags || []).map((tagId) => ({
+                id: `tag-remove:${tagId}`,
+                group: 'tags' as const,
+                ref: getControlRef(`tag-remove:${tagId}`),
+                action: () => handleToggleTag(tagId),
+                visible: showTagsSection,
+            }))),
+            ...(tags.map((tagItem) => ({
+                id: `tag-option:${tagItem.id}`,
+                group: 'tags' as const,
+                ref: getControlRef(`tag-option:${tagItem.id}`),
+                action: () => handleToggleTag(tagItem.id),
+                visible: showTagsSection && showTagSelector,
+            }))),
+            {
+                id: 'tag-manage',
+                group: 'tags',
+                ref: getControlRef('tag-manage'),
+                action: () => setCurrentPage('tags'),
+                visible: showTagsSection && showTagSelector && tags.length === 0,
+            },
+            {
+                id: 'analysis-run',
+                group: 'analysis',
+                ref: getControlRef('analysis-run'),
+                action: handleAIAnalyze,
+                disabled: analyzing,
+            },
+            {
+                id: 'note-edit',
+                group: 'notes',
+                ref: getControlRef('note-edit'),
+                action: handleStartEditNote,
+                visible: showNotesSection && !editingNote,
+            },
+            {
+                id: 'note-delete',
+                group: 'notes',
+                ref: getControlRef('note-delete'),
+                action: handleDeleteNote,
+                visible: showNotesSection && Boolean(currentNote) && editingNote,
+            },
+            {
+                id: 'note-cancel',
+                group: 'notes',
+                ref: getControlRef('note-cancel'),
+                action: handleCancelNote,
+                visible: showNotesSection && editingNote,
+            },
+            {
+                id: 'note-save',
+                group: 'notes',
+                ref: getControlRef('note-save'),
+                action: handleSaveNote,
+                visible: showNotesSection && editingNote,
+            },
+            {
+                id: 'homepage',
+                group: 'links',
+                ref: getControlRef('homepage'),
+                action: handleOpenHomepage,
+                visible: Boolean(repo.homepage),
+            },
+        ];
+
+        return controls;
+    }, [
+        analyzing,
+        currentNote,
+        editingNote,
+        getControlRef,
+        handleAIAnalyze,
+        handleBack,
+        handleCancelNote,
+        handleDeleteNote,
+        handleOpenGithub,
+        handleOpenHomepage,
+        handleSaveNote,
+        handleStartEditAlias,
+        handleStartEditNote,
+        handleToggleSubscribe,
+        handleToggleTag,
+        handleViewReleases,
+        isSubscribed,
+        repo,
+        setCurrentPage,
+        showNotesSection,
+        showTagSelector,
+        showTagsSection,
+        tags,
+    ]);
+
+    const roving = useRovingControls({
+        enabled: Boolean(repo) && !editingAlias && !showDeleteConfirm && !showReanalyzeConfirm,
+        controls: rovingControls,
+        initialId: 'back',
+        deps: [
+            editingAlias,
+            showDeleteConfirm,
+            showReanalyzeConfirm,
+            showTagsSection,
+            showNotesSection,
+            showTagSelector,
+            editingNote,
+            repo?.id,
+        ],
+    });
+
+    const getControlStyle = useCallback((id: string, style: React.CSSProperties = {}): React.CSSProperties => (
+        roving.isActive(id)
+            ? {
+                ...style,
+                outline: 'none',
+                boxShadow: '0 0 0 2px rgba(99, 102, 241, 0.28), 0 4px 14px rgba(0, 0, 0, 0.08)',
+            }
+            : style
+    ), [roving]);
+
+    if (!repo) {
+        return null;
+    }
 
     const platformIcons: Record<string, string> = {
         mac: '🍎', windows: '🪟', linux: '🐧', ios: '📱',
@@ -280,25 +443,51 @@ export const DetailPage: React.FC = () => {
                 padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)',
             }}>
-                <button className="btn btn-ghost btn-sm" onClick={handleBack}>
+                <button
+                    ref={bindControlRef('back')}
+                    className="btn btn-ghost btn-sm"
+                    style={getControlStyle('back')}
+                    tabIndex={roving.getTabIndex('back')}
+                    onFocus={() => roving.setActiveId('back')}
+                    onClick={handleBack}
+                >
                     <ArrowLeft size={16} />
                     {t('back', lang)}
                 </button>
                 <div style={{ flex: 1 }} />
                 {/* 别名按钮 */}
-                <button className="btn btn-ghost btn-sm" onClick={handleStartEditAlias} title={t('editAlias', lang)}>
+                <button
+                    ref={bindControlRef('alias')}
+                    className="btn btn-ghost btn-sm"
+                    style={getControlStyle('alias')}
+                    tabIndex={roving.getTabIndex('alias')}
+                    onFocus={() => roving.setActiveId('alias')}
+                    onClick={handleStartEditAlias}
+                    title={t('editAlias', lang)}
+                >
                     <Edit2 size={14} />
                     {t('alias', lang)}
                 </button>
-                <button className="btn btn-ghost btn-sm" onClick={handleToggleSubscribe}>
+                <button
+                    ref={bindControlRef('subscribe')}
+                    className="btn btn-ghost btn-sm"
+                    style={getControlStyle('subscribe')}
+                    tabIndex={roving.getTabIndex('subscribe')}
+                    onFocus={() => roving.setActiveId('subscribe')}
+                    onClick={handleToggleSubscribe}
+                >
                     {isSubscribed ? <BellOff size={14} /> : <Bell size={14} />}
                     {isSubscribed ? t('unsubscribe', lang) : t('subscribe', lang)}
                 </button>
                 {/* 查看版本按钮 - 订阅后显示 🆕 v1.4.1 */}
                 {isSubscribed && (
                     <button
+                        ref={bindControlRef('releases')}
                         className="btn btn-ghost btn-sm"
-                        onClick={() => setCurrentPage('releases')}
+                        style={getControlStyle('releases')}
+                        tabIndex={roving.getTabIndex('releases')}
+                        onFocus={() => roving.setActiveId('releases')}
+                        onClick={handleViewReleases}
                         title={t('viewReleases', lang)}
                         aria-label={t('viewReleases', lang)}
                     >
@@ -306,7 +495,14 @@ export const DetailPage: React.FC = () => {
                         {t('viewReleases', lang)}
                     </button>
                 )}
-                <button className="btn btn-primary btn-sm" onClick={handleOpenGithub}>
+                <button
+                    ref={bindControlRef('open-github')}
+                    className="btn btn-primary btn-sm"
+                    style={getControlStyle('open-github')}
+                    tabIndex={roving.getTabIndex('open-github')}
+                    onFocus={() => roving.setActiveId('open-github')}
+                    onClick={handleOpenGithub}
+                >
                     <ExternalLink size={14} />
                     {t('openInGithub', lang)}
                 </button>
@@ -347,9 +543,14 @@ export const DetailPage: React.FC = () => {
                     {/* 🆕 v1.6.1 标签/笔记快捷按钮 - 移至仓库头部右侧 */}
                     <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                         <button
+                            ref={bindControlRef('tags-toggle')}
                             className={`btn btn-sm ${showTagsSection ? 'btn-primary' : 'btn-ghost'}`}
+                            style={getControlStyle('tags-toggle')}
+                            tabIndex={roving.getTabIndex('tags-toggle')}
+                            onFocus={() => roving.setActiveId('tags-toggle')}
                             onClick={() => setShowTagsSection(!showTagsSection)}
                             title={t('tags', lang)}
+                            aria-pressed={showTagsSection}
                         >
                             <Tag size={14} />
                             {t('tags', lang)}
@@ -367,9 +568,14 @@ export const DetailPage: React.FC = () => {
                             )}
                         </button>
                         <button
+                            ref={bindControlRef('notes-toggle')}
                             className={`btn btn-sm ${showNotesSection ? 'btn-primary' : 'btn-ghost'}`}
+                            style={getControlStyle('notes-toggle')}
+                            tabIndex={roving.getTabIndex('notes-toggle')}
+                            onFocus={() => roving.setActiveId('notes-toggle')}
                             onClick={() => setShowNotesSection(!showNotesSection)}
                             title={t('notes', lang)}
+                            aria-pressed={showNotesSection}
                         >
                             <FileText size={14} />
                             {t('notes', lang)}
@@ -415,8 +621,13 @@ export const DetailPage: React.FC = () => {
                                 🏷️ {t('tags', lang)}
                             </h3>
                             <button
+                                ref={bindControlRef('tag-add')}
                                 className="btn btn-ghost btn-sm"
+                                style={getControlStyle('tag-add')}
+                                tabIndex={roving.getTabIndex('tag-add')}
+                                onFocus={() => roving.setActiveId('tag-add')}
                                 onClick={() => setShowTagSelector(!showTagSelector)}
+                                aria-pressed={showTagSelector}
                             >
                                 {showTagSelector ? t('confirm', lang) : <><Plus size={12} /> {t('addTag', lang)}</>}
                             </button>
@@ -433,6 +644,10 @@ export const DetailPage: React.FC = () => {
                                         tag={tag}
                                         size="md"
                                         showRemove
+                                        removeButtonRef={bindControlRef(`tag-remove:${tag.id}`)}
+                                        removeButtonStyle={getControlStyle(`tag-remove:${tag.id}`)}
+                                        removeButtonTabIndex={roving.getTabIndex(`tag-remove:${tag.id}`)}
+                                        onRemoveFocus={() => roving.setActiveId(`tag-remove:${tag.id}`)}
                                         onRemove={() => handleToggleTag(tag.id)}
                                     />
                                 );
@@ -452,15 +667,18 @@ export const DetailPage: React.FC = () => {
                                     const isSelected = (repo.customTags || []).includes(tag.id);
                                     return (
                                         <button
+                                            ref={bindControlRef(`tag-option:${tag.id}`)}
                                             key={tag.id}
                                             className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-ghost'}`}
-                                            style={{
+                                            style={getControlStyle(`tag-option:${tag.id}`, {
                                                 padding: '4px 8px',
                                                 borderRadius: 999,
                                                 border: `1px solid ${tag.color || 'var(--color-border)'}`,
                                                 backgroundColor: isSelected ? (tag.color || 'var(--color-primary)') : 'transparent',
                                                 color: isSelected ? '#fff' : (tag.color || 'var(--color-text-primary)'),
-                                            }}
+                                            })}
+                                            tabIndex={roving.getTabIndex(`tag-option:${tag.id}`)}
+                                            onFocus={() => roving.setActiveId(`tag-option:${tag.id}`)}
                                             onClick={() => handleToggleTag(tag.id)}
                                         >
                                             {tag.icon && <span>{tag.icon} </span>}
@@ -477,7 +695,11 @@ export const DetailPage: React.FC = () => {
                                     {t('noTags', lang)}
                                 </p>
                                 <button
+                                    ref={bindControlRef('tag-manage')}
                                     className="btn btn-secondary btn-sm"
+                                    style={getControlStyle('tag-manage')}
+                                    tabIndex={roving.getTabIndex('tag-manage')}
+                                    onFocus={() => roving.setActiveId('tag-manage')}
                                     onClick={() => setCurrentPage('tags')}
                                 >
                                     {t('manageTags', lang)}
@@ -495,7 +717,11 @@ export const DetailPage: React.FC = () => {
                             AI {t('analysis', lang)}
                         </h3>
                         <button
+                            ref={bindControlRef('analysis-run')}
                             className="btn btn-secondary btn-sm"
+                            style={getControlStyle('analysis-run')}
+                            tabIndex={roving.getTabIndex('analysis-run')}
+                            onFocus={() => roving.setActiveId('analysis-run')}
                             onClick={handleAIAnalyze}
                             disabled={analyzing}
                         >
@@ -576,7 +802,14 @@ export const DetailPage: React.FC = () => {
                                 {t('notes', lang)}
                             </h3>
                             {!editingNote && (
-                                <button className="btn btn-ghost btn-sm" onClick={handleStartEditNote}>
+                                <button
+                                    ref={bindControlRef('note-edit')}
+                                    className="btn btn-ghost btn-sm"
+                                    style={getControlStyle('note-edit')}
+                                    tabIndex={roving.getTabIndex('note-edit')}
+                                    onFocus={() => roving.setActiveId('note-edit')}
+                                    onClick={handleStartEditNote}
+                                >
                                     <Edit2 size={12} />
                                     {currentNote ? t('edit', lang) : t('addNote', lang)}
                                 </button>
@@ -604,16 +837,37 @@ export const DetailPage: React.FC = () => {
                                 />
                                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
                                     {currentNote && (
-                                        <button className="btn btn-ghost btn-sm" onClick={handleDeleteNote} style={{ color: 'var(--color-error)' }}>
+                                        <button
+                                            ref={bindControlRef('note-delete')}
+                                            className="btn btn-ghost btn-sm"
+                                            style={getControlStyle('note-delete', { color: 'var(--color-error)' })}
+                                            tabIndex={roving.getTabIndex('note-delete')}
+                                            onFocus={() => roving.setActiveId('note-delete')}
+                                            onClick={handleDeleteNote}
+                                        >
                                             {t('delete', lang)}
                                         </button>
                                     )}
                                     <div style={{ flex: 1 }} />
-                                    <button className="btn btn-ghost btn-sm" onClick={handleCancelNote}>
+                                    <button
+                                        ref={bindControlRef('note-cancel')}
+                                        className="btn btn-ghost btn-sm"
+                                        style={getControlStyle('note-cancel')}
+                                        tabIndex={roving.getTabIndex('note-cancel')}
+                                        onFocus={() => roving.setActiveId('note-cancel')}
+                                        onClick={handleCancelNote}
+                                    >
                                         <X size={12} />
                                         {t('cancel', lang)}
                                     </button>
-                                    <button className="btn btn-primary btn-sm" onClick={handleSaveNote}>
+                                    <button
+                                        ref={bindControlRef('note-save')}
+                                        className="btn btn-primary btn-sm"
+                                        style={getControlStyle('note-save')}
+                                        tabIndex={roving.getTabIndex('note-save')}
+                                        onFocus={() => roving.setActiveId('note-save')}
+                                        onClick={handleSaveNote}
+                                    >
                                         <Save size={12} />
                                         {t('save', lang)}
                                     </button>
@@ -657,13 +911,22 @@ export const DetailPage: React.FC = () => {
                         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, color: 'var(--color-text-secondary)' }}>
                             {t('homepage', lang)}
                         </h3>
-                        <a
-                            href="#"
-                            onClick={(e) => { e.preventDefault(); window.githubStarsAPI.openExternal(repo.homepage); }}
-                            style={{ fontSize: 14, color: 'var(--color-primary)', textDecoration: 'none' }}
+                        <button
+                            ref={bindControlRef('homepage')}
+                            className="btn btn-ghost btn-sm"
+                            style={getControlStyle('homepage', {
+                                fontSize: 14,
+                                color: 'var(--color-primary)',
+                                textDecoration: 'none',
+                                padding: 0,
+                                height: 'auto',
+                            })}
+                            tabIndex={roving.getTabIndex('homepage')}
+                            onFocus={() => roving.setActiveId('homepage')}
+                            onClick={handleOpenHomepage}
                         >
                             {repo.homepage}
-                        </a>
+                        </button>
                     </div>
                 )}
             </div>
@@ -715,36 +978,16 @@ export const DetailPage: React.FC = () => {
             )}
 
             {/* 🆕 笔记删除确认弹窗 */}
-            {showDeleteConfirm && (
-                <div style={{
-                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-                    background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    zIndex: 1000,
-                }}>
-                    <div style={{
-                        background: 'var(--color-surface)',
-                        borderRadius: 12,
-                        padding: 20,
-                        width: '90%',
-                        maxWidth: 320,
-                    }}>
-                        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
-                            {t('delete', lang)}
-                        </h3>
-                        <p style={{ fontSize: 14, color: 'var(--color-text-primary)', marginBottom: 20 }}>
-                            {t('deleteNoteConfirm', lang)}
-                        </p>
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                            <button className="btn btn-ghost btn-sm" onClick={() => setShowDeleteConfirm(false)}>
-                                {t('cancel', lang)}
-                            </button>
-                            <button className="btn btn-primary btn-sm" onClick={confirmDeleteNote} style={{ background: 'var(--color-error)', borderColor: 'var(--color-error)' }}>
-                                {t('delete', lang)}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmDialog
+                isOpen={showDeleteConfirm}
+                title={t('delete', lang)}
+                message={t('deleteNoteConfirm', lang)}
+                confirmText={t('delete', lang)}
+                cancelText={t('cancel', lang)}
+                variant="danger"
+                onConfirm={confirmDeleteNote}
+                onCancel={() => setShowDeleteConfirm(false)}
+            />
 
             {/* 🆕 v1.6.2 重新分析确认弹窗 */}
             <ConfirmDialog

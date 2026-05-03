@@ -5,6 +5,10 @@ interface TagBadgeProps {
     tag: Tag;
     onClick?: () => void;
     onRemove?: () => void;
+    removeButtonRef?: React.Ref<HTMLButtonElement>;
+    removeButtonStyle?: React.CSSProperties;
+    removeButtonTabIndex?: number;
+    onRemoveFocus?: () => void;
     size?: 'sm' | 'md';
     showRemove?: boolean;
 }
@@ -17,6 +21,10 @@ export const TagBadge = memo<TagBadgeProps>(({
     tag,
     onClick,
     onRemove,
+    removeButtonRef,
+    removeButtonStyle,
+    removeButtonTabIndex,
+    onRemoveFocus,
     size = 'sm',
     showRemove = false,
 }) => {
@@ -50,7 +58,11 @@ export const TagBadge = memo<TagBadgeProps>(({
             <span>{tag.name}</span>
             {showRemove && onRemove && (
                 <button
+                    ref={removeButtonRef}
                     className="ml-1 hover:opacity-70"
+                    style={removeButtonStyle}
+                    tabIndex={removeButtonTabIndex}
+                    onFocus={onRemoveFocus}
                     onClick={handleRemove}
                 >
                     ×

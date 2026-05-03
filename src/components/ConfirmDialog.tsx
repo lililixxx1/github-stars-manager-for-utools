@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 
 interface ConfirmDialogProps {
     isOpen: boolean;
@@ -10,6 +10,7 @@ interface ConfirmDialogProps {
     onCancel: () => void;
     variant?: 'default' | 'danger';
     loading?: boolean;
+    autoFocusButton?: 'confirm' | 'cancel';
 }
 
 export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
@@ -22,7 +23,38 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
     onCancel,
     variant = 'default',
     loading = false,
+    autoFocusButton,
 }) => {
+    const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+    const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
+    const previousActiveElementRef = useRef<HTMLElement | null>(null);
+
+    useEffect(() => {
+        if (!isOpen) return;
+
+        previousActiveElementRef.current = document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+
+        const focusTarget = (autoFocusButton ?? (variant === 'danger' ? 'cancel' : 'confirm')) === 'confirm'
+            ? confirmButtonRef.current
+            : cancelButtonRef.current;
+        window.requestAnimationFrame(() => focusTarget?.focus());
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+
+            event.preventDefault();
+            onCancel();
+        };
+
+        document.addEventListener('keydown', handleKeyDown, true);
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown, true);
+            window.requestAnimationFrame(() => previousActiveElementRef.current?.focus());
+        };
+    }, [autoFocusButton, isOpen, onCancel, variant]);
+
     if (!isOpen) return null;
 
     const confirmBtnStyle = variant === 'danger'
@@ -38,7 +70,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                zIndex: 100
+                zIndex: 1000
             }}
         >
             <div
@@ -53,10 +85,11 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
                     {message}
                 </p>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
-                    <button className="btn btn-secondary" onClick={onCancel} disabled={loading}>
+                    <button ref={cancelButtonRef} className="btn btn-secondary" onClick={onCancel} disabled={loading}>
                         {cancelText}
                     </button>
                     <button
+                        ref={confirmButtonRef}
                         className="btn"
                         style={confirmBtnStyle}
                         onClick={onConfirm}
