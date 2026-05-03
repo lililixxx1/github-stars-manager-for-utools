@@ -72,6 +72,10 @@ interface AppState {
 
     // ========== 🆕 v1.1.0 笔记管理 ==========
     currentNote: RepositoryNote | null;
+    noteRepoIds: Set<number>;
+    noteContentByRepoId: Map<number, string>;
+    loadNoteIndex: () => void;
+    hasRepoNote: (repoId: number) => boolean;
     loadNote: (repoId: number) => void;
     saveNote: (repoId: number, content: string) => RepositoryNote;
     deleteNote: (repoId: number) => void;
@@ -141,6 +145,91 @@ const defaultReleaseFilter: ReleaseFilter = {
     platform: null,
 };
 
+function mergeRepoWithExistingData(
+    newRepo: Repository,
+    existing: Repository | undefined,
+    isSubscribed: boolean,
+): Repository {
+    if (!existing) {
+        return {
+            ...newRepo,
+            customTags: newRepo.customTags || [],
+            isSubscribed,
+        };
+    }
+
+    return {
+        ...newRepo,
+        aiSummary: existing.aiSummary,
+        aiTags: existing.aiTags,
+        aiPlatforms: existing.aiPlatforms,
+        analyzedAt: existing.analyzedAt,
+        analysisFailed: existing.analysisFailed,
+        alias: existing.alias,
+        customTags: existing.customTags || [],
+        customCategory: existing.customCategory,
+        userNotes: existing.userNotes,
+        customDescription: existing.customDescription,
+        isSubscribed,
+    };
+}
+
+function mergeFullSyncedRepositories(
+    fetchedRepos: Repository[],
+    existingRepos: Repository[],
+    subscriptionIds: number[],
+): Repository[] {
+    const existingMap = new Map(existingRepos.map((repo) => [repo.id, repo]));
+    return fetchedRepos.map((repo) =>
+        mergeRepoWithExistingData(repo, existingMap.get(repo.id), subscriptionIds.includes(repo.id))
+    );
+}
+
+function mergeIncrementalRepositories(
+    fetchedRepos: Repository[],
+    existingRepos: Repository[],
+    subscriptionIds: number[],
+): Repository[] {
+    const existingMap = new Map(existingRepos.map((repo) => [repo.id, repo]));
+    const fetchedMap = new Map(fetchedRepos.map((repo) => [repo.id, repo]));
+
+    const newRepos = fetchedRepos
+        .filter((repo) => !existingMap.has(repo.id))
+        .map((repo) => mergeRepoWithExistingData(repo, undefined, subscriptionIds.includes(repo.id)));
+
+    const mergedExisting = existingRepos.map((repo) => {
+        const updatedRepo = fetchedMap.get(repo.id);
+        if (!updatedRepo) {
+            return {
+                ...repo,
+                isSubscribed: subscriptionIds.includes(repo.id),
+            };
+        }
+
+        return mergeRepoWithExistingData(updatedRepo, repo, subscriptionIds.includes(repo.id));
+    });
+
+    return [...newRepos, ...mergedExisting];
+}
+
+function buildNoteIndex(repositories: Repository[]): {
+    noteRepoIds: Set<number>;
+    noteContentByRepoId: Map<number, string>;
+} {
+    const validRepoIds = new Set(repositories.map((repo) => repo.id));
+    const noteRepoIds = new Set<number>();
+    const noteContentByRepoId = new Map<number, string>();
+
+    for (const note of window.githubStarsAPI.getAllNotes()) {
+        if (!validRepoIds.has(note.repoId)) continue;
+
+        noteRepoIds.add(note.repoId);
+        noteContentByRepoId.set(note.repoId, note.content || '');
+    }
+
+    return { noteRepoIds, noteContentByRepoId };
+}
+
 export const useStore = create<AppState>((set, get) => ({
     // 页面导航
     currentPage: 'home',
@@ -150,7 +239,7 @@ export const useStore = create<AppState>((set, get) => ({
 
     // 仓库列表
     repositories: [],
-    setRepositories: (repos) => set({ repositories: repos }),
+    setRepositories: (repos) => set({ repositories: repos, ...buildNoteIndex(repos) }),
     loadRepositories: () => {
         const repos = storageService.getRepositories();
         // 订阅状态同步机制说明:
@@ -164,7 +253,7 @@ export const useStore = create<AppState>((set, get) => ({
             customTags: r.customTags || [],
             isSubscribed: subscriptionIds.includes(r.id),
         }));
-        set({ repositories: migrated });
+        set({ repositories: migrated, ...buildNoteIndex(migrated) });
     },
     saveRepositories: () => {
         storageService.setRepositories(get().repositories);
@@ -218,47 +307,43 @@ export const useStore = create<AppState>((set, get) => ({
         set({ syncStatus: 'syncing', syncProgress: { current: 0, total: 0 } });
 
         try {
-            const repos = await githubService.syncAllRepos(token, (current, total) => {
+            const syncState = storageService.getSyncState();
+            const result = await githubService.syncRepos(token, repositories, syncState, (current, total) => {
                 set({ syncProgress: { current, total } });
             });
 
-            logger.log('[Sync] Got', repos.length, 'repos total');
-
-            if (repos.length === 0) {
-                set({
-                    syncError: lang === 'zh'
-                        ? '同步完成但未获取到仓库，请检查 Token 权限是否包含 Starring'
-                        : 'Sync completed but no repos found. Check if your Token has Starring permission.',
-                    syncStatus: 'error',
-                });
-                return;
-            }
-
-            // 合并已有的数据
-            const existingMap = new Map(repositories.map((r) => [r.id, r]));
-            const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
-            const mergedRepos = repos.map((newRepo) => {
-                const existing = existingMap.get(newRepo.id);
-                if (existing) {
-                    return {
-                        ...newRepo,
-                        aiSummary: existing.aiSummary,
-                        aiTags: existing.aiTags,
-                        aiPlatforms: existing.aiPlatforms,
-                        analyzedAt: existing.analyzedAt,
-                        analysisFailed: existing.analysisFailed,
-                        alias: existing.alias,
-                        customTags: existing.customTags || [],
-                        customCategory: existing.customCategory,
-                        userNotes: existing.userNotes,
-                        customDescription: existing.customDescription,
-                        isSubscribed: subscriptionIds.includes(newRepo.id),
-                    };
-                }
-                return { ...newRepo, customTags: [], isSubscribed: subscriptionIds.includes(newRepo.id) };
+            logger.log('[Sync] 完成同步', {
+                mode: result.mode,
+                fetchedRepos: result.repos.length,
+                processedCount: result.processedCount,
             });
 
-            set({ repositories: mergedRepos, syncError: null, syncStatus: 'completed' });
+            const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
+
+            const mergedRepos = result.mode === 'full'
+                ? mergeFullSyncedRepositories(result.repos, repositories, subscriptionIds)
+                : mergeIncrementalRepositories(result.repos, repositories, subscriptionIds);
+
+            const nextSyncState = githubService.buildSyncState(mergedRepos, syncState, result.mode);
+            const nextSettings = {
+                ...settings,
+                lastSyncTime: Date.now(),
+            };
+
+            storageService.setSettings(nextSettings);
+            storageService.setSyncState(nextSyncState);
+
+            set({
+                repositories: mergedRepos,
+                ...buildNoteIndex(mergedRepos),
+                settings: nextSettings,
+                syncError: null,
+                syncStatus: 'completed',
+                syncProgress: {
+                    current: result.processedCount || mergedRepos.length,
+                    total: result.processedCount || mergedRepos.length,
+                },
+            });
             get().saveRepositories();
 
             setTimeout(() => set({ syncStatus: 'idle' }), 3000);
@@ -300,6 +385,7 @@ export const useStore = create<AppState>((set, get) => ({
 
         // 防止重复分析
         if (analyzeAbortController || isAnalyzing) return;
+        if (!token) return;
 
         // 🆕 v1.6.2 使用公共函数筛选需要分析的仓库
         const toAnalyze = repositories.filter(r => {
@@ -326,7 +412,7 @@ export const useStore = create<AppState>((set, get) => ({
             const language = (settings.language || 'zh') as 'zh' | 'en';
             const updated = await aiService.batchAnalyze(
                 toAnalyze,
-                token!,
+                token,
                 (current, total, repo) => {
                     set({
                         analyzeProgress: {
@@ -341,23 +427,24 @@ export const useStore = create<AppState>((set, get) => ({
                 controller.signal
             );
 
-            // 更新仓库数据
-            const repoMap = new Map(repositories.map(r => [r.id, r]));
-            updated.forEach(updatedRepo => {
-                const existing = repoMap.get(updatedRepo.id);
-                if (existing) {
-                    Object.assign(existing, {
-                        aiSummary: updatedRepo.aiSummary,
-                        aiTags: updatedRepo.aiTags,
-                        aiPlatforms: updatedRepo.aiPlatforms,
-                        analyzedAt: updatedRepo.analyzedAt,
-                        analysisFailed: updatedRepo.analysisFailed,
-                    });
-                }
+            // 不可变更新仓库数据，确保 Zustand 订阅和 memo 组件稳定刷新
+            const updatedById = new Map(updated.map(repo => [repo.id, repo]));
+            const nextRepositories = repositories.map(repo => {
+                const updatedRepo = updatedById.get(repo.id);
+                if (!updatedRepo) return repo;
+
+                return {
+                    ...repo,
+                    aiSummary: updatedRepo.aiSummary,
+                    aiTags: updatedRepo.aiTags,
+                    aiPlatforms: updatedRepo.aiPlatforms,
+                    analyzedAt: updatedRepo.analyzedAt,
+                    analysisFailed: updatedRepo.analysisFailed,
+                };
             });
 
-            // 保存到存储
-            get().saveRepositories();
+            set({ repositories: nextRepositories });
+            storageService.setRepositories(nextRepositories);
 
             // 更新统计信息
             const successCount = updated.filter(r => !r.analysisFailed).length;
@@ -458,18 +545,37 @@ export const useStore = create<AppState>((set, get) => ({
 
     // ========== 🆕 v1.1.0 笔记管理 ==========
     currentNote: null,
+    noteRepoIds: new Set<number>(),
+    noteContentByRepoId: new Map<number, string>(),
+    loadNoteIndex: () => {
+        const { repositories } = get();
+        set(buildNoteIndex(repositories));
+    },
+    hasRepoNote: (repoId) => get().noteRepoIds.has(repoId),
     loadNote: (repoId) => {
         const note = window.githubStarsAPI.getNote(repoId);
         set({ currentNote: note });
     },
     saveNote: (repoId, content) => {
         const note = window.githubStarsAPI.setNote(repoId, content);
-        set({ currentNote: note });
+        set((state) => {
+            const noteRepoIds = new Set(state.noteRepoIds);
+            const noteContentByRepoId = new Map(state.noteContentByRepoId);
+            noteRepoIds.add(repoId);
+            noteContentByRepoId.set(repoId, note.content || '');
+            return { currentNote: note, noteRepoIds, noteContentByRepoId };
+        });
         return note;
     },
     deleteNote: (repoId) => {
         window.githubStarsAPI.deleteNote(repoId);
-        set({ currentNote: null });
+        set((state) => {
+            const noteRepoIds = new Set(state.noteRepoIds);
+            const noteContentByRepoId = new Map(state.noteContentByRepoId);
+            noteRepoIds.delete(repoId);
+            noteContentByRepoId.delete(repoId);
+            return { currentNote: null, noteRepoIds, noteContentByRepoId };
+        });
     },
 
     // ========== 🆕 v1.1.0 视图模式 ==========
@@ -491,8 +597,11 @@ export const useStore = create<AppState>((set, get) => ({
 
     // 过滤后的仓库（使用优化后的筛选管道 v1.7.0）
     getFilteredRepos: () => {
-        const { repositories, searchFilter } = get();
-        const pipeline = createFilteredReposPipeline(searchFilter);
+        const { repositories, searchFilter, noteRepoIds, noteContentByRepoId } = get();
+        const pipeline = createFilteredReposPipeline(searchFilter, {
+            hasNote: (repoId) => noteRepoIds.has(repoId),
+            getNoteContent: (repoId) => noteContentByRepoId.get(repoId) || '',
+        });
         return pipeline(repositories);
     },
 
@@ -634,20 +743,22 @@ export const useStore = create<AppState>((set, get) => ({
 
                 // 🆕 v1.5.1: 只对真正的新版本发送通知
                 if (realUpdates.length > 0) {
+                    set({ releasesInitialTab: 'updates' });
+
                     if (realUpdates.length === 1) {
                         const release = realUpdates[0];
                         window.githubStarsAPI.showNotification(
                             settings.language === 'zh'
                                 ? `${release.repository.fullName} 发布了新版本 ${release.tagName}`
                                 : `${release.repository.fullName} released ${release.tagName}`,
-                            'github-stars-releases'
+                            'github-stars'
                         );
                     } else {
                         window.githubStarsAPI.showNotification(
                             settings.language === 'zh'
                                 ? `${realUpdates.length} 个仓库有新版本更新`
                                 : `${realUpdates.length} repos have new releases`,
-                            'github-stars-releases'
+                            'github-stars'
                         );
                     }
                 }

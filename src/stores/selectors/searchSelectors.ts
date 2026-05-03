@@ -7,6 +7,8 @@
  */
 
 import type { Repository } from '@/types';
+import type { FilterContext } from './filterSelectors';
+import { emptyFilterContext } from './filterSelectors';
 
 /** 相关度评分结果 */
 interface RelevanceScore {
@@ -23,7 +25,7 @@ interface RelevanceScore {
  * @example
  * const results = calculateRelevance(['react', 'hooks'])(repos);
  */
-export const calculateRelevance = (keywords: string[]) => {
+export const calculateRelevance = (keywords: string[], context: FilterContext = emptyFilterContext) => {
     return (repos: Repository[]): Repository[] => {
         if (!keywords?.length) return repos;
 
@@ -44,9 +46,7 @@ export const calculateRelevance = (keywords: string[]) => {
                 owner: repo.owner.login.toLowerCase(),
             };
 
-            // 获取笔记内容
-            const note = window.githubStarsAPI.getNote(repo.id);
-            const noteContent = note?.content?.toLowerCase() || '';
+            const noteContent = context.getNoteContent(repo.id).toLowerCase();
 
             for (const kw of keywords) {
                 let kwMatch = false;

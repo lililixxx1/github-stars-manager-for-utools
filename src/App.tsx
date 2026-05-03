@@ -155,6 +155,11 @@ const App: React.FC = () => {
             utools.onPluginEnter(({ code, type, payload }) => {
                 switch (code) {
                     case 'github-stars':
+                        if (useStore.getState().releasesInitialTab) {
+                            setCurrentPage('releases');
+                            break;
+                        }
+
                         setCurrentPage('home');
                         // 设置子输入框
                         utools.setSubInput(({ text }) => {
@@ -187,6 +192,7 @@ const App: React.FC = () => {
                         }
                         break;
                     case 'github-stars-releases': // 🆕 v1.4.0 版本通知点击
+                        useStore.getState().setReleasesInitialTab('updates');
                         setCurrentPage('releases');
                         break;
                 }

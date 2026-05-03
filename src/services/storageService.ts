@@ -1,4 +1,4 @@
-import type { Repository, Settings, Release, Category } from '../types';
+import type { Repository, Settings, Release, Category, SyncState } from '../types';
 
 const MAX_CHUNK_SIZE = 900 * 1024; // 900KB 安全阈值
 
@@ -19,6 +19,15 @@ export const storageService = {
 
     setToken(token: string): void {
         window.githubStarsAPI.setToken(token);
+    },
+
+    // ==================== Sync State ====================
+    getSyncState(): SyncState | null {
+        return window.githubStarsAPI.getSyncState();
+    },
+
+    setSyncState(state: SyncState): void {
+        window.githubStarsAPI.setSyncState(state);
     },
 
     // ==================== Repositories (分片存储) ====================

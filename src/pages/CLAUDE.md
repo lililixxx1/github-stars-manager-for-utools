@@ -4,42 +4,64 @@
 
 ## 概述
 
-5 个页面组件，由 `App.tsx` 根据 `currentPage` 状态路由。
+5 个页面组件，由 `App.tsx` 根据 `currentPage` 状态路由。HomePage 已在 v1.7.0 拆分为子模块。
 
 ## 页面列表
 
 | 页面 | 文件 | 功能 |
 |------|------|------|
-| 首页 | `HomePage.tsx` | 仓库列表、搜索、筛选、同步 |
-| 详情 | `DetailPage.tsx` | 单仓库详情、AI 分析、笔记、订阅 |
+| 首页 | `HomePage.tsx` | 仓库列表、搜索、筛选、同步、键盘导航 |
+| 详情 | `DetailPage.tsx` | 单仓库详情、AI 分析、笔记、标签、订阅 |
 | 设置 | `SettingsPage.tsx` | Token、主题、语言、AI 设置、版本订阅管理 |
 | 标签 | `TagsPage.tsx` | 标签管理、拖拽排序 |
 | 版本 | `ReleasesPage.tsx` | 版本更新列表、订阅管理、平台筛选 |
 
 ## HomePage.tsx
 
-**主页面** (~26KB)
+**主页面**
 
-**主要功能**:
+主要功能:
 - 仓库列表展示 (卡片/列表视图)
-- 多维搜索过滤
-- 排序控制
+- 多维搜索过滤 (通过 FilterBar 组件)
+- 排序控制 (stars/updated/name/starredAt)
 - 分页
-- 同步进度
-- AI 分析进度
-- 平台筛选
-- 标签筛选
+- 同步进度 / 错误提示
+- 键盘导航 (ArrowUp/Down/Left/Right/Enter)
+- 首次使用引导 (无 Token 时)
 
-**关键状态**:
+关键状态:
 ```typescript
 const {
-  repositories, searchFilter, setSearchFilter,
-  syncStatus, syncProgress, isAnalyzing, analyzeProgress,
-  viewMode, tags, loadTags, getAvailablePlatforms,
+  repositories, token, settings,
+  syncStatus, syncProgress, syncError,
+  searchFilter, getFilteredRepos,
+  currentPageNum, setCurrentPageNum,
+  tags, loadTags, viewMode, setViewMode,
 } = useStore();
 ```
 
-**搜索前缀**:
+### home/ 子模块 (v1.7.0)
+
+```
+pages/home/
+├── index.ts              # 入口
+├── components/
+│   ├── index.ts
+│   └── FilterBar/
+│       └── index.tsx     # 筛选栏组件 (memo)
+└── hooks/
+    ├── index.ts
+    ├── useHomePage.ts    # 主 Hook (封装业务逻辑)
+    └── useFilterState.ts # 筛选状态 Hook
+```
+
+**FilterBar**: 包含版本追踪入口、未读标识、视图切换、排序菜单、标签筛选、平台筛选、同步按钮、设置按钮。支持键盘导航。
+
+**useHomePage**: 封装 HomePage 的业务逻辑，返回数据、统计、状态、操作。
+
+**useFilterState**: 管理筛选状态的 Hook。
+
+搜索前缀:
 - `owner:` - 作者筛选
 - `lang:` / `language:` - 语言筛选
 - `topic:` - 主题筛选
@@ -47,93 +69,59 @@ const {
 - `note:` - 笔记内容搜索
 - `alias:` - 别名搜索
 
-**排序选项**:
-- `stars` - Star 数
-- `updated` - 更新时间
-- `created` - 创建时间
-- `name` - 名称
-- `starredAt` - 收藏时间
-- `alias` - 别名
-
 ## DetailPage.tsx
 
-**仓库详情页** (~25KB)
+**仓库详情页**
 
-**主要功能**:
-- 仓库基本信息展示
-- README 预览
-- AI 分析触发与结果展示
-- 别名设置
-- 笔记编辑 (Markdown)
-- 自定义标签管理
-- Release 订阅
-- 在 GitHub 打开
+主要功能:
+- 仓库基本信息 (头像、名称/别名、Star/Fork、语言)
+- AI 分析触发与结果展示 (含重新分析确认弹窗)
+- 别名设置 (模态弹窗)
+- 笔记编辑 (Markdown，含删除确认)
+- 自定义标签管理 (展开/折叠动画)
+- Release 订阅切换
+- Topics / Homepage 展示
+- 键盘导航 (Backspace 返回)
 
-**关键状态**:
-```typescript
-const { selectedRepo, updateRepository, saveNote, tags, addTag } = useStore();
-```
+关键实现:
+- `escapeHtml` XSS 防护
+- `checkAnalysisNeeded` 分析状态判断 (含 24 小时冷却)
+- `subscriptionVersion` 响应式订阅状态
 
 ## SettingsPage.tsx
 
-**设置页** (~21KB)
+**设置页**
 
-**设置项**:
-- GitHub Token 配置与验证
-- 同步间隔
+设置项:
+- GitHub Token 配置与验证 (含 TokenHelp 帮助面板)
+- AI 模型选择 (从 uTools 获取可用模型)
+- AI 分析设置: 启动时自动分析、并发数 (1-5)、立即分析/停止
+- 版本追踪设置: 启动时自动检测、订阅仓库管理
 - 主题 (light/dark/auto)
 - 语言 (zh/en)
-- 默认视图模式
-- 每页数量
-- 默认排序
-- AI 分析设置
-  - 启动时自动分析
-  - 并发数
-  - 模型选择
-  - 自定义提示词
-- 版本追踪设置 (v1.4.0)
-  - 启动时自动检测
-  - 订阅仓库管理
+- 每页数量 (10/20/50/100)
 - 数据导入/导出
+- 关于信息
+
+Token 验证成功后自动触发同步 (通过 `trigger-sync` 事件)。
 
 ## TagsPage.tsx
 
-**标签管理页** (~1.4KB)
-
-**功能**:
-- 标签列表
-- 拖拽排序 (使用 @dnd-kit)
-- 标签增删改
-
-**依赖组件**: `TagManager.tsx`
+**标签管理页** -- 包装 `TagManager` 组件 (mode="manage")。
 
 ## ReleasesPage.tsx
 
-**版本列表页** (~19KB) - v1.4.0 ~ v1.4.1
+**版本列表页** -- 双 Tab 切换 (版本更新 / 订阅管理)。
 
-**功能**:
-- 已订阅仓库的版本更新列表
-- 未读/已读标记
-- 平台筛选
-- 一键全部已读
-- 手动检查更新
-- 订阅管理 Tab (v1.5.0)
-  - 已订阅仓库列表
-  - 取消订阅 (带撤销功能)
-  - 全部取消订阅
+版本更新 Tab:
+- 筛选栏: 检查更新、全部已读、未读筛选、平台筛选
+- 版本卡片列表 (含未读 NEW 标识)
+- 点击展开版本详情弹窗 (含翻译功能)
 
-**关键状态**:
-```typescript
-const {
-  releases, releaseCheckStatus, releaseFilter,
-  checkReleaseUpdates, markReleaseRead, markAllReleasesRead,
-  repositories, subscriptionVersion, toggleSubscription, clearAllSubscriptions
-} = useStore();
-```
-
-**撤销订阅功能**:
-- 5 秒内可撤销
-- Toast 提示
+订阅管理 Tab:
+- 已订阅仓库列表
+- 取消订阅 (带 5 秒撤销功能)
+- 全部取消订阅 (确认弹窗)
 
 ## 页面导航
 
@@ -151,25 +139,15 @@ useStore.getState().setCurrentPage('detail');
 
 ## uTools 入口处理
 
-在 `App.tsx` 中：
+在 `App.tsx` 中:
 
 ```typescript
 utools.onPluginEnter(({ code, type, payload }) => {
   switch (code) {
-    case 'github-stars':
-      setCurrentPage('home');
-      utools.setSubInput(/*...*/);
-      break;
-    case 'github-stars-search':
-      setCurrentPage('home');
-      setSearchFilter({ keyword: payload });
-      break;
-    case 'github-stars-repo':
-      // 打开仓库详情或搜索
-      break;
-    case 'github-stars-releases':
-      setCurrentPage('releases');
-      break;
+    case 'github-stars':      // -> home + 子输入框
+    case 'github-stars-search': // -> home + 关键词
+    case 'github-stars-repo':  // -> detail 或 home + 搜索
+    case 'github-stars-releases': // -> releases
   }
 });
 ```
@@ -178,4 +156,5 @@ utools.onPluginEnter(({ code, type, payload }) => {
 
 |日期|变更|
 |--|--|
+|2026-05-02|重新扫描：新增 home/ 子模块文档，更新页面功能描述，补充键盘导航说明|
 |2026-03-07|更新 ReleasesPage 功能描述，添加订阅管理 Tab 文档，添加相对路径面包屑导航|

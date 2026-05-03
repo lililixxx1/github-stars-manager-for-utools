@@ -5,7 +5,7 @@ import { SyncProgress } from '../components/SyncProgress';
 import { t } from '../locales';
 import type { SortBy } from '../types';
 import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
-import { FilterBar } from './home/components/FilterBar';
+import { FilterBar, type FilterBarHandle } from './home/components/FilterBar';
 import {
     RefreshCw, ChevronLeft, ChevronRight,
     Star, Sparkles, FileText
@@ -20,11 +20,15 @@ export const HomePage: React.FC = () => {
         setCurrentPage, setSelectedRepo,
         currentPageNum, setCurrentPageNum,
         tags, loadTags, viewMode, setViewMode,
+        noteRepoIds, noteContentByRepoId, hasRepoNote,
     } = useStore();
 
     const lang = (settings.language || 'zh') as 'zh' | 'en';
     const itemsPerPage = settings.itemsPerPage || 20;
-    const filteredRepos = useMemo(() => getFilteredRepos(), [repositories, searchFilter, tags]);
+    const filteredRepos = useMemo(
+        () => getFilteredRepos(),
+        [repositories, searchFilter, tags, noteRepoIds, noteContentByRepoId]
+    );
     const totalPages = Math.max(1, Math.ceil(filteredRepos.length / itemsPerPage));
     const currentRepos = filteredRepos.slice(
         (currentPageNum - 1) * itemsPerPage,
@@ -34,6 +38,7 @@ export const HomePage: React.FC = () => {
     const [keyboardArea, setKeyboardArea] = useState<'toolbar' | 'list'>('list');
     const itemRefs = useRef<Record<number, HTMLDivElement | null>>({});
     const listContainerRef = useRef<HTMLDivElement | null>(null);
+    const filterBarRef = useRef<FilterBarHandle | null>(null);
     const activeRepo = activeRepoIndex === null ? null : currentRepos[activeRepoIndex] ?? null;
 
     // 获取所有语言
@@ -100,6 +105,9 @@ export const HomePage: React.FC = () => {
                 setActiveRepoIndex((prev) => {
                     if (prev === null || prev <= 0) {
                         setKeyboardArea('toolbar');
+                        requestAnimationFrame(() => {
+                            filterBarRef.current?.focusActiveControl();
+                        });
                         return 0;
                     }
                     return Math.max(prev - 1, 0);
@@ -187,6 +195,7 @@ export const HomePage: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             {/* 筛选栏组件 🆕 v1.7.0 */}
             <FilterBar
+                ref={filterBarRef}
                 lang={lang}
                 repositories={repositories}
                 filteredCount={filteredRepos.length}
@@ -201,7 +210,9 @@ export const HomePage: React.FC = () => {
                     if (currentRepos.length === 0) return;
                     setKeyboardArea('list');
                     setActiveRepoIndex((prev) => prev ?? 0);
-                    listContainerRef.current?.focus();
+                    requestAnimationFrame(() => {
+                        listContainerRef.current?.focus();
+                    });
                 }}
                 onRequestToolbarArea={() => setKeyboardArea('toolbar')}
                 hasListResults={currentRepos.length > 0}
@@ -236,8 +247,8 @@ export const HomePage: React.FC = () => {
                 style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'card' ? '8px 16px' : '0' }}
                 role="listbox"
                 aria-label={t('repositories', lang)}
-                aria-activedescendant={activeRepo ? `repo-option-${activeRepo.id}` : undefined}
-                tabIndex={0}
+                aria-activedescendant={keyboardArea === 'list' && activeRepo ? `repo-option-${activeRepo.id}` : undefined}
+                tabIndex={keyboardArea === 'list' ? 0 : -1}
             >
                 {currentRepos.length === 0 ? (
                     <div style={{
@@ -322,7 +333,7 @@ export const HomePage: React.FC = () => {
                                         {repo.language}
                                     </span>
                                     {/* 笔记标识 */}
-                                    {window.githubStarsAPI.getNote(repo.id) && (
+                                    {hasRepoNote(repo.id) && (
                                         <FileText size={12} style={{ color: 'var(--color-primary)' }} />
                                     )}
                                 </div>

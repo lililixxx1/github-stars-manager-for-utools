@@ -2,7 +2,7 @@ import React, { useEffect, useCallback } from 'react';
 import { useStore } from '../stores/useStore';
 import { TagManager } from '../components/TagManager';
 import { t } from '../locales';
-import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
+import { useBackShortcut } from '../hooks/useBackShortcut';
 import { ArrowLeft } from 'lucide-react';
 
 export const TagsPage: React.FC = () => {
@@ -17,18 +17,10 @@ export const TagsPage: React.FC = () => {
         loadRepositories();  // TagManager 需要统计标签关联的仓库数量
     }, [loadRepositories, loadTags]);
 
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (shouldIgnoreGlobalKeydown(event)) return;
-            if (event.key !== 'Backspace') return;
-
-            event.preventDefault();
-            handleBack();
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [handleBack]);
+    useBackShortcut({
+        onBack: handleBack,
+        deps: [handleBack],
+    });
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>

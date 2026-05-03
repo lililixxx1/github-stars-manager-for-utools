@@ -11,6 +11,16 @@ import type { Repository } from '@/types';
 /** 筛选函数类型 */
 export type FilterFn = (repos: Repository[]) => Repository[];
 
+export interface FilterContext {
+    hasNote: (repoId: number) => boolean;
+    getNoteContent: (repoId: number) => string;
+}
+
+export const emptyFilterContext: FilterContext = {
+    hasNote: () => false,
+    getNoteContent: () => '',
+};
+
 // ==================== 常量 ====================
 
 /** 未分析/无平台标识 */
@@ -76,32 +86,18 @@ export const createFilterByPlatforms = (platforms: string[]): FilterFn => {
 };
 
 /**
- * 创建笔记筛选器（性能优化版本）
+ * 创建笔记筛选器
  * @param hasNotes - 是否有笔记
  *
- * 优化策略：批量读取 notes 到内存，避免逐个调用 getNote
- * 性能提升：对 1000 个仓库从 ~50ms 降低到 ~5ms
+ * 依赖 store 中的运行时笔记索引，避免在筛选热路径逐个读取持久化存储。
  */
-export const createFilterByNotes = (hasNotes: boolean | null): FilterFn => {
+export const createFilterByNotes = (hasNotes: boolean | null, context: FilterContext = emptyFilterContext): FilterFn => {
     if (hasNotes === null) return (repos) => repos;
 
-    return (repos) => {
-        // 批量读取所有 notes（一次性读取所有仓库的 notes）
-        const noteIds = new Set(repos.map(r => r.id));
-        const notesMap = new Map<number, boolean>();
-
-        // 批量获取并缓存 note 数据
-        noteIds.forEach(id => {
-            const note = window.githubStarsAPI.getNote(id);
-            notesMap.set(id, !!note);
-        });
-
-        // 使用缓存数据进行筛选
-        return repos.filter(repo => {
-            const hasNote = notesMap.get(repo.id) ?? false;
-            return hasNotes ? hasNote : !hasNote;
-        });
-    };
+    return (repos) => repos.filter(repo => {
+        const hasRepoNote = context.hasNote(repo.id);
+        return hasNotes ? hasRepoNote : !hasRepoNote;
+    });
 };
 
 /**
@@ -179,7 +175,11 @@ export const parseSearchKeyword = (keyword: string): {
  * @param repos - 仓库列表
  * @param prefixFilters - 前缀过滤配置
  */
-export const applyPrefixFilters = (repos: Repository[], prefixFilters: PrefixFilter[]): Repository[] => {
+export const applyPrefixFilters = (
+    repos: Repository[],
+    prefixFilters: PrefixFilter[],
+    context: FilterContext = emptyFilterContext
+): Repository[] => {
     if (!prefixFilters.length) return repos;
 
     return prefixFilters.reduce((filtered, pf) => {
@@ -196,8 +196,7 @@ export const applyPrefixFilters = (repos: Repository[], prefixFilters: PrefixFil
                     return (repo.aiTags || []).concat(repo.customTags || [])
                         .some(t => t.toLowerCase().includes(pf.value));
                 case 'note':
-                    const note = window.githubStarsAPI.getNote(repo.id);
-                    return note?.content?.toLowerCase().includes(pf.value) || false;
+                    return context.getNoteContent(repo.id).toLowerCase().includes(pf.value);
                 case 'alias':
                     return (repo.alias || '').toLowerCase().includes(pf.value);
                 default:

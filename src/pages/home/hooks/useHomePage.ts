@@ -82,6 +82,7 @@ export const useHomePage = (): UseHomePageResult => {
         setCurrentPage, setSelectedRepo,
         currentPageNum, setCurrentPageNum,
         tags, loadTags, viewMode, setViewMode,
+        noteRepoIds, noteContentByRepoId,
     } = useStore();
 
     // UI 状态
@@ -94,7 +95,10 @@ export const useHomePage = (): UseHomePageResult => {
     const itemsPerPage = settings.itemsPerPage || 20;
 
     // 计算属性
-    const filteredRepos = useMemo(() => getFilteredRepos(), [repositories, searchFilter, tags]);
+    const filteredRepos = useMemo(
+        () => getFilteredRepos(),
+        [repositories, searchFilter, tags, noteRepoIds, noteContentByRepoId]
+    );
     const totalPages = Math.max(1, Math.ceil(filteredRepos.length / itemsPerPage));
     const currentRepos = useMemo(() =>
         filteredRepos.slice(

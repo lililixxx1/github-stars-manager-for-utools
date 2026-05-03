@@ -5,7 +5,7 @@ import { githubService } from '../services/githubService';
 import { t } from '../locales';
 import { TokenHelp, TokenHelpHeaderButton } from '../components/TokenHelp';
 import { logger } from '../utils/logger';
-import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
+import { useBackShortcut } from '../hooks/useBackShortcut';
 import {
     ArrowLeft, Key, Check, X, Loader2, Download, Upload,
     Sun, Moon, Monitor, Globe, Sparkles, Play, StopCircle, Zap, Bell
@@ -57,18 +57,10 @@ export const SettingsPage: React.FC = () => {
         setCurrentPage('home');
     }, [setCurrentPage]);
 
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (shouldIgnoreGlobalKeydown(event)) return;
-            if (event.key !== 'Backspace') return;
-
-            event.preventDefault();
-            handleBack();
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [handleBack]);
+    useBackShortcut({
+        onBack: handleBack,
+        deps: [handleBack],
+    });
 
     const scheduleAutoSync = () => {
         const { syncStatus } = useStore.getState();

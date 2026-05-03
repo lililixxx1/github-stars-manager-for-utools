@@ -8,7 +8,7 @@ import { releaseService } from '../services/releaseService';
 import { t } from '../locales';
 import type { Language } from '../locales';
 import type { Release, Repository } from '../types';
-import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
+import { useBackShortcut } from '../hooks/useBackShortcut';
 
 type TabType = 'updates' | 'subscriptions';
 
@@ -85,29 +85,23 @@ export function ReleasesPage() {
         localStorage.setItem('releasesTab', tab);
     };
 
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (shouldIgnoreGlobalKeydown(event)) return;
-            if (event.key !== 'Backspace') return;
-
-            event.preventDefault();
-
+    useBackShortcut({
+        onBack: handleBack,
+        beforeBack: () => {
             if (selectedRelease) {
                 setSelectedRelease(null);
-                return;
+                return true;
             }
 
             if (showConfirmDialog) {
                 setShowConfirmDialog(false);
-                return;
+                return true;
             }
 
-            handleBack();
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [handleBack, selectedRelease, showConfirmDialog]);
+            return false;
+        },
+        deps: [handleBack, selectedRelease, showConfirmDialog],
+    });
 
     // 筛选版本
     const subscribedRepoIds = window.githubStarsAPI.getReleaseSubscriptions();

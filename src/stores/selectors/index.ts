@@ -13,6 +13,7 @@
  */
 
 import type { Repository, SearchFilter } from '@/types';
+import type { FilterContext } from './filterSelectors';
 import {
     createFilterByLanguages,
     createFilterByTags,
@@ -22,6 +23,7 @@ import {
     createFilterBySubscription,
     parseSearchKeyword,
     applyPrefixFilters,
+    emptyFilterContext,
 } from './filterSelectors';
 import { createSorter } from './sortSelectors';
 import { calculateRelevance } from './searchSelectors';
@@ -42,7 +44,10 @@ export * from './searchSelectors';
  * @param filter - 搜索筛选条件
  * @returns 筛选函数
  */
-export const createFilteredReposPipeline = (filter: SearchFilter) => {
+export const createFilteredReposPipeline = (
+    filter: SearchFilter,
+    context: FilterContext = emptyFilterContext
+) => {
     return (repos: Repository[]): Repository[] => {
         // 1. 解析关键词
         const { prefixFilters, keywords } = parseSearchKeyword(filter.keyword);
@@ -52,7 +57,7 @@ export const createFilteredReposPipeline = (filter: SearchFilter) => {
 
         // 应用前缀过滤
         if (prefixFilters.length > 0) {
-            result = applyPrefixFilters(result, prefixFilters);
+            result = applyPrefixFilters(result, prefixFilters, context);
         }
 
         // 语言筛选
@@ -65,13 +70,13 @@ export const createFilteredReposPipeline = (filter: SearchFilter) => {
         result = createFilterByPlatforms(filter.platforms)(result);
 
         // 条件筛选
-        result = createFilterByNotes(filter.hasNotes)(result);
+        result = createFilterByNotes(filter.hasNotes, context)(result);
         result = createFilterByAlias(filter.hasAlias)(result);
         result = createFilterBySubscription(filter.hasReleases)(result);
 
         // 3. 关键词搜索 + 相关度计算（仅在有关键词时）
         if (keywords.length > 0) {
-            result = calculateRelevance(keywords)(result);
+            result = calculateRelevance(keywords, context)(result);
             // 关键词搜索后直接返回（已按相关度排序）
             return result;
         }

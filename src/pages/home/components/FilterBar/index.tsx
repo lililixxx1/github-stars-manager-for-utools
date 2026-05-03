@@ -4,7 +4,16 @@
  * @since v1.7.0
  */
 
-import React, { memo, useState, useCallback, useEffect } from 'react';
+import React, {
+    forwardRef,
+    memo,
+    useCallback,
+    useEffect,
+    useImperativeHandle,
+    useMemo,
+    useRef,
+    useState
+} from 'react';
 import { useStore } from '@/stores/useStore';
 import { t, type TranslationKey } from '@/locales';
 import { PLATFORM_OPTIONS, PLATFORM_NONE } from '@/constants/platforms';
@@ -14,7 +23,6 @@ import {
     ArrowUpDown, Tag as TagIcon, Filter, RefreshCw, Settings,
     LayoutGrid, List, Bell, Edit3, Plus
 } from 'lucide-react';
-import { UnreadBadge } from '@/components/UnreadBadge';
 
 interface FilterBarProps {
     lang: 'zh' | 'en';
@@ -32,6 +40,19 @@ interface FilterBarProps {
     hasListResults: boolean;
 }
 
+export interface FilterBarHandle {
+    focusActiveControl: () => void;
+}
+
+interface ToolbarControl {
+    key: string;
+    title: string;
+    action: () => void;
+    disabled?: boolean;
+    style?: React.CSSProperties;
+    content: React.ReactNode;
+}
+
 /**
  * 排序选项
  */
@@ -46,7 +67,7 @@ const SORT_OPTIONS: { value: SortBy; labelKey: string }[] = [
  * 筛选栏组件
  * 包含：版本追踪、未读标识、视图切换、排序、标签筛选、平台筛选、同步、设置
  */
-export const FilterBar = memo<FilterBarProps>(({
+const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     lang,
     repositories,
     filteredCount,
@@ -60,10 +81,11 @@ export const FilterBar = memo<FilterBarProps>(({
     onRequestListArea,
     onRequestToolbarArea,
     hasListResults
-}) => {
+}, ref) => {
     const { searchFilter, setSearchFilter, setCurrentPage } = useStore();
     const unreadCount = useStore((state) => state.getUnreadCount)();
     const releaseCheckStatus = useStore((state) => state.releaseCheckStatus);
+    const subscriptionVersion = useStore((state) => state.subscriptionVersion);
 
     // UI 状态
     const [showSortMenu, setShowSortMenu] = useState(false);
@@ -71,8 +93,13 @@ export const FilterBar = memo<FilterBarProps>(({
     const [showPlatformFilter, setShowPlatformFilter] = useState(false);
     const [activeControlIndex, setActiveControlIndex] = useState(0);
     const [activeSortMenuIndex, setActiveSortMenuIndex] = useState(0);
+    const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
     const showUnreadBadge = unreadCount > 0 || releaseCheckStatus.checking;
+    const subscribedCount = useMemo(
+        () => window.githubStarsAPI?.getReleaseSubscriptions?.().length || 0,
+        [subscriptionVersion]
+    );
 
     // 排序操作
     const handleSortChange = useCallback((sortBy: SortBy) => {
@@ -103,29 +130,174 @@ export const FilterBar = memo<FilterBarProps>(({
         closeSortMenu();
     }, [closeSortMenu, toggleSortOrder]);
 
-    const toolbarControls = [
-        { key: 'releases', action: handleOpenReleases },
-        ...(showUnreadBadge ? [{ key: 'unread', action: handleOpenReleases }] : []),
-        { key: 'view', action: onViewModeToggle },
+    const toolbarControls = useMemo<ToolbarControl[]>(() => [
+        {
+            key: 'releases',
+            title: t('releases', lang),
+            action: handleOpenReleases,
+            content: (
+                <>
+                    <Bell size={14} />
+                    {subscribedCount > 0 && (
+                        <span style={{ fontSize: 11, marginLeft: 2 }}>{subscribedCount}</span>
+                    )}
+                </>
+            ),
+        },
+        ...(showUnreadBadge ? [{
+            key: 'unread',
+            title: t('releases', lang),
+            action: handleOpenReleases,
+            style: {
+                background: 'var(--color-primary-light)',
+                color: 'var(--color-primary)',
+            },
+            content: (
+                <>
+                    <Bell size={14} />
+                    {unreadCount > 0 && (
+                        <span style={{ fontSize: 11, marginLeft: 2 }}>{unreadCount}</span>
+                    )}
+                    {releaseCheckStatus.checking && (
+                        <span style={{ fontSize: 11, marginLeft: 2 }}>{t('checkingUpdates', lang)}</span>
+                    )}
+                </>
+            ),
+        }] : []),
+        {
+            key: 'view',
+            title: t('viewMode', lang),
+            action: onViewModeToggle,
+            content: viewMode === 'card' ? <LayoutGrid size={14} /> : <List size={14} />,
+        },
         {
             key: 'sort',
+            title: t((SORT_OPTIONS.find(s => s.value === searchFilter.sortBy)?.labelKey || 'sortByStars') as TranslationKey, lang),
             action: () => {
                 if (showSortMenu) {
                     closeSortMenu();
                     return;
                 }
                 openSortMenu();
-            }
+            },
+            content: (
+                <>
+                    <ArrowUpDown size={14} />
+                    <span style={{ fontSize: 12, marginLeft: 2 }}>
+                        {searchFilter.sortOrder === 'asc' ? '↑' : '↓'}
+                    </span>
+                </>
+            ),
         },
-        { key: 'tags', action: () => setShowTagFilter((prev) => !prev) },
-        { key: 'platforms', action: () => setShowPlatformFilter((prev) => !prev) },
-        { key: 'refresh', action: onRefresh },
-        { key: 'settings', action: () => setCurrentPage('settings') },
-    ];
+        {
+            key: 'tags',
+            title: t('tags', lang),
+            action: () => setShowTagFilter((prev) => !prev),
+            style: {
+                background: searchFilter.customTags.length > 0 ? 'var(--color-primary)' : undefined,
+                color: searchFilter.customTags.length > 0 ? 'white' : undefined,
+            },
+            content: (
+                <>
+                    <TagIcon size={14} />
+                    {searchFilter.customTags.length > 0 && (
+                        <span style={{ fontSize: 11, marginLeft: 2 }}>{searchFilter.customTags.length}</span>
+                    )}
+                </>
+            ),
+        },
+        {
+            key: 'platforms',
+            title: lang === 'zh' ? '平台筛选' : 'Platform Filter',
+            action: () => setShowPlatformFilter((prev) => !prev),
+            style: {
+                background: searchFilter.platforms.length > 0 ? 'var(--color-primary)' : undefined,
+                color: searchFilter.platforms.length > 0 ? 'white' : undefined,
+            },
+            content: (
+                <>
+                    <Filter size={14} />
+                    {searchFilter.platforms.length > 0 && (
+                        <span style={{ fontSize: 11, marginLeft: 2 }}>{searchFilter.platforms.length}</span>
+                    )}
+                </>
+            ),
+        },
+        {
+            key: 'refresh',
+            title: lang === 'zh' ? '同步' : 'Sync',
+            action: onRefresh,
+            disabled: syncStatus === 'syncing',
+            content: <RefreshCw size={14} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />,
+        },
+        {
+            key: 'settings',
+            title: t('settings', lang),
+            action: () => setCurrentPage('settings'),
+            content: <Settings size={14} />,
+        },
+    ], [
+        closeSortMenu,
+        handleOpenReleases,
+        lang,
+        onRefresh,
+        onViewModeToggle,
+        openSortMenu,
+        releaseCheckStatus.checking,
+        searchFilter.customTags.length,
+        searchFilter.platforms.length,
+        searchFilter.sortBy,
+        searchFilter.sortOrder,
+        setCurrentPage,
+        showSortMenu,
+        showUnreadBadge,
+        subscribedCount,
+        syncStatus,
+        unreadCount,
+        viewMode,
+    ]);
+
+    const focusControl = useCallback((index: number) => {
+        requestAnimationFrame(() => {
+            buttonRefs.current[index]?.focus();
+        });
+    }, []);
+
+    const activateControl = useCallback((index: number, shouldFocus = false) => {
+        setActiveControlIndex(index);
+        onRequestToolbarArea();
+        if (shouldFocus) {
+            focusControl(index);
+        }
+    }, [focusControl, onRequestToolbarArea]);
+
+    const findNextEnabledIndex = useCallback((startIndex: number, direction: 1 | -1) => {
+        if (toolbarControls.length === 0) return 0;
+
+        let nextIndex = startIndex;
+        for (let i = 0; i < toolbarControls.length; i++) {
+            nextIndex = (nextIndex + direction + toolbarControls.length) % toolbarControls.length;
+            if (!toolbarControls[nextIndex]?.disabled) {
+                return nextIndex;
+            }
+        }
+
+        return startIndex;
+    }, [toolbarControls]);
+
+    useImperativeHandle(ref, () => ({
+        focusActiveControl: () => {
+            focusControl(activeControlIndex);
+        },
+    }), [activeControlIndex, focusControl]);
 
     useEffect(() => {
-        setActiveControlIndex((prev) => Math.min(prev, toolbarControls.length - 1));
-    }, [toolbarControls.length]);
+        setActiveControlIndex((prev) => {
+            const next = Math.min(prev, toolbarControls.length - 1);
+            if (!toolbarControls[next]?.disabled) return next;
+            return findNextEnabledIndex(next, 1);
+        });
+    }, [findNextEnabledIndex, toolbarControls]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -176,6 +348,12 @@ export const FilterBar = memo<FilterBarProps>(({
                 if (event.key === 'Escape') {
                     event.preventDefault();
                     closeSortMenu();
+                    focusControl(activeControlIndex);
+                    return;
+                }
+
+                if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                    event.preventDefault();
                 }
 
                 return;
@@ -190,17 +368,20 @@ export const FilterBar = memo<FilterBarProps>(({
 
             if (event.key === 'ArrowRight') {
                 event.preventDefault();
-                setActiveControlIndex((prev) => (prev + 1) % toolbarControls.length);
+                const nextIndex = findNextEnabledIndex(activeControlIndex, 1);
+                activateControl(nextIndex, true);
                 return;
             }
 
             if (event.key === 'ArrowLeft') {
                 event.preventDefault();
-                setActiveControlIndex((prev) => (prev - 1 + toolbarControls.length) % toolbarControls.length);
+                const nextIndex = findNextEnabledIndex(activeControlIndex, -1);
+                activateControl(nextIndex, true);
                 return;
             }
 
-            if (event.key === 'ArrowDown' && hasListResults) {
+            if (event.key === 'ArrowDown') {
+                if (!hasListResults) return;
                 event.preventDefault();
                 onRequestListArea();
                 return;
@@ -208,7 +389,10 @@ export const FilterBar = memo<FilterBarProps>(({
 
             if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
-                toolbarControls[activeControlIndex]?.action();
+                const control = toolbarControls[activeControlIndex];
+                if (!control?.disabled) {
+                    control?.action();
+                }
             }
         };
 
@@ -217,7 +401,10 @@ export const FilterBar = memo<FilterBarProps>(({
     }, [
         activeControlIndex,
         activeSortMenuIndex,
+        activateControl,
         closeSortMenu,
+        findNextEnabledIndex,
+        focusControl,
         handleSortChange,
         hasListResults,
         keyboardArea,
@@ -247,189 +434,47 @@ export const FilterBar = memo<FilterBarProps>(({
                     {t('totalRepos', lang, { count: filteredCount })}
                 </span>
                 <div style={{ display: 'flex', gap: 4, position: 'relative' }} role="toolbar" aria-label={lang === 'zh' ? '首页工具栏' : 'Home toolbar'}>
-                    {/* 版本追踪入口 - 显示订阅数量 */}
-                    <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={handleOpenReleases}
-                        onMouseEnter={() => {
-                            setActiveControlIndex(0);
-                            onRequestToolbarArea();
-                        }}
-                        onFocus={() => {
-                            setActiveControlIndex(0);
-                            onRequestToolbarArea();
-                        }}
-                        title={t('releases', lang)}
-                        aria-label={t('releases', lang)}
-                        style={getToolbarButtonStyle(0)}
-                    >
-                        <Bell size={14} />
-                        {(() => {
-                            const subs = window.githubStarsAPI?.getReleaseSubscriptions?.() || [];
-                            return subs.length > 0 && (
-                                <span style={{ fontSize: 11, marginLeft: 2 }}>{subs.length}</span>
-                            );
-                        })()}
-                    </button>
+                    {toolbarControls.map((control, index) => {
+                        const button = (
+                            <button
+                                key={control.key}
+                                ref={(element) => { buttonRefs.current[index] = element; }}
+                                className="btn btn-ghost btn-sm"
+                                tabIndex={activeControlIndex === index ? 0 : -1}
+                                onClick={control.action}
+                                onMouseEnter={() => activateControl(index)}
+                                onFocus={() => activateControl(index)}
+                                title={control.title}
+                                aria-label={control.title}
+                                disabled={control.disabled}
+                                style={getToolbarButtonStyle(index, control.style)}
+                            >
+                                {control.content}
+                            </button>
+                        );
 
-                    {/* 未读标识 */}
-                    {showUnreadBadge && (
-                        <UnreadBadge
-                            lang={lang}
-                            onClick={handleOpenReleases}
-                            isActive={keyboardArea === 'toolbar' && activeControlIndex === 1}
-                            onMouseEnter={() => {
-                                setActiveControlIndex(1);
-                                onRequestToolbarArea();
-                            }}
-                            onFocus={() => {
-                                setActiveControlIndex(1);
-                                onRequestToolbarArea();
-                            }}
-                        />
-                    )}
+                        if (control.key !== 'sort') {
+                            return button;
+                        }
 
-                    {/* 视图切换 */}
-                    <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={onViewModeToggle}
-                        onMouseEnter={() => {
-                            setActiveControlIndex(showUnreadBadge ? 2 : 1);
-                            onRequestToolbarArea();
-                        }}
-                        onFocus={() => {
-                            setActiveControlIndex(showUnreadBadge ? 2 : 1);
-                            onRequestToolbarArea();
-                        }}
-                        title={t('viewMode', lang)}
-                        style={getToolbarButtonStyle(showUnreadBadge ? 2 : 1)}
-                    >
-                        {viewMode === 'card' ? <LayoutGrid size={14} /> : <List size={14} />}
-                    </button>
-
-                    {/* 排序 */}
-                    <div style={{ position: 'relative' }}>
-                        <button
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => {
-                                if (showSortMenu) {
-                                    closeSortMenu();
-                                    return;
-                                }
-                                openSortMenu();
-                            }}
-                            onMouseEnter={() => {
-                                setActiveControlIndex(showUnreadBadge ? 3 : 2);
-                                onRequestToolbarArea();
-                            }}
-                            onFocus={() => {
-                                setActiveControlIndex(showUnreadBadge ? 3 : 2);
-                                onRequestToolbarArea();
-                            }}
-                            title={t((SORT_OPTIONS.find(s => s.value === searchFilter.sortBy)?.labelKey || 'sortByStars') as TranslationKey, lang)}
-                            style={getToolbarButtonStyle(showUnreadBadge ? 3 : 2)}
-                        >
-                            <ArrowUpDown size={14} />
-                            <span style={{ fontSize: 12, marginLeft: 2 }}>
-                                {searchFilter.sortOrder === 'asc' ? '↑' : '↓'}
-                            </span>
-                        </button>
-                        {showSortMenu && (
-                            <SortMenu
-                                sortBy={searchFilter.sortBy}
-                                sortOrder={searchFilter.sortOrder}
-                                activeIndex={activeSortMenuIndex}
-                                lang={lang}
-                                onSortChange={handleSortChange}
-                                onToggleOrder={onToggleOrderAndClose}
-                                onClose={closeSortMenu}
-                                onHoverItem={setActiveSortMenuIndex}
-                            />
-                        )}
-                    </div>
-
-                    {/* 标签筛选 */}
-                    <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => setShowTagFilter(!showTagFilter)}
-                        onMouseEnter={() => {
-                            setActiveControlIndex(showUnreadBadge ? 4 : 3);
-                            onRequestToolbarArea();
-                        }}
-                        onFocus={() => {
-                            setActiveControlIndex(showUnreadBadge ? 4 : 3);
-                            onRequestToolbarArea();
-                        }}
-                        title={t('tags', lang)}
-                        style={getToolbarButtonStyle(showUnreadBadge ? 4 : 3, {
-                            background: searchFilter.customTags.length > 0 ? 'var(--color-primary)' : undefined,
-                            color: searchFilter.customTags.length > 0 ? 'white' : undefined,
-                        })}
-                    >
-                        <TagIcon size={14} />
-                        {searchFilter.customTags.length > 0 && (
-                            <span style={{ fontSize: 11, marginLeft: 2 }}>{searchFilter.customTags.length}</span>
-                        )}
-                    </button>
-
-                    {/* 平台筛选 */}
-                    <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => setShowPlatformFilter(!showPlatformFilter)}
-                        onMouseEnter={() => {
-                            setActiveControlIndex(showUnreadBadge ? 5 : 4);
-                            onRequestToolbarArea();
-                        }}
-                        onFocus={() => {
-                            setActiveControlIndex(showUnreadBadge ? 5 : 4);
-                            onRequestToolbarArea();
-                        }}
-                        title={lang === 'zh' ? '平台筛选' : 'Platform Filter'}
-                        style={getToolbarButtonStyle(showUnreadBadge ? 5 : 4, {
-                            background: searchFilter.platforms.length > 0 ? 'var(--color-primary)' : undefined,
-                            color: searchFilter.platforms.length > 0 ? 'white' : undefined,
-                        })}
-                    >
-                        <Filter size={14} />
-                        {searchFilter.platforms.length > 0 && (
-                            <span style={{ fontSize: 11, marginLeft: 2 }}>{searchFilter.platforms.length}</span>
-                        )}
-                    </button>
-
-                    {/* 同步 */}
-                    <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={onRefresh}
-                        onMouseEnter={() => {
-                            setActiveControlIndex(showUnreadBadge ? 6 : 5);
-                            onRequestToolbarArea();
-                        }}
-                        onFocus={() => {
-                            setActiveControlIndex(showUnreadBadge ? 6 : 5);
-                            onRequestToolbarArea();
-                        }}
-                        disabled={syncStatus === 'syncing'}
-                        style={getToolbarButtonStyle(showUnreadBadge ? 6 : 5)}
-                    >
-                        <RefreshCw size={14} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />
-                    </button>
-
-                    {/* 设置 */}
-                    <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => setCurrentPage('settings')}
-                        onMouseEnter={() => {
-                            setActiveControlIndex(showUnreadBadge ? 7 : 6);
-                            onRequestToolbarArea();
-                        }}
-                        onFocus={() => {
-                            setActiveControlIndex(showUnreadBadge ? 7 : 6);
-                            onRequestToolbarArea();
-                        }}
-                        style={getToolbarButtonStyle(showUnreadBadge ? 7 : 6)}
-                    >
-                        <Settings size={14} />
-                    </button>
+                        return (
+                            <div key={control.key} style={{ position: 'relative' }}>
+                                {button}
+                                {showSortMenu && (
+                                    <SortMenu
+                                        sortBy={searchFilter.sortBy}
+                                        sortOrder={searchFilter.sortOrder}
+                                        activeIndex={activeSortMenuIndex}
+                                        lang={lang}
+                                        onSortChange={handleSortChange}
+                                        onToggleOrder={onToggleOrderAndClose}
+                                        onClose={closeSortMenu}
+                                        onHoverItem={setActiveSortMenuIndex}
+                                    />
+                                )}
+                            </div>
+                        );
+                    })}
                 </div>
             </div>
 
@@ -500,6 +545,9 @@ export const FilterBar = memo<FilterBarProps>(({
     );
 });
 
+FilterBarComponent.displayName = 'FilterBar';
+
+export const FilterBar = memo(FilterBarComponent);
 FilterBar.displayName = 'FilterBar';
 
 // ==================== 子组件 ====================

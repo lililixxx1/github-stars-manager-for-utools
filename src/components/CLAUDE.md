@@ -4,264 +4,138 @@
 
 ## 概述
 
-9 个可复用 UI 组件，用于构建页面界面。
+11 个可复用 UI 组件，用于构建页面界面。关键组件已使用 `React.memo` 优化。
 
 ## 组件列表
 
-| 组件 | 文件 | 用途 |
-|------|------|------|
-| RepositoryCard | `RepositoryCard.tsx` | 仓库卡片/列表项 |
-| TagBadge | `TagBadge.tsx` | 标签徽章 |
-| TagManager | `TagManager.tsx` | 标签管理器 |
-| SyncProgress | `SyncProgress.tsx` | 同步进度条 |
-| AnalyzeProgress | `AnalyzeProgress.tsx` | AI 分析进度 |
-| ReleaseCard | `ReleaseCard.tsx` | 版本卡片 |
-| ReleaseDetail | `ReleaseDetail.tsx` | 版本详情弹窗 |
-| UnreadBadge | `UnreadBadge.tsx` | 未读数量徽章 |
-| TokenHelp | `TokenHelp.tsx` | Token 配置帮助面板 |
+| 组件 | 文件 | 用途 | memo |
+|------|------|------|------|
+| RepositoryCard | `RepositoryCard.tsx` | 仓库卡片/列表项 | Yes |
+| TagBadge | `TagBadge.tsx` | 标签徽章 | Yes |
+| TagManager | `TagManager.tsx` | 标签管理器 (拖拽排序) | No |
+| SyncProgress | `SyncProgress.tsx` | 同步进度条 | No |
+| AnalyzeProgress | `AnalyzeProgress.tsx` | AI 分析进度 (浮动面板) | No |
+| ReleaseCard | `ReleaseCard.tsx` | 版本卡片 | Yes |
+| ReleaseDetail | `ReleaseDetail.tsx` | 版本详情弹窗 (含翻译) | No |
+| UnreadBadge | `UnreadBadge.tsx` | 未读数量徽章 | No |
+| TokenHelp | `TokenHelp.tsx` | Token 配置帮助面板 | No |
+| ConfirmDialog | `ConfirmDialog.tsx` | 通用确认弹窗 | No |
+| FilterBar | `../pages/home/components/FilterBar/index.tsx` | 首页筛选栏 (v1.7.0) | Yes |
 
 ## RepositoryCard.tsx
 
-**仓库展示组件** (~4KB)
+**仓库展示组件**
 
-**Props**:
+Props:
 ```typescript
 interface RepositoryCardProps {
   repo: Repository;
-  onClick: () => void;
+  onClick: (repo: Repository) => void;
   language: 'zh' | 'en';
+  isActive?: boolean;  // 键盘导航高亮
 }
 ```
 
-**显示内容**:
-- 仓库图标 (owner avatar)
-- 名称 / 别名
-- 描述 / AI 摘要
-- Star/Fork 数
-- 语言标签 (带颜色标识)
-- AI 标签
-- 更新时间
+显示内容: 头像、名称/别名、描述/AI 摘要、Star/Fork 数、语言标签 (带颜色)、AI 标签、更新时间。
 
-**语言颜色映射**:
-```typescript
-const langColors: Record<string, string> = {
-    JavaScript: '#f1e05a', TypeScript: '#3178c6', Python: '#3572A5',
-    Java: '#b07219', Go: '#00ADD8', Rust: '#dea584',
-    // ... 更多语言
-};
-```
+使用 `useMemo` 缓存 `displayName`、`allTags`、`description`、`languageColor`。
 
 ## TagBadge.tsx
 
-**标签徽章组件** (~1.5KB)
+**标签徽章组件**
 
-**Props**:
+Props:
 ```typescript
 interface TagBadgeProps {
   tag: Tag;
   onClick?: () => void;
   onRemove?: () => void;
   size?: 'sm' | 'md';
+  showRemove?: boolean;
 }
 ```
 
-**特性**:
-- 支持自定义颜色
-- 支持图标 (emoji 或 lucide 图标名)
-- 可删除按钮
+支持自定义颜色、emoji 图标、可删除按钮。使用 `useMemo` 缓存样式。
 
 ## TagManager.tsx
 
-**标签管理组件** (~16KB)
+**标签管理组件** -- 支持 select / manage 两种模式。
 
-**Props**:
+manage 模式使用 `@dnd-kit` 实现拖拽排序。内部包含添加/编辑模态弹窗和删除确认弹窗。
+
+Props:
 ```typescript
 interface TagManagerProps {
-  repoId: number;
-  selectedTags: string[];
-  onTagsChange: (tagIds: string[]) => void;
+  onSelect?: (tagId: string) => void;
+  selectedTags?: string[];
+  mode?: 'select' | 'manage';
 }
-```
-
-**功能**:
-- 创建新标签
-- 选择现有标签
-- 删除标签
-- 编辑标签 (名称、颜色、图标)
-- 拖拽排序 (@dnd-kit)
-
-**依赖**:
-```typescript
-import { DndContext, closestCenter, DragOverlay } from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 ```
 
 ## SyncProgress.tsx
 
-**同步进度组件** (~1.7KB)
-
-**Props**:
-```typescript
-interface SyncProgressProps {
-  current: number;
-  total: number;
-  status: 'idle' | 'syncing' | 'completed' | 'error';
-  language: 'zh' | 'en';
-}
-```
-
-**显示**:
-- 进度条
-- "同步中 X/Y"
-- 完成状态
-- 错误信息 (如果有)
+**同步进度组件** -- 显示进度条、同步状态文案、完成/错误信息。status 为 idle 时不渲染。
 
 ## AnalyzeProgress.tsx
 
-**AI 分析进度组件** (~2.7KB) - v1.3.0
-
-**Props**:
-```typescript
-interface AnalyzeProgressProps {
-  progress: AnalyzeProgress;
-  onStop: () => void;
-  language: 'zh' | 'en';
-}
-```
-
-**显示**:
-- 进度条
-- 当前分析的仓库名
-- 已完成/总数
-- 停止按钮
+**AI 分析进度组件** -- 浮动在右下角，显示当前分析仓库名、进度条、中止按钮。
 
 ## ReleaseCard.tsx
 
-**版本卡片组件** (~4KB) - v1.4.0
+**版本卡片组件** -- 显示仓库头像、名称、版本标签、发布时间、平台资产标签、未读 NEW 标识。
 
-**Props**:
-```typescript
-interface ReleaseCardProps {
-  release: Release;
-  onClick: () => void;
-  language: 'zh' | 'en';
-}
-```
-
-**显示**:
-- 仓库名
-- 版本标签
-- 发布时间
-- 是否已读 (未读徽章)
-- 点击展开详情
+使用 `useMemo` 缓存 `platformGroups`、`tagName`、`publishedAt` 等。
 
 ## ReleaseDetail.tsx
 
-**版本详情组件** (~12.5KB) - v1.4.0
+**版本详情弹窗** -- Markdown 渲染更新说明、资产列表按平台分组、翻译功能 (v1.6.0)。
 
-**Props**:
-```typescript
-interface ReleaseDetailProps {
-  release: Release;
-  onClose: () => void;
-  onMarkRead: () => void;
-  language: 'zh' | 'en';
-}
-```
-
-**功能**:
-- Markdown 渲染更新说明
-- 资产列表按平台分组
-- 平台图标显示
-- 文件大小格式化
-- 下载链接
-- 在 GitHub 查看
-- 标记已读
-
-**平台识别**:
-```typescript
-// 使用 releaseService.identifyPlatform(asset)
-// 支持识别: mac, windows, linux, ios, android, docker, web, cli
-```
+翻译使用 `aiService.translateRelease`，支持缓存、重试、原文/译文切换。使用 `mountedRef` 防止内存泄漏。
 
 ## UnreadBadge.tsx
 
-**未读徽章组件** (~2.2KB) - v1.4.0
-
-**Props**:
-```typescript
-interface UnreadBadgeProps {
-  language: 'zh' | 'en';
-  onClick: () => void;
-}
-```
-
-**显示**:
-- 红色圆点 + 数字
-- "{count} 个新版本" 文案
-- 点击跳转到版本页
+**未读徽章组件** -- 铃铛图标 + 未读数量 + 检测中状态。使用 store 的 `getUnreadCount()` 派生。
 
 ## TokenHelp.tsx
 
-**Token 配置帮助组件** (~10KB)
+**Token 配置帮助组件** -- 三个 Tab: 如何获取、所需权限、安全说明。包含 `TokenHelpHeaderButton` 子组件。
 
-**Props**:
+## ConfirmDialog.tsx
+
+**通用确认弹窗** -- 支持 default/danger 变体、loading 状态。用于 AI 分析确认、笔记删除确认等场景。
+
+Props:
 ```typescript
-interface TokenHelpProps {
-  language: 'zh' | 'en';
+interface ConfirmDialogProps {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  confirmText?: string;
+  cancelText?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  variant?: 'default' | 'danger';
+  loading?: boolean;
 }
 ```
-
-**功能**:
-- 分步骤指引获取 GitHub Token
-- Fine-grained Token 权限说明
-- Classic Token 权限说明
-- 安全提示
-- 打开 GitHub Token 设置页面按钮
 
 ## 共享模式
 
 ### 主题支持
 
-所有组件通过 CSS 变量支持主题切换：
-
-```css
-/* 使用 CSS 变量 */
-background: var(--color-surface);
-color: var(--color-text-primary);
-border: 1px solid var(--color-border);
-```
-
-主题变量定义在 `index.css`:
-- 浅色主题 (默认)
-- 深色主题 (`:root.dark`)
-- 自动模式 (`prefers-color-scheme: dark`)
+所有组件通过 CSS 变量支持主题切换 (`var(--color-surface)`, `var(--color-text-primary)` 等)。
 
 ### 国际化
 
-使用 `locales/index.ts` 的 `t()` 函数：
-
-```tsx
-import { t } from '../locales';
-
-const text = t('syncNow', language);
-```
-
-支持语言:
-- `zh` - 中文
-- `en` - English
+使用 `locales/index.ts` 的 `t()` 函数，支持 `zh` / `en`。
 
 ### 状态访问
 
-组件通过 Zustand hooks 访问状态：
-
-```tsx
-const viewMode = useStore(state => state.viewMode);
-const settings = useStore(state => state.settings);
-```
+组件通过 Zustand hooks 访问状态: `useStore(state => state.xxx)`。
 
 ## 变更记录
 
 |日期|变更|
 |--|--|
+|2026-05-02|重新扫描：修正组件数量为 11，补充 ConfirmDialog 文档，添加 memo 标记列，更新 Props 接口|
 |2026-03-07|新增 TokenHelp 组件文档，更新组件数量为 9 个|

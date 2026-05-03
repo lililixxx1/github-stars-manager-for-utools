@@ -5,7 +5,8 @@ import { t } from '../locales';
 import { TagBadge } from '../components/TagBadge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { checkAnalysisNeeded, getCooldownHours } from '../utils/analysis';
-import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
+import { useBackShortcut } from '../hooks/useBackShortcut';
+import { useGlobalShortcut } from '../hooks/useGlobalShortcut';
 import {
     ArrowLeft, ExternalLink, Star, GitFork, Sparkles,
     Bell, BellOff, Loader2, CheckCircle2, XCircle,
@@ -90,44 +91,44 @@ export const DetailPage: React.FC = () => {
         }
     }, [selectedRepo, setCurrentPage]);
 
-    useEffect(() => {
-        if (!selectedRepo) return;
-
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (shouldIgnoreGlobalKeydown(event)) return;
-
-            if (event.key === 'Backspace') {
-                event.preventDefault();
-
-                if (showDeleteConfirm) {
-                    setShowDeleteConfirm(false);
-                    return;
-                }
-
-                if (showReanalyzeConfirm) {
-                    setShowReanalyzeConfirm(false);
-                    return;
-                }
-
-                if (editingAlias) {
-                    setAliasValue('');
-                    setEditingAlias(false);
-                    return;
-                }
-
-                handleBack();
-                return;
+    useBackShortcut({
+        enabled: !!selectedRepo,
+        capture: true,
+        target: document,
+        onBack: handleBack,
+        beforeBack: () => {
+            if (showDeleteConfirm) {
+                setShowDeleteConfirm(false);
+                return true;
             }
 
-            if (event.key === 'ArrowLeft') {
-                event.preventDefault();
-                handleBack();
+            if (showReanalyzeConfirm) {
+                setShowReanalyzeConfirm(false);
+                return true;
             }
-        };
 
-        document.addEventListener('keydown', handleKeyDown, true);
-        return () => document.removeEventListener('keydown', handleKeyDown, true);
-    }, [editingAlias, handleBack, selectedRepo, showDeleteConfirm, showReanalyzeConfirm]);
+            if (editingAlias) {
+                setAliasValue('');
+                setEditingAlias(false);
+                return true;
+            }
+
+            return false;
+        },
+        deps: [editingAlias, handleBack, selectedRepo, showDeleteConfirm, showReanalyzeConfirm],
+    });
+
+    useGlobalShortcut((event) => {
+        if (event.key !== 'ArrowLeft') return;
+
+        event.preventDefault();
+        handleBack();
+    }, {
+        enabled: !!selectedRepo,
+        capture: true,
+        target: document,
+        deps: [handleBack, selectedRepo],
+    });
 
     if (!selectedRepo) {
         return null;

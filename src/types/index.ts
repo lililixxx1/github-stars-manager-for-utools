@@ -128,6 +128,14 @@ export interface Settings {
     autoCheckReleaseUpdates?: boolean;   // 🆕 v1.4.0 启动时自动检查版本更新
 }
 
+// ==================== 同步状态 ====================
+export interface SyncState {
+    latestStarredAt: string | null;      // 最新一条 Star 的时间
+    latestRepoIds: number[];             // 最新一页中的仓库 ID，用于增量停止判断
+    lastSyncAt: number | null;           // 最近一次同步时间
+    lastFullSyncAt: number | null;       // 最近一次全量同步时间
+}
+
 // ==================== 自定义分类 ====================
 export interface Category {
     id: string;
@@ -199,6 +207,8 @@ export interface GithubStarsAPI {
     setToken: (token: string) => void;
     getRepos: () => Repository[];
     setRepos: (repos: Repository[]) => void;
+    getSyncState: () => SyncState | null;
+    setSyncState: (state: SyncState) => void;
     getStoredReleases: () => Release[];
     setStoredReleases: (releases: Release[]) => void;
     getReadReleaseIds: () => number[];

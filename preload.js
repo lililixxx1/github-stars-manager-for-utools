@@ -11,7 +11,7 @@ const githubAPI = {
     async getStarredRepos(token, page = 1, perPage = 100) {
         console.log('[GitHub API] Fetching starred repos, page:', page);
         const result = await requestGitHub(
-            `/user/starred?page=${page}&per_page=${perPage}`,
+            `/user/starred?page=${page}&per_page=${perPage}&sort=created&direction=desc`,
             token,
             { accept: 'application/vnd.github.star+json' }
         );
@@ -173,6 +173,8 @@ window.githubStarsAPI = {
     setToken: (token) => utools.dbCryptoStorage.setItem('gh:token', token),
     getRepos: () => utools.dbStorage.getItem('gh:repos') || [],
     setRepos: (repos) => utools.dbStorage.setItem('gh:repos', repos),
+    getSyncState: () => utools.dbStorage.getItem('gh:syncState'),
+    setSyncState: (state) => utools.dbStorage.setItem('gh:syncState', state),
     getStoredReleases: () => utools.dbStorage.getItem('gh:releases') || [],
     setStoredReleases: (releases) => utools.dbStorage.setItem('gh:releases', releases),
     getReadReleaseIds: () => utools.dbStorage.getItem('gh:readReleases') || [],
