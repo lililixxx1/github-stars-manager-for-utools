@@ -11,7 +11,13 @@ interface SyncProgressProps {
 export const SyncProgress: React.FC<SyncProgressProps> = ({ current, total, status, language }) => {
     if (status === 'idle') return null;
 
-    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+    const hasKnownTotal = total > 0;
+    const pct = hasKnownTotal ? Math.round((current / total) * 100) : 0;
+    const syncingText = hasKnownTotal
+        ? `${current} / ${total}`
+        : current > 0
+            ? (language === 'zh' ? `已扫描 ${current} 个` : `Scanned ${current}`)
+            : '...';
 
     return (
         <div style={{
@@ -27,13 +33,16 @@ export const SyncProgress: React.FC<SyncProgressProps> = ({ current, total, stat
                     {status === 'error' && t('syncError', language)}
                 </span>
                 <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                    {status === 'syncing' && `${current} / ${total > 0 ? '~' + total : '...'}`}
+                    {status === 'syncing' && syncingText}
                     {status === 'completed' && `${current} ✓`}
                 </span>
             </div>
             {status === 'syncing' && (
                 <div className="progress-bar">
-                    <div className="progress-bar-fill" style={{ width: `${Math.min(pct, 95)}%` }} />
+                    <div
+                        className={`progress-bar-fill ${hasKnownTotal ? '' : 'progress-bar-fill-indeterminate'}`}
+                        style={{ width: hasKnownTotal ? `${Math.min(pct, 95)}%` : '35%' }}
+                    />
                 </div>
             )}
         </div>

@@ -10,6 +10,21 @@ import { ConfirmDialog } from './components/ConfirmDialog';
 import { t } from './locales';
 import { logger } from './utils/logger';
 
+function setupRepositorySearchSubInput(isFocus = true): void {
+    if (typeof utools === 'undefined') return;
+
+    utools.setSubInput(({ text }) => {
+        useStore.getState().setSearchFilter({ keyword: text });
+    }, '搜索仓库...', isFocus);
+}
+
+function releaseRepositorySearchSubInput(): void {
+    if (typeof utools === 'undefined') return;
+
+    utools.subInputBlur?.();
+    utools.removeSubInput();
+}
+
 const App: React.FC = () => {
     const { currentPage, loadRepositories, loadSettings, loadToken, loadReleases, setCurrentPage, setSelectedRepo, settings } = useStore();
 
@@ -162,17 +177,13 @@ const App: React.FC = () => {
 
                         setCurrentPage('home');
                         // 设置子输入框
-                        utools.setSubInput(({ text }) => {
-                            useStore.getState().setSearchFilter({ keyword: text });
-                        }, '搜索仓库...', true);
+                        setupRepositorySearchSubInput(true);
                         break;
                     case 'github-stars-search':
                         setCurrentPage('home');
                         if (typeof payload === 'string') {
                             useStore.getState().setSearchFilter({ keyword: payload });
-                            utools.setSubInput(({ text }) => {
-                                useStore.getState().setSearchFilter({ keyword: text });
-                            }, '搜索仓库...', true);
+                            setupRepositorySearchSubInput(true);
                             if (payload) {
                                 utools.setSubInputValue(payload);
                             }
@@ -188,6 +199,7 @@ const App: React.FC = () => {
                             } else {
                                 setCurrentPage('home');
                                 useStore.getState().setSearchFilter({ keyword: payload });
+                                setupRepositorySearchSubInput(true);
                             }
                         }
                         break;
@@ -205,6 +217,12 @@ const App: React.FC = () => {
             });
         }
     }, []);
+
+    useEffect(() => {
+        if (currentPage !== 'home') {
+            releaseRepositorySearchSubInput();
+        }
+    }, [currentPage]);
 
     // 获取语言设置
     const lang = (settings?.language || 'zh') as 'zh' | 'en';

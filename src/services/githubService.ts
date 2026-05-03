@@ -69,27 +69,30 @@ async function syncAllRepos(
     token: string,
     onProgress: (current: number, total: number) => void
 ): Promise<SyncResult> {
-        const allRepos: Repository[] = [];
-        let page = 1;
-        let hasMore = true;
+    const allRepos: Repository[] = [];
+    let page = 1;
+    let totalPages: number | null = null;
 
-        while (hasMore) {
-            const repos = await window.githubStarsAPI.getStarredRepos(token, page, PER_PAGE);
+    while (true) {
+        const result = await window.githubStarsAPI.getStarredReposPage(token, page, PER_PAGE);
+        totalPages = result.totalPages ?? totalPages;
 
-            if (!repos || repos.length === 0) {
-                hasMore = false;
-            } else {
-                const transformedRepos = repos.map((item: any) => {
-                    const repo = item.repo || item;
-                    return transformRepo(repo, item.starred_at);
-                });
-                allRepos.push(...transformedRepos);
-                onProgress(allRepos.length, allRepos.length + PER_PAGE);
-                page++;
-                // 限流保护
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
+        const transformedRepos = result.items.map((item: any) => {
+            const repo = item.repo || item;
+            return transformRepo(repo, item.starred_at);
+        });
+
+        allRepos.push(...transformedRepos);
+        onProgress(allRepos.length, totalPages ? totalPages * PER_PAGE : 0);
+
+        if (!result.hasNext || result.items.length < PER_PAGE) {
+            break;
         }
+
+        page = result.nextPage ?? page + 1;
+        // 限流保护
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
 
     return {
         mode: 'full',
@@ -135,7 +138,7 @@ async function syncIncrementalRepos(
         });
 
         processedCount += transformedRepos.length;
-        onProgress(processedCount, processedCount + PER_PAGE);
+        onProgress(processedCount, 0);
 
         transformedRepos.forEach((repo) => {
             scannedRepos.set(repo.id, repo);

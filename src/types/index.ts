@@ -191,11 +191,21 @@ export interface AnalyzeStats {
     failCount: number;
 }
 
+export interface StarredReposPage {
+    items: any[];
+    page: number;
+    perPage: number;
+    totalPages: number | null;
+    hasNext: boolean;
+    nextPage: number | null;
+}
+
 // ==================== Window API 类型 ====================
 export interface GithubStarsAPI {
     // ========== GitHub API ==========
     verifyToken: (token: string) => Promise<any>;
     getStarredRepos: (token: string, page?: number, perPage?: number) => Promise<any[]>;
+    getStarredReposPage: (token: string, page?: number, perPage?: number) => Promise<StarredReposPage>;
     getReadme: (owner: string, repo: string, token: string) => Promise<string | null>;
     getRepoReleases: (owner: string, repo: string, token: string, page?: number, perPage?: number) => Promise<any[]>;
     checkRateLimit: (token: string) => Promise<any>;
@@ -219,8 +229,8 @@ export interface GithubStarsAPI {
     setCategories: (categories: Category[]) => void;
 
     // ========== 分片存储 ==========
-    getReposMeta: () => { sharded: boolean; totalShards: number } | null;
-    setReposMeta: (meta: { sharded: boolean; totalShards: number }) => void;
+    getReposMeta: () => { sharded: boolean; totalShards: number; shardPrefix?: string } | null;
+    setReposMeta: (meta: { sharded: boolean; totalShards: number; shardPrefix?: string }) => void;
     getReposShard: (index: number) => string | null;
     setReposShard: (index: number, data: string) => void;
     removeReposShard: (index: number) => void;

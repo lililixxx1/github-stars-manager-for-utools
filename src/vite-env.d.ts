@@ -8,6 +8,7 @@ declare const utools: {
     setSubInput: (onChange: (details: { text: string }) => void, placeholder?: string, isFocus?: boolean) => boolean;
     setSubInputValue: (text: string) => boolean;
     removeSubInput: () => boolean;
+    subInputBlur?: () => boolean;
     setExpendHeight: (height: number) => boolean;
     hideMainWindow: (isRestorePreWindow?: boolean) => boolean;
     showMainWindow: () => boolean;

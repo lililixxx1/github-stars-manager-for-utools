@@ -19,6 +19,28 @@ const githubAPI = {
         return result;
     },
 
+    // 获取用户 Starred 仓库分页数据（包含 Link header 元信息）
+    async getStarredReposPage(token, page = 1, perPage = 100) {
+        console.log('[GitHub API] Fetching starred repos page with meta, page:', page);
+        const result = await requestGitHubRaw(
+            `/user/starred?page=${page}&per_page=${perPage}&sort=created&direction=desc`,
+            token,
+            { accept: 'application/vnd.github.star+json' }
+        );
+        const items = Array.isArray(result.data) ? result.data : [];
+        const links = parseGitHubLinkHeader(result.headers.link);
+        const hasLinkPagination = links.nextPage !== null || links.lastPage !== null;
+
+        return {
+            items,
+            page,
+            perPage,
+            totalPages: links.lastPage,
+            hasNext: links.nextPage !== null || (!hasLinkPagination && items.length === perPage),
+            nextPage: links.nextPage,
+        };
+    },
+
     // 获取仓库 README
     async getReadme(owner, repo, token) {
         try {
@@ -56,8 +78,51 @@ const githubAPI = {
 
 // ==================== HTTP 请求工具 ====================
 const zlib = require('node:zlib');
+const MAX_REPOS_CHUNK_SIZE = 900 * 1024;
+const REPOS_SHARD_KEY_PREFIX = 'gh:repos:shard';
+
+function getReposShardKey(prefix, index) {
+    return `${prefix}:${index}`;
+}
+
+function getReposShardPrefix(meta) {
+    return meta?.shardPrefix || REPOS_SHARD_KEY_PREFIX;
+}
+
+function parseGitHubLinkHeader(linkHeader) {
+    const result = {
+        nextPage: null,
+        lastPage: null,
+    };
+
+    if (!linkHeader) {
+        return result;
+    }
+
+    const regex = /<([^>]+)>;\s*rel="([^"]+)"/g;
+    let match;
+
+    while ((match = regex.exec(linkHeader)) !== null) {
+        try {
+            const url = new URL(match[1]);
+            const page = Number(url.searchParams.get('page'));
+            if (!Number.isFinite(page)) continue;
+
+            if (match[2] === 'next') result.nextPage = page;
+            if (match[2] === 'last') result.lastPage = page;
+        } catch {
+            continue;
+        }
+    }
+
+    return result;
+}
 
 function requestGitHub(path, token, options = {}) {
+    return requestGitHubRaw(path, token, options).then(result => result.data);
+}
+
+function requestGitHubRaw(path, token, options = {}) {
     return new Promise((resolve, reject) => {
         console.log('[GitHub API] Request:', path);
         const reqOptions = {
@@ -93,7 +158,7 @@ function requestGitHub(path, token, options = {}) {
                 try {
                     const json = JSON.parse(data);
                     if (res.statusCode >= 200 && res.statusCode < 300) {
-                        resolve(json);
+                        resolve({ data: json, headers: res.headers });
                     } else {
                         console.error('[GitHub API] Error:', res.statusCode, json.message || data.substring(0, 300));
                         reject(new Error(json.message || `HTTP ${res.statusCode}`));
@@ -125,6 +190,68 @@ function requestGitHub(path, token, options = {}) {
 
 // ==================== 异步辅助函数 (v1.7.0) ====================
 
+function loadStoredRepos() {
+    const meta = utools.dbStorage.getItem('gh:repos:meta');
+    if (!meta?.sharded) {
+        return utools.dbStorage.getItem('gh:repos') || [];
+    }
+
+    const shardPrefix = getReposShardPrefix(meta);
+    const chunks = [];
+    for (let index = 0; index < meta.totalShards; index++) {
+        const chunk = utools.dbStorage.getItem(getReposShardKey(shardPrefix, index));
+        if (chunk) chunks.push(chunk);
+    }
+
+    try {
+        return JSON.parse(chunks.join(''));
+    } catch (error) {
+        console.error('[ReposStorage] 分片数据解析失败:', error);
+        return [];
+    }
+}
+
+function removeRepoShards(totalShards, shardPrefix = REPOS_SHARD_KEY_PREFIX) {
+    for (let index = 0; index < totalShards; index++) {
+        utools.dbStorage.removeItem(getReposShardKey(shardPrefix, index));
+    }
+}
+
+function saveStoredRepos(repos) {
+    const oldMeta = utools.dbStorage.getItem('gh:repos:meta');
+    const json = JSON.stringify(repos);
+
+    if (json.length < MAX_REPOS_CHUNK_SIZE) {
+        utools.dbStorage.setItem('gh:repos', repos);
+        utools.dbStorage.removeItem('gh:repos:meta');
+        if (oldMeta?.totalShards) {
+            removeRepoShards(oldMeta.totalShards, getReposShardPrefix(oldMeta));
+        }
+        return;
+    }
+
+    const chunks = [];
+    for (let index = 0; index < json.length; index += MAX_REPOS_CHUNK_SIZE) {
+        chunks.push(json.slice(index, index + MAX_REPOS_CHUNK_SIZE));
+    }
+
+    const nextShardPrefix = `${REPOS_SHARD_KEY_PREFIX}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    chunks.forEach((chunk, index) => {
+        utools.dbStorage.setItem(getReposShardKey(nextShardPrefix, index), chunk);
+    });
+
+    utools.dbStorage.setItem('gh:repos:meta', {
+        sharded: true,
+        totalShards: chunks.length,
+        shardPrefix: nextShardPrefix,
+    });
+    utools.dbStorage.removeItem('gh:repos');
+
+    if (oldMeta?.totalShards) {
+        removeRepoShards(oldMeta.totalShards, getReposShardPrefix(oldMeta));
+    }
+}
+
 /**
  * 让出主线程，避免阻塞 UI
  * @returns {Promise<void>}
@@ -146,14 +273,14 @@ function yieldToMain() {
  * @param {Array} updatedRepos - 要更新的仓库列表
  */
 async function patchRepos(updatedRepos) {
-    const allRepos = window.githubStarsAPI.getRepos();
+    const allRepos = loadStoredRepos();
     const updatedMap = new Map(updatedRepos.map(r => [r.id, r]));
 
     const merged = allRepos.map(repo =>
         updatedMap.has(repo.id) ? updatedMap.get(repo.id) : repo
     );
 
-    window.githubStarsAPI.setRepos(merged);
+    saveStoredRepos(merged);
 }
 
 // ==================== 暴露给前端 ====================
@@ -161,6 +288,7 @@ window.githubStarsAPI = {
     // GitHub API
     verifyToken: (token) => githubAPI.verifyToken(token),
     getStarredRepos: (token, page, perPage) => githubAPI.getStarredRepos(token, page, perPage),
+    getStarredReposPage: (token, page, perPage) => githubAPI.getStarredReposPage(token, page, perPage),
     getReadme: (owner, repo, token) => githubAPI.getReadme(owner, repo, token),
     getRepoReleases: (owner, repo, token, page, perPage) => githubAPI.getReleases(owner, repo, token, page, perPage),
     getLatestRelease: (owner, repo, token) => githubAPI.getLatestRelease(owner, repo, token), // 🆕 v1.4.0
@@ -171,8 +299,8 @@ window.githubStarsAPI = {
     setSettings: (settings) => utools.dbCryptoStorage.setItem('gh:settings', settings),
     getToken: () => utools.dbCryptoStorage.getItem('gh:token'),
     setToken: (token) => utools.dbCryptoStorage.setItem('gh:token', token),
-    getRepos: () => utools.dbStorage.getItem('gh:repos') || [],
-    setRepos: (repos) => utools.dbStorage.setItem('gh:repos', repos),
+    getRepos: () => loadStoredRepos(),
+    setRepos: (repos) => saveStoredRepos(repos),
     getSyncState: () => utools.dbStorage.getItem('gh:syncState'),
     setSyncState: (state) => utools.dbStorage.setItem('gh:syncState', state),
     getStoredReleases: () => utools.dbStorage.getItem('gh:releases') || [],
@@ -185,9 +313,12 @@ window.githubStarsAPI = {
     setCategories: (categories) => utools.dbStorage.setItem('gh:categories', categories),
     getReposMeta: () => utools.dbStorage.getItem('gh:repos:meta'),
     setReposMeta: (meta) => utools.dbStorage.setItem('gh:repos:meta', meta),
-    getReposShard: (index) => utools.dbStorage.getItem(`gh:repos:shard:${index}`),
-    setReposShard: (index, data) => utools.dbStorage.setItem(`gh:repos:shard:${index}`, data),
-    removeReposShard: (index) => utools.dbStorage.removeItem(`gh:repos:shard:${index}`),
+    getReposShard: (index) => {
+        const meta = utools.dbStorage.getItem('gh:repos:meta');
+        return utools.dbStorage.getItem(getReposShardKey(getReposShardPrefix(meta), index));
+    },
+    setReposShard: (index, data) => utools.dbStorage.setItem(getReposShardKey(REPOS_SHARD_KEY_PREFIX, index), data),
+    removeReposShard: (index) => utools.dbStorage.removeItem(getReposShardKey(REPOS_SHARD_KEY_PREFIX, index)),
     removeReposMeta: () => utools.dbStorage.removeItem('gh:repos:meta'),
 
     // ========== 版本检测状态 🆕 v1.4.0 ==========
@@ -328,7 +459,7 @@ window.githubStarsAPI = {
 
     getAllNotes: () => {
         // 通过遍历仓库获取所有笔记
-        const repos = window.githubStarsAPI.getRepos();
+        const repos = loadStoredRepos();
         return repos
             .map(r => window.githubStarsAPI.getNote(r.id))
             .filter(Boolean);

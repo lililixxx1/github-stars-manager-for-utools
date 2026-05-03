@@ -424,6 +424,7 @@ export const useStore = create<AppState>((set, get) => ({
                 },
                 language,
                 concurrency,
+                settings.aiModel || undefined,
                 controller.signal
             );
 

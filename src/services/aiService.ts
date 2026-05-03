@@ -148,6 +148,7 @@ export const aiService = {
         onProgress: (current: number, total: number, repo: Repository) => void,
         language: 'zh' | 'en' = 'zh',
         concurrency: number = 1,
+        model?: string,
         signal?: AbortSignal
     ): Promise<Repository[]> {
         const queue = [...repos];
@@ -162,7 +163,7 @@ export const aiService = {
                 if (!repo) break;
 
                 try {
-                    const result = await aiService.analyzeRepository(repo, token, language);
+                    const result = await aiService.analyzeRepository(repo, token, language, model);
                     if (result && !signal?.aborted) {
                         repo.aiSummary = result.summary;
                         repo.aiTags = result.tags;

@@ -4,6 +4,15 @@
  */
 import React from 'react';
 
+function getSafeExternalUrl(url: string): string | null {
+    try {
+        const parsed = new URL(url);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * 解析行内元素（图片、加粗、内联代码、链接）
  */
@@ -58,14 +67,17 @@ function parseInline(line: string, keyPrefix: string): React.ReactNode[] {
         if (linkMatch) {
             const urlAndTitle = linkMatch[2].split(/\s+["']/);
             const url = urlAndTitle[0];
+            const safeUrl = getSafeExternalUrl(url);
             return (
                 <a
                     key={`${keyPrefix}-${i}`}
-                    href={url}
+                    href={safeUrl || '#'}
                     style={{ color: 'var(--color-primary)', textDecoration: 'none', cursor: 'pointer', wordBreak: 'break-all' }}
                     onClick={(e) => {
                         e.preventDefault();
-                        window.githubStarsAPI?.openExternal(url);
+                        if (safeUrl) {
+                            window.githubStarsAPI?.openExternal(safeUrl);
+                        }
                     }}
                     onMouseOver={(e) => (e.currentTarget.style.textDecoration = 'underline')}
                     onMouseOut={(e) => (e.currentTarget.style.textDecoration = 'none')}
