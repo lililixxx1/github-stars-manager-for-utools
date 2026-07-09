@@ -52,6 +52,7 @@ export const i18n = {
 
         // 仓库操作
         openInGithub: '在 GitHub 中打开',
+        copyRepoUrl: '复制地址',
         aiAnalyze: 'AI 分析',
         aiAnalyzing: 'AI 分析中...',
         aiAnalyzed: '已分析',
@@ -296,6 +297,7 @@ export const i18n = {
 
         // Repository Actions
         openInGithub: 'Open in GitHub',
+        copyRepoUrl: 'Copy URL',
         aiAnalyze: 'AI Analyze',
         aiAnalyzing: 'AI Analyzing...',
         aiAnalyzed: 'Analyzed',

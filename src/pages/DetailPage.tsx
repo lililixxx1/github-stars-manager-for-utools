@@ -11,7 +11,7 @@ import type { RovingControl } from '../hooks/useRovingControls';
 import {
     ArrowLeft, ExternalLink, Star, GitFork, Sparkles,
     Bell, BellOff, Loader2, CheckCircle2, XCircle,
-    Edit2, Save, X, Plus, FileText, Tag
+    Edit2, Save, X, Plus, FileText, Tag, Copy
 } from 'lucide-react';
 import type { RepositoryNote } from '../types';
 
@@ -144,6 +144,17 @@ export const DetailPage: React.FC = () => {
         if (!repo) return;
         window.githubStarsAPI.openExternal(repo.htmlUrl);
     };
+
+    // 🆕 v1.6.4 复制仓库地址
+    const handleCopyRepoUrl = useCallback(() => {
+        if (!repo?.htmlUrl) return;
+        if (typeof utools !== 'undefined' && utools.copyText) {
+            utools.copyText(repo.htmlUrl);
+            window.githubStarsAPI.showNotification?.(
+                lang === 'zh' ? '已复制仓库地址' : 'Repository URL copied'
+            );
+        }
+    }, [repo?.htmlUrl, lang]);
 
     const handleAIAnalyze = async () => {
         if (!repo || !token || analyzing) return;
@@ -288,6 +299,7 @@ export const DetailPage: React.FC = () => {
             { id: 'alias', group: 'topbar', ref: getControlRef('alias'), action: handleStartEditAlias },
             { id: 'subscribe', group: 'topbar', ref: getControlRef('subscribe'), action: handleToggleSubscribe },
             { id: 'releases', group: 'topbar', ref: getControlRef('releases'), action: handleViewReleases, visible: isSubscribed },
+            { id: 'copy-url', group: 'topbar', ref: getControlRef('copy-url'), action: handleCopyRepoUrl },
             { id: 'open-github', group: 'topbar', ref: getControlRef('open-github'), action: handleOpenGithub },
             {
                 id: 'tags-toggle',
@@ -382,6 +394,7 @@ export const DetailPage: React.FC = () => {
         handleAIAnalyze,
         handleBack,
         handleCancelNote,
+        handleCopyRepoUrl,
         handleDeleteNote,
         handleOpenGithub,
         handleOpenHomepage,
@@ -495,6 +508,18 @@ export const DetailPage: React.FC = () => {
                         {t('viewReleases', lang)}
                     </button>
                 )}
+                <button
+                    ref={bindControlRef('copy-url')}
+                    className="btn btn-ghost btn-sm"
+                    style={getControlStyle('copy-url')}
+                    tabIndex={roving.getTabIndex('copy-url')}
+                    onFocus={() => roving.setActiveId('copy-url')}
+                    onClick={handleCopyRepoUrl}
+                    title={t('copyRepoUrl', lang)}
+                >
+                    <Copy size={14} />
+                    {t('copyRepoUrl', lang)}
+                </button>
                 <button
                     ref={bindControlRef('open-github')}
                     className="btn btn-primary btn-sm"

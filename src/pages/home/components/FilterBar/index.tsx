@@ -359,10 +359,8 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                 return;
             }
 
-            if (
-                (event.key === 'Enter' || event.key === ' ')
-                && event.target instanceof HTMLButtonElement
-            ) {
+            // 🆕 v1.6.4 标签/平台筛选区展开时，方向键交给筛选区处理，工具栏让位
+            if (showTagFilter || showPlatformFilter) {
                 return;
             }
 
@@ -410,7 +408,9 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         keyboardArea,
         onRequestListArea,
         onToggleOrderAndClose,
+        showPlatformFilter,
         showSortMenu,
+        showTagFilter,
         toolbarControls
     ]);
 
@@ -484,6 +484,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                     tags={tags}
                     selectedTags={searchFilter.customTags}
                     lang={lang}
+                    onClose={() => setShowTagFilter(false)}
                     onTagToggle={(tagId) => {
                         const newTags = searchFilter.customTags.includes(tagId)
                             ? searchFilter.customTags.filter(id => id !== tagId)
@@ -501,6 +502,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                     repositories={repositories}
                     selectedPlatforms={searchFilter.platforms}
                     lang={lang}
+                    onClose={() => setShowPlatformFilter(false)}
                     onPlatformToggle={(platform) => {
                         const newPlatforms = searchFilter.platforms.includes(platform)
                             ? searchFilter.platforms.filter(p => p !== platform)
@@ -551,6 +553,98 @@ export const FilterBar = memo(FilterBarComponent);
 FilterBar.displayName = 'FilterBar';
 
 // ==================== 子组件 ====================
+
+/**
+ * 筛选面板横向键盘导航
+ * @since v1.6.4
+ *
+ * 为标签/平台筛选面板提供左右键移动、Enter/Space 触发、Escape 关闭的键盘支持。
+ * 收集容器内所有可聚焦按钮（非 disabled），用 roving tabindex 模式管理焦点。
+ *
+ * 实现：keydown 同时挂在 window（捕获阶段，确保优先于工具栏监听）和容器上，
+ * 不依赖"工具栏让位"逻辑，任何环境下都能稳定响应方向键。
+ */
+function useFilterPanelNav(options: {
+    enabled: boolean;
+    onClose: () => void;
+}) {
+    const { enabled, onClose } = options;
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const activeIndexRef = useRef(0);
+
+    // 收集容器内可聚焦的按钮
+    const getButtons = useCallback((): HTMLButtonElement[] => {
+        const container = containerRef.current;
+        if (!container) return [];
+        return Array.from(container.querySelectorAll<HTMLButtonElement>('button:not([disabled])'));
+    }, []);
+
+    const focusButton = useCallback((index: number) => {
+        const buttons = getButtons();
+        if (buttons.length === 0) return;
+        const wrapped = ((index % buttons.length) + buttons.length) % buttons.length;
+        activeIndexRef.current = wrapped;
+        buttons[wrapped]?.focus();
+    }, [getButtons]);
+
+    // 同步当前焦点对应的 index（鼠标点击/Tab 聚焦时校正）
+    const syncActiveIndex = useCallback(() => {
+        const buttons = getButtons();
+        const focused = document.activeElement as HTMLButtonElement | null;
+        const idx = buttons.findIndex(b => b === focused);
+        if (idx >= 0) activeIndexRef.current = idx;
+    }, [getButtons]);
+
+    // 捕获阶段优先拦截方向键，避免被工具栏/列表监听抢走
+    useEffect(() => {
+        if (!enabled) return;
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            // 仅当焦点在本容器内时响应（避免影响工具栏/列表的其它操作）
+            const container = containerRef.current;
+            if (!container) return;
+            if (!container.contains(document.activeElement)) return;
+
+            const key = event.key;
+            if (key !== 'ArrowRight' && key !== 'ArrowLeft' && key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Escape') {
+                return;
+            }
+
+            if (key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                onClose();
+                return;
+            }
+
+            const buttons = getButtons();
+            if (buttons.length === 0) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (key === 'ArrowRight' || key === 'ArrowDown') {
+                focusButton(activeIndexRef.current + 1);
+            } else if (key === 'ArrowLeft' || key === 'ArrowUp') {
+                focusButton(activeIndexRef.current - 1);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown, true);
+        return () => window.removeEventListener('keydown', handleKeyDown, true);
+    }, [enabled, focusButton, getButtons, onClose]);
+
+    // 面板打开时自动聚焦第一个按钮
+    // 用 setTimeout 延迟到点击事件之后，避免被点击按钮的默认聚焦覆盖
+    useEffect(() => {
+        if (!enabled) return;
+        activeIndexRef.current = 0;
+        const timer = setTimeout(() => focusButton(0), 0);
+        return () => clearTimeout(timer);
+    }, [enabled, focusButton]);
+
+    return { containerRef, syncActiveIndex };
+}
 
 /** 排序菜单 */
 const SortMenu = memo<{
@@ -616,69 +710,80 @@ const TagFilterBar = memo<{
     tags: TagType[];
     selectedTags: string[];
     lang: 'zh' | 'en';
+    onClose: () => void;
     onTagToggle: (tagId: string) => void;
     onClear: () => void;
     onManage: () => void;
-}>(({ tags, selectedTags, lang, onTagToggle, onClear, onManage }) => (
-    <div style={{
-        padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
-        background: 'var(--color-surface)', display: 'flex', flexWrap: 'wrap', gap: 6,
-        alignItems: 'center',
-    }}>
-        {tags.length > 0 ? (
-            <>
-                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{t('tags', lang)}:</span>
-                {tags.map((tag) => {
-                    const isSelected = selectedTags.includes(tag.id);
-                    return (
+}>(({ tags, selectedTags, lang, onClose, onTagToggle, onClear, onManage }) => {
+    const { containerRef, syncActiveIndex } = useFilterPanelNav({ enabled: true, onClose });
+
+    return (
+        <div
+            ref={containerRef}
+            style={{
+                padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
+                background: 'var(--color-surface)', display: 'flex', flexWrap: 'wrap', gap: 6,
+                alignItems: 'center',
+            }}
+        >
+            {tags.length > 0 ? (
+                <>
+                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{t('tags', lang)}:</span>
+                    {tags.map((tag) => {
+                        const isSelected = selectedTags.includes(tag.id);
+                        return (
+                            <button
+                                key={tag.id}
+                                className="btn btn-sm"
+                                style={{
+                                    padding: '2px 8px', borderRadius: 999,
+                                    border: `1px solid ${tag.color || 'var(--color-border)'}`,
+                                    background: isSelected ? (tag.color || 'var(--color-primary)') : 'transparent',
+                                    color: isSelected ? '#fff' : (tag.color || 'var(--color-text-primary)'),
+                                    fontSize: 12,
+                                }}
+                                onClick={() => onTagToggle(tag.id)}
+                                onFocus={syncActiveIndex}
+                            >
+                                {tag.icon && <span>{tag.icon} </span>}
+                                {tag.name}
+                            </button>
+                        );
+                    })}
+                    {selectedTags.length > 0 && (
                         <button
-                            key={tag.id}
-                            className="btn btn-sm"
-                            style={{
-                                padding: '2px 8px', borderRadius: 999,
-                                border: `1px solid ${tag.color || 'var(--color-border)'}`,
-                                background: isSelected ? (tag.color || 'var(--color-primary)') : 'transparent',
-                                color: isSelected ? '#fff' : (tag.color || 'var(--color-text-primary)'),
-                                fontSize: 12,
-                            }}
-                            onClick={() => onTagToggle(tag.id)}
+                            className="btn btn-ghost btn-sm"
+                            style={{ padding: '2px 8px', fontSize: 12 }}
+                            onClick={onClear}
+                            onFocus={syncActiveIndex}
                         >
-                            {tag.icon && <span>{tag.icon} </span>}
-                            {tag.name}
+                            {t('clearFilter', lang)}
                         </button>
-                    );
-                })}
-                {selectedTags.length > 0 && (
+                    )}
                     <button
                         className="btn btn-ghost btn-sm"
                         style={{ padding: '2px 8px', fontSize: 12 }}
-                        onClick={onClear}
+                        onClick={onManage}
+                        onFocus={syncActiveIndex}
                     >
-                        {t('clearFilter', lang)}
+                        <Edit3 size={12} />
+                        {t('manageTags', lang)}
                     </button>
-                )}
-                <button
-                    className="btn btn-ghost btn-sm"
-                    style={{ padding: '2px 8px', fontSize: 12 }}
-                    onClick={onManage}
-                >
-                    <Edit3 size={12} />
-                    {t('manageTags', lang)}
-                </button>
-            </>
-        ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', justifyContent: 'center' }}>
-                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                    {t('noTagsHint', lang)}
-                </span>
-                <button className="btn btn-primary btn-sm" onClick={onManage}>
-                    <Plus size={12} />
-                    {t('createTag', lang)}
-                </button>
-            </div>
-        )}
-    </div>
-));
+                </>
+            ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', justifyContent: 'center' }}>
+                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                        {t('noTagsHint', lang)}
+                    </span>
+                    <button className="btn btn-primary btn-sm" onClick={onManage} onFocus={syncActiveIndex}>
+                        <Plus size={12} />
+                        {t('createTag', lang)}
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+});
 
 TagFilterBar.displayName = 'TagFilterBar';
 
@@ -687,19 +792,24 @@ const PlatformFilterBar = memo<{
     repositories: Repository[];
     selectedPlatforms: string[];
     lang: 'zh' | 'en';
+    onClose: () => void;
     onPlatformToggle: (platform: string) => void;
     onClear: () => void;
-}>(({ repositories, selectedPlatforms, lang, onPlatformToggle, onClear }) => {
+}>(({ repositories, selectedPlatforms, lang, onClose, onPlatformToggle, onClear }) => {
+    const { containerRef, syncActiveIndex } = useFilterPanelNav({ enabled: true, onClose });
     const unanalyzedCount = repositories.filter(r =>
         !r.analyzedAt && !r.analysisFailed
     ).length;
 
     return (
-        <div style={{
-            padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
-            background: 'var(--color-surface)', display: 'flex', flexWrap: 'wrap', gap: 6,
-            alignItems: 'center',
-        }}>
+        <div
+            ref={containerRef}
+            style={{
+                padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
+                background: 'var(--color-surface)', display: 'flex', flexWrap: 'wrap', gap: 6,
+                alignItems: 'center',
+            }}
+        >
             <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
                 {lang === 'zh' ? '平台:' : 'Platform:'}
             </span>
@@ -716,6 +826,7 @@ const PlatformFilterBar = memo<{
                     opacity: unanalyzedCount === 0 ? 0.5 : 1,
                 }}
                 onClick={() => onPlatformToggle(PLATFORM_NONE)}
+                onFocus={syncActiveIndex}
                 disabled={unanalyzedCount === 0}
             >
                 {lang === 'zh' ? '未分析' : 'Unanalyzed'}
@@ -739,6 +850,7 @@ const PlatformFilterBar = memo<{
                             opacity: count === 0 ? 0.5 : 1,
                         }}
                         onClick={() => onPlatformToggle(platform.id)}
+                        onFocus={syncActiveIndex}
                         disabled={count === 0}
                     >
                         {platform.icon} {platform.label}
@@ -752,6 +864,7 @@ const PlatformFilterBar = memo<{
                     className="btn btn-ghost btn-sm"
                     style={{ padding: '2px 8px', fontSize: 12 }}
                     onClick={onClear}
+                    onFocus={syncActiveIndex}
                 >
                     {t('clearFilter', lang)}
                 </button>

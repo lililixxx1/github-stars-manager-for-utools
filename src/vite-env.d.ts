@@ -15,6 +15,7 @@ declare const utools: {
     outPlugin: (isKill?: boolean) => boolean;
     shellOpenExternal: (url: string) => void;
     showNotification: (body: string, clickFeatureCode?: string) => void;
+    copyText: (text: string) => boolean;
     isDarkColors: () => boolean;
     getWindowType: () => 'main' | 'detach' | 'browser';
     showOpenDialog: (options: any) => string[] | undefined;

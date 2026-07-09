@@ -176,6 +176,8 @@ const App: React.FC = () => {
                         }
 
                         setCurrentPage('home');
+                        // 🆕 v1.6.4 清空上次搜索词，使空子输入框与"全部仓库"列表保持一致
+                        useStore.getState().setSearchFilter({ keyword: '' });
                         // 设置子输入框
                         setupRepositorySearchSubInput(true);
                         break;
@@ -219,7 +221,12 @@ const App: React.FC = () => {
     }, []);
 
     useEffect(() => {
-        if (currentPage !== 'home') {
+        // 🆕 v1.6.4 双向管理子输入框：进入 home 时挂载，离开 home 时移除
+        if (currentPage === 'home') {
+            // 返回首页时清空上次搜索词，与空子输入框保持一致（方案B 语义）
+            useStore.getState().setSearchFilter({ keyword: '' });
+            setupRepositorySearchSubInput(true);
+        } else {
             releaseRepositorySearchSubInput();
         }
     }, [currentPage]);

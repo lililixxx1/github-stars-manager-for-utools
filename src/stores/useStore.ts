@@ -357,7 +357,16 @@ export const useStore = create<AppState>((set, get) => ({
     settings: { ...defaultSettings },
     loadSettings: () => {
         const saved = storageService.getSettings();
-        set({ settings: { ...defaultSettings, ...saved } });
+        const merged = { ...defaultSettings, ...saved };
+        set({
+            settings: merged,
+            // 🆕 v1.6.4 同步持久化的排序设置到 searchFilter（修复排序不记忆）
+            searchFilter: {
+                ...get().searchFilter,
+                sortBy: merged.defaultSortBy || 'stars',
+                sortOrder: merged.defaultSortOrder || 'desc',
+            },
+        });
     },
     saveSettings: (settings) => {
         const merged = { ...get().settings, ...settings };
