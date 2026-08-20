@@ -17,7 +17,7 @@ export const HomePage: React.FC = () => {
         syncStatus, syncProgress,
         syncError, setSyncError,
         searchFilter, getFilteredRepos,
-        setCurrentPage, setSelectedRepo,
+        setCurrentPage, setSelectedRepoId,
         currentPageNum, setCurrentPageNum,
         tags, loadTags, viewMode, setViewMode,
         noteRepoIds, noteContentByRepoId, hasRepoNote,
@@ -80,9 +80,9 @@ export const HomePage: React.FC = () => {
     }, []);
 
     const handleRepoClick = useCallback((repo: typeof repositories[0]) => {
-        setSelectedRepo(repo);
+        setSelectedRepoId(repo.id);
         setCurrentPage('detail');
-    }, [setCurrentPage, setSelectedRepo]);
+    }, [setCurrentPage, setSelectedRepoId]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {

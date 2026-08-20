@@ -13,7 +13,7 @@ interface TranslationCache {
 // 内存缓存（R6：模块加载时从 dbStorage 同步预热，进程重启后翻译结果不丢失、不重复消耗 AI 能量）
 const translationCache = new Map<number, TranslationCache>();
 try {
-    const persisted = (window.githubStarsAPI.getAiTranslations() || {}) as Record<string, TranslationCache>;
+    const persisted = (window.githubStarsAPI?.getAiTranslations?.() || {}) as Record<string, TranslationCache>;
     for (const [id, entry] of Object.entries(persisted)) {
         if (entry && typeof entry.timestamp === 'number') {
             translationCache.set(Number(id), entry);

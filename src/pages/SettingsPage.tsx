@@ -6,16 +6,41 @@ import { t } from '../locales';
 import { TokenHelp, TokenHelpHeaderButton } from '../components/TokenHelp';
 import { logger } from '../utils/logger';
 import { useBackShortcut } from '../hooks/useBackShortcut';
+import { buildBackup, validateBackup } from '../utils/backup';
 import {
     ArrowLeft, Key, Check, X, Loader2, Download, Upload,
     Sun, Moon, Monitor, Globe, Sparkles, Play, StopCircle, Zap, Bell
 } from 'lucide-react';
 
+// F3：validateBackup 错误码 → 用户语言文案
+const importErrorText = (code: string, lang: 'zh' | 'en'): string => {
+    const zhMap: Record<string, string> = {
+        invalid_file: '文件不是有效的备份',
+        repositories_invalid: '仓库数据格式错误',
+        tags_invalid: '标签数据格式错误',
+        notes_invalid: '笔记数据格式错误',
+        release_subscriptions_invalid: '订阅数据格式错误',
+        read_release_ids_invalid: '已读记录格式错误',
+        categories_invalid: '分类数据格式错误',
+    };
+    const enMap: Record<string, string> = {
+        invalid_file: 'Not a valid backup file',
+        repositories_invalid: 'Invalid repositories data',
+        tags_invalid: 'Invalid tags data',
+        notes_invalid: 'Invalid notes data',
+        release_subscriptions_invalid: 'Invalid subscription data',
+        read_release_ids_invalid: 'Invalid read history data',
+        categories_invalid: 'Invalid categories data',
+    };
+    const map = lang === 'zh' ? zhMap : enMap;
+    return map[code] || map.invalid_file;
+};
+
 export const SettingsPage: React.FC = () => {
     const projectRepositoryUrl = 'https://github.com/lililixxx1/github-stars-manager-for-utools';
     const {
         settings, saveSettings, token, setCurrentPage,
-        repositories, setRepositories, saveRepositories,
+        repositories,
         isAnalyzing, analyzeProgress, startAutoAnalyze, stopAnalyze,
         releaseCheckStatus, checkReleaseUpdates, setReleasesInitialTab,
     } = useStore();
@@ -107,13 +132,9 @@ export const SettingsPage: React.FC = () => {
         }
     };
 
+    // F3：导出七类数据（repositories/tags/notes/subscriptions/readReleaseIds/categories/settings）
     const handleExport = () => {
-        const data = {
-            version: '1.4.0',
-            exportedAt: new Date().toISOString(),
-            repositories,
-            settings,
-        };
+        const data = buildBackup();
         const json = JSON.stringify(data, null, 2);
         const blob = new Blob([json], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -124,7 +145,18 @@ export const SettingsPage: React.FC = () => {
         URL.revokeObjectURL(url);
     };
 
+    // F3：同步进行中拒绝导入（导入与在途同步交错会使 clearSyncState 失效——同步完成会重建 syncState）
+    const notifySyncing = () => {
+        window.githubStarsAPI.showNotification(
+            lang === 'zh' ? '同步进行中，请稍后再导入' : 'A sync is in progress, please import later'
+        );
+    };
+
     const handleImport = () => {
+        if (useStore.getState().syncStatus === 'syncing') {
+            notifySyncing();
+            return;
+        }
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = '.json';
@@ -133,17 +165,54 @@ export const SettingsPage: React.FC = () => {
             if (!file) return;
             const reader = new FileReader();
             reader.onload = (ev) => {
+                // 文件选择对话框期间同步可能已启动，落地写入前再检查一次
+                if (useStore.getState().syncStatus === 'syncing') {
+                    notifySyncing();
+                    return;
+                }
                 try {
-                    const data = JSON.parse(ev.target?.result as string);
-                    if (data.repositories) {
-                        setRepositories(data.repositories);
-                        saveRepositories();
+                    const raw = JSON.parse(ev.target?.result as string);
+                    const result = validateBackup(raw);
+                    if (!result.ok) {
+                        window.githubStarsAPI.showNotification(
+                            lang === 'zh'
+                                ? `导入失败：${importErrorText(result.error, lang)}`
+                                : `Import failed: ${importErrorText(result.error, lang)}`
+                        );
+                        return;
                     }
-                    if (data.settings) {
+
+                    const data = result.data;
+                    const api = window.githubStarsAPI;
+                    // 字段存在才写（缺失跳过，兼容旧格式备份）；repositories 为数组即写入（含空数组的合法语义）
+                    if (data.repositories !== undefined) {
+                        api.setRepos(data.repositories);
+                        // 清除本机增量同步状态：导入的异构数据与旧 syncState 错配，下次同步必须全量对账
+                        api.clearSyncState();
+                    }
+                    if (data.tags !== undefined) api.setTags(data.tags);
+                    if (data.notes !== undefined) api.setNotes(data.notes);
+                    if (data.releaseSubscriptions !== undefined) api.setReleaseSubscriptions(data.releaseSubscriptions);
+                    if (data.readReleaseIds !== undefined) api.setReadReleaseIds(data.readReleaseIds);
+                    if (data.categories !== undefined) api.setCategories(data.categories);
+                    if (data.settings !== undefined) {
                         saveSettings(data.settings);
                     }
+
+                    // 状态刷新：仓库（含 isSubscribed 对齐 + 笔记索引重建）、标签、版本已读状态
+                    const store = useStore.getState();
+                    store.loadRepositories();
+                    store.loadTags();
+                    store.loadReleases();
+                    // 清残留的旧仓库笔记（DetailPage 按需重新 loadNote）
+                    useStore.setState({ currentNote: null });
+                    // FilterBar 的订阅计数仅依赖 subscriptionVersion，不 bump 则不刷新
+                    useStore.setState(s => ({ subscriptionVersion: s.subscriptionVersion + 1 }));
+
                     window.githubStarsAPI.showNotification(
-                        lang === 'zh' ? '数据导入成功' : 'Data imported successfully'
+                        lang === 'zh'
+                            ? `导入成功：${data.repositories?.length ?? 0} 个仓库（跳过 ${result.skipped.repos} 条无效记录）、${data.tags?.length ?? 0} 个标签、${data.notes?.length ?? 0} 条笔记、${data.releaseSubscriptions?.length ?? 0} 个订阅`
+                            : `Imported ${data.repositories?.length ?? 0} repos (skipped ${result.skipped.repos} invalid), ${data.tags?.length ?? 0} tags, ${data.notes?.length ?? 0} notes, ${data.releaseSubscriptions?.length ?? 0} subscriptions`
                     );
                 } catch {
                     window.githubStarsAPI.showNotification(

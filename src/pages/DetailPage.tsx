@@ -15,23 +15,20 @@ import {
 } from 'lucide-react';
 import type { RepositoryNote } from '../types';
 
-// XSS 防护：转义 HTML 特殊字符
-function escapeHtml(text: string): string {
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
-
 export const DetailPage: React.FC = () => {
     const {
-        selectedRepo, setSelectedRepo, setCurrentPage,
+        setSelectedRepoId, setCurrentPage,
         settings, token, repositories, setRepositories, saveRepositories,
         tags, loadTags, updateRepository, toggleSubscription,
         currentNote, loadNote, saveNote, deleteNote,
     } = useStore();
+
+    // F1：仓库对象由 store 派生（单一数据源）。旧 selectedRepo 快照会让 checkAnalysisNeeded
+    // 读到过期的 analyzedAt/analysisFailed，分析失败后可立即重发 AI 调用，绕过 R1 的 24h 失败冷却
+    const selectedRepoId = useStore(s => s.selectedRepoId);
+    const repo = useStore(s =>
+        s.selectedRepoId == null ? null : (s.repositories.find(r => r.id === s.selectedRepoId) ?? null)
+    );
 
     const [analyzing, setAnalyzing] = useState(false);
     const [editingAlias, setEditingAlias] = useState(false);
@@ -41,7 +38,7 @@ export const DetailPage: React.FC = () => {
     const [showTagSelector, setShowTagSelector] = useState(false);
 
     // 🆕 v1.6.1 标签/笔记区块展开状态（智能初始化）
-    const hasTags = Boolean(selectedRepo && (selectedRepo.customTags?.length ?? 0) > 0);
+    const hasTags = Boolean(repo && (repo.customTags?.length ?? 0) > 0);
     const hasNotes = Boolean(currentNote?.content);
     const [showTagsSection, setShowTagsSection] = useState(hasTags);
     const [showNotesSection, setShowNotesSection] = useState(hasNotes);
@@ -51,7 +48,6 @@ export const DetailPage: React.FC = () => {
     const [showReanalyzeConfirm, setShowReanalyzeConfirm] = useState(false);
 
     const lang = (settings.language || 'zh') as 'zh' | 'en';
-    const repo = selectedRepo;
     const controlRefs = useRef<Record<string, HTMLElement | null>>({});
 
     const getControlRef = useCallback((id: string) => ({
@@ -72,31 +68,29 @@ export const DetailPage: React.FC = () => {
     }, []);
 
     useEffect(() => {
-        if (selectedRepo) {
-            loadNote(selectedRepo.id);
+        if (selectedRepoId != null) {
+            loadNote(selectedRepoId);
         }
-    }, [selectedRepo?.id]);
+    }, [selectedRepoId]);
 
     // 🆕 v1.6.1 仓库切换时重置标签展开状态
     useEffect(() => {
-        if (selectedRepo) {
-            const newHasTags = (selectedRepo.customTags?.length ?? 0) > 0;
-            setShowTagsSection(newHasTags);
-        }
-    }, [selectedRepo?.id]);
+        if (selectedRepoId == null) return;
+        const r = useStore.getState().repositories.find(x => x.id === selectedRepoId);
+        if (r) setShowTagsSection((r.customTags?.length ?? 0) > 0);
+    }, [selectedRepoId]);
 
     // 🆕 v1.6.1 仓库切换时重置笔记展开状态
     useEffect(() => {
-        if (selectedRepo) {
-            const newHasNotes = !!currentNote?.content;
-            setShowNotesSection(newHasNotes);
+        if (selectedRepoId != null) {
+            setShowNotesSection(!!currentNote?.content);
         }
-    }, [selectedRepo?.id, currentNote?.id]);
+    }, [selectedRepoId, currentNote?.id]);
 
     const handleBack = useCallback(() => {
-        setSelectedRepo(null);
+        setSelectedRepoId(null);
         setCurrentPage('home');
-    }, [setCurrentPage, setSelectedRepo]);
+    }, [setCurrentPage, setSelectedRepoId]);
 
     const isSubscribed = useMemo(() => {
         if (!repo) return false;
@@ -105,11 +99,17 @@ export const DetailPage: React.FC = () => {
         return ids.includes(repo.id);
     }, [repo?.id, subscriptionVersion]);
 
+    // F1 兜底：选中仓库已不在列表（如被同步移除）时复位并返回首页，不显示幽灵详情页
     useEffect(() => {
-        if (!selectedRepo) {
+        if (selectedRepoId == null) {
+            setCurrentPage('home');
+            return;
+        }
+        if (!repo) {
+            setSelectedRepoId(null);
             setCurrentPage('home');
         }
-    }, [selectedRepo, setCurrentPage]);
+    }, [selectedRepoId, repo, setCurrentPage, setSelectedRepoId]);
 
     const consumeDetailBackState = useCallback(() => {
         if (showDeleteConfirm) {
@@ -132,12 +132,12 @@ export const DetailPage: React.FC = () => {
     }, [editingAlias, showDeleteConfirm, showReanalyzeConfirm]);
 
     useBackShortcut({
-        enabled: !!selectedRepo,
+        enabled: !!repo,
         capture: true,
         target: document,
         onBack: handleBack,
         beforeBack: consumeDetailBackState,
-        deps: [consumeDetailBackState, handleBack, selectedRepo],
+        deps: [consumeDetailBackState, handleBack, repo],
     });
 
     const handleOpenGithub = () => {
@@ -187,18 +187,23 @@ export const DetailPage: React.FC = () => {
         if (!repo || !token || analyzing) return;
         setAnalyzing(true);
 
+        const markFailure = () => {
+            // 记录失败时间，进入 24 小时冷却，避免反复重试消耗额度
+            updateRepository(repo.id, {
+                analysisFailed: true,
+                analyzedAt: new Date().toISOString(),
+            });
+            window.githubStarsAPI.showNotification?.(
+                lang === 'zh'
+                    ? 'AI 分析失败（可能额度不足或网络异常），24 小时后可重试'
+                    : 'AI analysis failed (quota or network issue); retry in 24h'
+            );
+        };
+
         try {
             const result = await aiService.analyzeRepository(repo, token, lang, settings.aiModel || undefined);
             if (result) {
-                const updatedRepo = {
-                    ...repo,
-                    aiSummary: result.summary,
-                    aiTags: result.tags,
-                    aiPlatforms: result.platforms,
-                    analyzedAt: new Date().toISOString(),
-                    analysisFailed: false,
-                };
-                setSelectedRepo(updatedRepo);
+                // F1：只写 store，页面读派生值自动刷新
                 updateRepository(repo.id, {
                     aiSummary: result.summary,
                     aiTags: result.tags,
@@ -206,9 +211,12 @@ export const DetailPage: React.FC = () => {
                     analyzedAt: new Date().toISOString(),
                     analysisFailed: false,
                 });
+            } else {
+                markFailure();
             }
         } catch (error) {
             console.error('AI analyze failed:', error);
+            markFailure();
         } finally {
             setAnalyzing(false);
         }
@@ -229,7 +237,6 @@ export const DetailPage: React.FC = () => {
     const handleSaveAlias = () => {
         if (!repo) return;
         const trimmed = aliasValue.trim();
-        setSelectedRepo({ ...repo, alias: trimmed || undefined });
         updateRepository(repo.id, { alias: trimmed || undefined });
         setEditingAlias(false);
     };
@@ -246,8 +253,8 @@ export const DetailPage: React.FC = () => {
     };
 
     const handleSaveNote = () => {
-        if (selectedRepo) {
-            saveNote(selectedRepo.id, noteValue);
+        if (repo) {
+            saveNote(repo.id, noteValue);
         }
         setEditingNote(false);
     };
@@ -258,14 +265,14 @@ export const DetailPage: React.FC = () => {
     };
 
     const handleDeleteNote = () => {
-        if (selectedRepo) {
+        if (repo) {
             setShowDeleteConfirm(true);
         }
     };
 
     const confirmDeleteNote = () => {
-        if (selectedRepo) {
-            deleteNote(selectedRepo.id);
+        if (repo) {
+            deleteNote(repo.id);
             setShowDeleteConfirm(false);
             setEditingNote(false);
         }
@@ -278,7 +285,6 @@ export const DetailPage: React.FC = () => {
         const newTags = currentTags.includes(tagId)
             ? currentTags.filter(id => id !== tagId)
             : [...currentTags, tagId];
-        setSelectedRepo({ ...repo, customTags: newTags });
         updateRepository(repo.id, { customTags: newTags });
     };
 
@@ -442,6 +448,9 @@ export const DetailPage: React.FC = () => {
     if (!repo) {
         return null;
     }
+
+    // F1 三态显示：成功 / 曾成功但最近失败（保留旧摘要 + 失败冷却横幅）/ 未分析（含首次失败）
+    const failedCooldownHours = repo.analysisFailed ? getCooldownHours(repo) : 0;
 
     const platformIcons: Record<string, string> = {
         mac: '🍎', windows: '🪟', linux: '🐧', ios: '📱',
@@ -764,7 +773,7 @@ export const DetailPage: React.FC = () => {
                         </button>
                     </div>
 
-                    {repo.analyzedAt ? (
+                    {repo.analyzedAt && !repo.analysisFailed ? (
                         <div>
                             <p style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 8 }}>
                                 {repo.aiSummary}
@@ -794,6 +803,45 @@ export const DetailPage: React.FC = () => {
                             <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
                                 <CheckCircle2 size={12} style={{ color: 'var(--color-success)' }} />
                                 {t('analyzedAt', lang)} {new Date(repo.analyzedAt).toLocaleDateString()}
+                            </div>
+                        </div>
+                    ) : repo.analyzedAt && repo.analysisFailed ? (
+                        /* F1 三态：曾成功分析的仓库重分析失败——保留旧摘要，底部附加失败/冷却横幅 */
+                        <div>
+                            {repo.aiSummary && (
+                                <p style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 8 }}>
+                                    {repo.aiSummary}
+                                </p>
+                            )}
+
+                            {repo.aiTags && repo.aiTags.length > 0 && (
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                                    {repo.aiTags.map((tag, i) => (
+                                        <span key={i} className="tag">{tag}</span>
+                                    ))}
+                                </div>
+                            )}
+
+                            {repo.aiPlatforms && repo.aiPlatforms.length > 0 && (
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                                    {repo.aiPlatforms.map((p) => (
+                                        <span key={p} style={{
+                                            fontSize: 13, display: 'flex', alignItems: 'center', gap: 4,
+                                            color: 'var(--color-text-secondary)',
+                                        }}>
+                                            {platformIcons[p] || '📦'} {p}
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
+
+                            <div style={{ fontSize: 12, color: 'var(--color-error)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                <XCircle size={12} style={{ color: 'var(--color-error)' }} />
+                                {failedCooldownHours > 0
+                                    ? (lang === 'zh'
+                                        ? `最近一次分析失败，${failedCooldownHours} 小时后可重试`
+                                        : `Last analysis failed. Retry in ${failedCooldownHours}h`)
+                                    : (lang === 'zh' ? '最近一次分析失败，可重试' : 'Last analysis failed. You can retry now')}
                             </div>
                         </div>
                     ) : (
@@ -901,7 +949,7 @@ export const DetailPage: React.FC = () => {
                         ) : currentNote ? (
                             <div>
                                 <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-                                    {escapeHtml(currentNote.content)}
+                                    {currentNote.content}
                                 </p>
                                 <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 8 }}>
                                     {t('noteUpdatedAt', lang, { date: new Date(currentNote.updatedAt).toLocaleString() })}

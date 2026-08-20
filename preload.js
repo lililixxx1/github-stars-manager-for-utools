@@ -220,8 +220,11 @@ function removeRepoShards(totalShards, shardPrefix = REPOS_SHARD_KEY_PREFIX) {
 function saveStoredRepos(repos) {
     const oldMeta = utools.dbStorage.getItem('gh:repos:meta');
     const json = JSON.stringify(repos);
+    // F5：阈值按 UTF-8 字节数而非字符数（900KB < dbStorage 单文档 ~1MB 限额）。
+    // 仓库描述多含中文时，按字符数切片可达约 3 倍字节数，会突破单文档上限。
+    const buf = Buffer.from(json, 'utf8');
 
-    if (json.length < MAX_REPOS_CHUNK_SIZE) {
+    if (buf.length < MAX_REPOS_CHUNK_SIZE) {
         utools.dbStorage.setItem('gh:repos', repos);
         utools.dbStorage.removeItem('gh:repos:meta');
         if (oldMeta?.totalShards) {
@@ -231,8 +234,18 @@ function saveStoredRepos(repos) {
     }
 
     const chunks = [];
-    for (let index = 0; index < json.length; index += MAX_REPOS_CHUNK_SIZE) {
-        chunks.push(json.slice(index, index + MAX_REPOS_CHUNK_SIZE));
+    let offset = 0;
+    while (offset < buf.length) {
+        let end = Math.min(offset + MAX_REPOS_CHUNK_SIZE, buf.length);
+        // 回退到 UTF-8 字符边界：若切点后一字节(buf[end])是续字节(0b10xxxxxx)，
+        // 说明切点落在多字节字符中间，需回退至其领头字节之前。
+        // 注意判据不是 buf[end-1]——完整字符的末字节本就是续字节，那样会把每个合法边界都误回退，
+        // 反而切开上一字符产生 U+FFFD（实现期离线测试发现，见 CODE-REVIEW-FIX-PLAN.md v1.4）
+        while (end > offset && end < buf.length && (buf[end] & 0xc0) === 0x80) end--;
+        // 防御分支：合法 UTF-8 下不可达（ES2019 起 JSON.stringify 输出 well-formed，多字节序列最长 4 字节）
+        if (end === offset) end = Math.min(offset + MAX_REPOS_CHUNK_SIZE, buf.length);
+        chunks.push(buf.slice(offset, end).toString('utf8'));
+        offset = end;
     }
 
     const nextShardPrefix = `${REPOS_SHARD_KEY_PREFIX}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
@@ -306,6 +319,11 @@ window.githubStarsAPI = {
     setRepos: (repos) => saveStoredRepos(repos),
     getSyncState: () => utools.dbStorage.getItem('gh:syncState'),
     setSyncState: (state) => utools.dbStorage.setItem('gh:syncState', state),
+    // F3：导入备份后清除本机增量同步状态，强制下次同步走全量对账
+    // （否则本机 7 天内同步过时 shouldPerformFullSync 判假，导入数据与旧 syncState 错配）
+    clearSyncState: () => {
+        utools.dbStorage.removeItem('gh:syncState');
+    },
     getStoredReleases: () => utools.dbStorage.getItem('gh:releases') || [],
     setStoredReleases: (releases) => utools.dbStorage.setItem('gh:releases', releases),
     getReadReleaseIds: () => utools.dbStorage.getItem('gh:readReleases') || [],
@@ -466,6 +484,11 @@ window.githubStarsAPI = {
         return repos
             .map(r => window.githubStarsAPI.getNote(r.id))
             .filter(Boolean);
+    },
+
+    // F3：备份导入——逐条原样写入，保留备份中的 createdAt/updatedAt
+    setNotes: (notes) => {
+        notes.forEach(n => utools.dbStorage.setItem(`gh:note:${n.repoId}`, n));
     },
 
     // ========== 系统操作 ==========

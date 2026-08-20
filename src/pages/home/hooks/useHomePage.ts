@@ -79,7 +79,7 @@ export const useHomePage = (): UseHomePageResult => {
         syncStatus, setSyncStatus, syncProgress, setSyncProgress,
         syncError, setSyncError,
         searchFilter, setSearchFilter, getFilteredRepos,
-        setCurrentPage, setSelectedRepo,
+        setCurrentPage, setSelectedRepoId,
         currentPageNum, setCurrentPageNum,
         tags, loadTags, viewMode, setViewMode,
         noteRepoIds, noteContentByRepoId,
@@ -138,9 +138,9 @@ export const useHomePage = (): UseHomePageResult => {
 
     // ✅ 仓库点击（使用 useCallback 稳定引用）
     const handleRepoClick = useCallback((repo: Repository) => {
-        setSelectedRepo(repo);
+        setSelectedRepoId(repo.id);
         setCurrentPage('detail');
-    }, [setSelectedRepo, setCurrentPage]);
+    }, [setSelectedRepoId, setCurrentPage]);
 
     // 排序选项
     const sortOptions: { value: SortBy; label: string }[] = useMemo(() => [

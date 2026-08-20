@@ -20,9 +20,9 @@ interface AppState {
     loadRepositories: () => void;
     saveRepositories: () => void;
 
-    // 当前选中仓库
-    selectedRepo: Repository | null;
-    setSelectedRepo: (repo: Repository | null) => void;
+    // 当前选中仓库（F1：仅存 ID，仓库对象由 repositories 派生，消灭快照双数据源）
+    selectedRepoId: number | null;
+    setSelectedRepoId: (id: number | null) => void;
 
     // 搜索过滤
     searchFilter: SearchFilter;
@@ -260,8 +260,8 @@ export const useStore = create<AppState>((set, get) => ({
     },
 
     // 当前选中仓库
-    selectedRepo: null,
-    setSelectedRepo: (repo) => set({ selectedRepo: repo }),
+    selectedRepoId: null,
+    setSelectedRepoId: (id) => set({ selectedRepoId: id }),
 
     // 搜索过滤
     searchFilter: { ...defaultFilter },
@@ -294,8 +294,7 @@ export const useStore = create<AppState>((set, get) => ({
 
     // 🆕 v1.6.3 同步方法移至 store（支持从任意页面触发）
     syncRepositories: async () => {
-        const { token, syncStatus, settings, repositories } = get();
-        const lang = (settings.language || 'zh') as 'zh' | 'en';
+        const { token, syncStatus, repositories } = get();
 
         logger.log('[syncRepositories] 开始同步检查', {
             hasToken: !!token,
@@ -335,8 +334,10 @@ export const useStore = create<AppState>((set, get) => ({
                 : mergeIncrementalRepositories(result.repos, currentRepos, subscriptionIds);
 
             const nextSyncState = githubService.buildSyncState(mergedRepos, syncState, result.mode);
+            // F6：合并基座取最新 settings——同步是长任务，用开始时的闭包快照会
+            // 静默回滚用户同步期间修改的语言/主题等设置（与 R4 同思想）
             const nextSettings = {
-                ...settings,
+                ...get().settings,
                 lastSyncTime: Date.now(),
             };
 

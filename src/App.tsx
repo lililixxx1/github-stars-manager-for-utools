@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useStore } from './stores/useStore';
 import { HomePage } from './pages/HomePage';
 import { DetailPage } from './pages/DetailPage';
@@ -27,7 +27,11 @@ function releaseRepositorySearchSubInput(): void {
 }
 
 const App: React.FC = () => {
-    const { currentPage, loadRepositories, loadSettings, loadToken, loadReleases, setCurrentPage, setSelectedRepo, settings } = useStore();
+    const { currentPage, loadRepositories, loadSettings, loadToken, loadReleases, setCurrentPage, setSelectedRepoId, settings } = useStore();
+
+    // F2：uTools 指令（search/repo fallback）带入关键字切回 home 时，跳过一次 [currentPage] effect
+    // 的"清空关键字 + 重建子输入框"，防止指令关键字被后置执行的效果清掉
+    const preserveHomeKeywordRef = useRef(false);
 
     // AI 分析确认弹窗状态 🆕 v1.6.0
     const [showAnalyzeConfirm, setShowAnalyzeConfirm] = useState(false);
@@ -137,7 +141,7 @@ const App: React.FC = () => {
             const repos = useStore.getState().repositories;
             const repo = repos.find((r) => r.fullName === fullName);
             if (repo) {
-                setSelectedRepo(repo);
+                setSelectedRepoId(repo.id);
                 setCurrentPage('detail');
             }
         };
@@ -179,6 +183,10 @@ const App: React.FC = () => {
                         setupRepositorySearchSubInput(true);
                         break;
                     case 'github-stars-search':
+                        // F2：仅在确实发生页切换时设保留标志（zustand set 同步生效，判断必须在 setCurrentPage 之前）
+                        if (useStore.getState().currentPage !== 'home') {
+                            preserveHomeKeywordRef.current = true;
+                        }
                         setCurrentPage('home');
                         if (typeof payload === 'string') {
                             useStore.getState().setSearchFilter({ keyword: payload });
@@ -193,12 +201,18 @@ const App: React.FC = () => {
                             const repos = useStore.getState().repositories;
                             const repo = repos.find((r) => r.fullName === payload);
                             if (repo) {
-                                setSelectedRepo(repo);
+                                setSelectedRepoId(repo.id);
                                 setCurrentPage('detail');
                             } else {
+                                if (useStore.getState().currentPage !== 'home') {
+                                    preserveHomeKeywordRef.current = true;
+                                }
                                 setCurrentPage('home');
                                 useStore.getState().setSearchFilter({ keyword: payload });
                                 setupRepositorySearchSubInput(true);
+                                if (payload) {
+                                    utools.setSubInputValue(payload);
+                                }
                             }
                         }
                         break;
@@ -220,9 +234,14 @@ const App: React.FC = () => {
     useEffect(() => {
         // 🆕 v1.6.4 双向管理子输入框：进入 home 时挂载，离开 home 时移除
         if (currentPage === 'home') {
-            // 返回首页时清空上次搜索词，与空子输入框保持一致（方案B 语义）
-            useStore.getState().setSearchFilter({ keyword: '' });
-            setupRepositorySearchSubInput(true);
+            if (preserveHomeKeywordRef.current) {
+                // F2：本次到达 home 由 uTools 指令带入关键字（handler 已完成设置与子输入框挂载），消费标志跳过清空
+                preserveHomeKeywordRef.current = false;
+            } else {
+                // 返回首页时清空上次搜索词，与空子输入框保持一致（方案B 语义）
+                useStore.getState().setSearchFilter({ keyword: '' });
+                setupRepositorySearchSubInput(true);
+            }
         } else {
             releaseRepositorySearchSubInput();
         }
@@ -239,6 +258,8 @@ const App: React.FC = () => {
 
     return (
         <>
+            {/* F9：批量分析全局进度浮窗（idle 时返回 null），用户离开设置页后仍可见进度与中止入口 */}
+            <AnalyzeProgress />
             <ConfirmDialog
                 isOpen={showAnalyzeConfirm}
                 title={t('analyzeConfirmTitle', lang)}

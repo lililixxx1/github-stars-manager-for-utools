@@ -219,6 +219,8 @@ export interface GithubStarsAPI {
     setRepos: (repos: Repository[]) => void;
     getSyncState: () => SyncState | null;
     setSyncState: (state: SyncState) => void;
+    /** 清除本机增量同步状态（备份导入后强制下次同步走全量对账） */
+    clearSyncState: () => void;
     getStoredReleases: () => Release[];
     setStoredReleases: (releases: Release[]) => void;
     getReadReleaseIds: () => number[];
@@ -249,6 +251,8 @@ export interface GithubStarsAPI {
     setNote: (repoId: number, content: string) => RepositoryNote;
     deleteNote: (repoId: number) => void;
     getAllNotes: () => RepositoryNote[];
+    /** 批量写入笔记（备份导入，保留原 createdAt/updatedAt） */
+    setNotes: (notes: RepositoryNote[]) => void;
 
     // ========== 系统操作 ==========
     openExternal: (url: string) => void;
