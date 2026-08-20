@@ -261,6 +261,11 @@ export interface GithubStarsAPI {
         language?: string,
         model?: string
     ) => Promise<{ summary: string; tags: string[]; platforms: string[] } | null>;
+    /** 中止所有进行中的 AI 分析调用（utools.ai PromiseLike.abort()） */
+    abortAiCall: () => void;
+    /** 翻译缓存落盘读写（dbStorage key: gh:aiTranslations） */
+    getAiTranslations: () => Record<string, unknown>;
+    setAiTranslations: (cache: Record<string, unknown>) => void;
     getAIModels: () => Promise<any[]>;
 
     // ========== 版本检测 🆕 v1.4.0 ==========

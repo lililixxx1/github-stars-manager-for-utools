@@ -10,11 +10,40 @@ interface TranslationCache {
     model?: string;
 }
 
-// 内存缓存
+// 内存缓存（R6：模块加载时从 dbStorage 同步预热，进程重启后翻译结果不丢失、不重复消耗 AI 能量）
 const translationCache = new Map<number, TranslationCache>();
+try {
+    const persisted = (window.githubStarsAPI.getAiTranslations() || {}) as Record<string, TranslationCache>;
+    for (const [id, entry] of Object.entries(persisted)) {
+        if (entry && typeof entry.timestamp === 'number') {
+            translationCache.set(Number(id), entry);
+        }
+    }
+} catch (error) {
+    console.error('[translateRelease] 翻译缓存预热失败:', error);
+}
 
 // 缓存过期时间：7 天
 const CACHE_EXPIRY = 7 * 24 * 60 * 60 * 1000;
+
+// 落盘条数上限：按时间降序保留最新条目，防止无界增长
+const MAX_CACHE_ENTRIES = 100;
+
+/**
+ * 将翻译缓存同步写回 dbStorage（M1：同步读 + 同步写，无 load-write 竞态）
+ */
+function persistTranslationCache(): void {
+    try {
+        const entries = [...translationCache.entries()]
+            .sort((a, b) => b[1].timestamp - a[1].timestamp)
+            .slice(0, MAX_CACHE_ENTRIES);
+        translationCache.clear();
+        entries.forEach(([id, entry]) => translationCache.set(id, entry));
+        window.githubStarsAPI.setAiTranslations?.(Object.fromEntries(entries));
+    } catch (error) {
+        console.error('[translateRelease] 翻译缓存落盘失败:', error);
+    }
+}
 
 /**
  * 生成内容哈希（混合算法 + 长度限制）
@@ -104,6 +133,7 @@ export const aiService = {
         );
 
         if (!readme) {
+            // 无 README 属于"无可分析内容"，用描述兜底并视为完成，避免反复重试
             return {
                 summary: repo.description || (language === 'zh' ? '暂无描述' : 'No description'),
                 tags: repo.topics || [],
@@ -111,7 +141,8 @@ export const aiService = {
             };
         }
 
-        const result = await window.githubStarsAPI.analyzeRepo(
+        // analyzeRepo 失败时会抛错（额度耗尽、网络异常、返回不可解析等），由调用方处理
+        return await window.githubStarsAPI.analyzeRepo(
             readme,
             {
                 fullName: repo.fullName,
@@ -121,16 +152,6 @@ export const aiService = {
             language,
             model
         );
-
-        if (!result) {
-            return {
-                summary: repo.description || (language === 'zh' ? '暂无描述' : 'No description'),
-                tags: repo.topics || [],
-                platforms: [],
-            };
-        }
-
-        return result;
     },
 
     /**
@@ -153,12 +174,23 @@ export const aiService = {
     ): Promise<Repository[]> {
         const queue = [...repos];
         let completed = 0;
+        // 连续失败熔断：额度耗尽/服务异常时停止整批任务，避免无意义地继续消耗
+        const MAX_CONSECUTIVE_FAILURES = 5;
+        let consecutiveFailures = 0;
+        let circuitBroken = false;
 
         // 使用 Map 保证顺序和唯一性（修复竞态条件）
         const results = new Map<number, Repository>();
 
+        const markFailed = (repo: Repository) => {
+            repo.analysisFailed = true;
+            // analyzedAt 记录本次尝试时间，供 24 小时冷却判断使用
+            repo.analyzedAt = new Date().toISOString();
+            consecutiveFailures++;
+        };
+
         const processQueue = async () => {
-            while (queue.length > 0 && !signal?.aborted) {
+            while (queue.length > 0 && !signal?.aborted && !circuitBroken) {
                 const repo = queue.shift();
                 if (!repo) break;
 
@@ -170,12 +202,21 @@ export const aiService = {
                         repo.aiPlatforms = result.platforms;
                         repo.analyzedAt = new Date().toISOString();
                         repo.analysisFailed = false;
+                        consecutiveFailures = 0;
+                    } else if (!signal?.aborted) {
+                        markFailed(repo);
                     }
                 } catch (error) {
                     if (!signal?.aborted) {
                         console.error(`Failed to analyze ${repo.fullName}:`, error);
-                        repo.analysisFailed = true;
+                        markFailed(repo);
                     }
+                }
+
+                if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && queue.length > 0) {
+                    circuitBroken = true;
+                    console.warn(`[batchAnalyze] 连续 ${MAX_CONSECUTIVE_FAILURES} 次失败，熔断剩余 ${queue.length} 个仓库的分析（多为 AI 额度耗尽或服务异常）`);
+                    break;
                 }
 
                 if (!signal?.aborted) {
@@ -291,6 +332,7 @@ ${isTruncated ? '6. 内容已被截断，在末尾有省略号，请正常翻译
                         timestamp: Date.now(),
                         model
                     });
+                    persistTranslationCache();
 
                     logger.log('[translateRelease] 翻译完成', { releaseId, translatedLength: translatedContent.length });
                     return { translatedContent, fromCache: false };
@@ -319,5 +361,6 @@ ${isTruncated ? '6. 内容已被截断，在末尾有省略号，请正常翻译
         } else {
             translationCache.clear();
         }
+        persistTranslationCache();
     },
 };

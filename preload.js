@@ -284,6 +284,9 @@ async function patchRepos(updatedRepos) {
 }
 
 // ==================== 暴露给前端 ====================
+// 进行中的 utools.ai 调用（批量分析并发最高 5 个），用于"停止分析"时立即中止 in-flight 调用
+const inFlightAiCalls = new Set();
+
 window.githubStarsAPI = {
     // GitHub API
     verifyToken: (token) => githubAPI.verifyToken(token),
@@ -497,19 +500,55 @@ Return in JSON format: {"summary": "...", "tags": [...], "platforms": [...]}`;
             const aiOptions = { messages };
             if (model) aiOptions.model = model;
             console.log('[AI分析] 开始调用 utools.ai，能量消耗中...', { repo: repoInfo.fullName, model });
-            const result = await utools.ai(aiOptions);
+            // 保留 PromiseLike 句柄，支持"停止分析"时立即中止进行中的调用
+            const request = utools.ai(aiOptions);
+            inFlightAiCalls.add(request);
+            let result;
+            try {
+                result = await request;
+            } finally {
+                inFlightAiCalls.delete(request);
+            }
             console.log('[AI分析] utools.ai 调用完成', { repo: repoInfo.fullName, result });
             const content = result.content || '';
             const jsonMatch = content.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
-                return JSON.parse(jsonMatch[0]);
+                const parsed = JSON.parse(jsonMatch[0]);
+                // 校验有效内容：summary 缺失或为空视为失败，进入冷却+熔断，
+                // 避免"扣了能量却没有产出"还被标记为已分析
+                if (!parsed || typeof parsed.summary !== 'string' || !parsed.summary.trim()) {
+                    throw new Error('AI 返回内容缺少有效 summary');
+                }
+                return {
+                    summary: parsed.summary.trim(),
+                    tags: (Array.isArray(parsed.tags) ? parsed.tags : []).map(t => String(t)),
+                    platforms: (Array.isArray(parsed.platforms) ? parsed.platforms : []).map(p => String(p)),
+                };
             }
-            return null;
+            // 无法解析出 JSON 视为失败，向上抛出，由调用方标记 analysisFailed 进入冷却
+            throw new Error('AI 返回内容无法解析为 JSON');
         } catch (error) {
             console.error('[AI分析] 调用失败:', error);
-            return null;
+            // 不吞错误：额度耗尽/网络异常等必须让上层感知，否则会继续无意义地消耗额度
+            throw error;
         }
     },
+
+    // 中止所有进行中的 AI 分析调用（utools.ai 返回的 PromiseLike.abort()）
+    abortAiCall: () => {
+        inFlightAiCalls.forEach((request) => {
+            try {
+                request.abort();
+            } catch (error) {
+                console.error('[AI分析] abort 失败:', error);
+            }
+        });
+        inFlightAiCalls.clear();
+    },
+
+    // ========== AI 翻译缓存落盘（同步 KV，杜绝 load-write 竞态） ==========
+    getAiTranslations: () => utools.dbStorage.getItem('gh:aiTranslations') || {},
+    setAiTranslations: (cache) => utools.dbStorage.setItem('gh:aiTranslations', cache),
 
     // 获取可用的 AI 模型列表
     getAIModels: async () => {

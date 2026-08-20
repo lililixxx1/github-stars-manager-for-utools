@@ -320,9 +320,19 @@ export const useStore = create<AppState>((set, get) => ({
 
             const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
 
+            // 取最新 state 作为合并基座（R4）：同步是长任务，期间批量分析/标签编辑可能已写入 store，
+            // 用函数开头的闭包快照会用旧数据覆盖中途写入，导致 analyzedAt 丢失、触发重复分析
+            const currentRepos = get().repositories;
+
+            // 空结果守卫（R3）：全量同步"返回空列表但本地有数据"属异常（API 故障/限流误报），
+            // 拦截以保护本地数据——否则所有仓库及 AI 分析状态会被整表清空
+            if (result.mode === 'full' && result.repos.length === 0 && currentRepos.length > 0) {
+                throw new Error('同步返回空仓库列表，已中止以保护本地数据');
+            }
+
             const mergedRepos = result.mode === 'full'
-                ? mergeFullSyncedRepositories(result.repos, repositories, subscriptionIds)
-                : mergeIncrementalRepositories(result.repos, repositories, subscriptionIds);
+                ? mergeFullSyncedRepositories(result.repos, currentRepos, subscriptionIds)
+                : mergeIncrementalRepositories(result.repos, currentRepos, subscriptionIds);
 
             const nextSyncState = githubService.buildSyncState(mergedRepos, syncState, result.mode);
             const nextSettings = {
@@ -419,6 +429,9 @@ export const useStore = create<AppState>((set, get) => ({
         try {
             const concurrency = settings.aiConcurrency || 1;
             const language = (settings.language || 'zh') as 'zh' | 'en';
+            // 周期落盘节流（三审修正）：全量落盘有 stringify/分片写开销，
+            // 限频至少间隔 20s，崩溃最多丢失最近 20s 的结果，避免约百倍写放大
+            let lastPersistAt = 0;
             const updated = await aiService.batchAnalyze(
                 toAnalyze,
                 token,
@@ -430,6 +443,30 @@ export const useStore = create<AppState>((set, get) => ({
                             currentRepo: repo.fullName
                         }
                     });
+
+                    // 增量刷新：每个仓库分析完立即以新对象引用写入 store，
+                    // 让卡片实时显示摘要（否则整批结束前界面毫无产出，能量却在逐个消耗）
+                    const repos = get().repositories;
+                    const idx = repos.findIndex(r => r.id === repo.id);
+                    if (idx !== -1) {
+                        const next = [...repos];
+                        next[idx] = {
+                            ...repos[idx],
+                            aiSummary: repo.aiSummary,
+                            aiTags: repo.aiTags,
+                            aiPlatforms: repo.aiPlatforms,
+                            analyzedAt: repo.analyzedAt,
+                            analysisFailed: repo.analysisFailed,
+                        };
+                        set({ repositories: next });
+                    }
+
+                    // 周期性落盘（20s 节流）：崩溃/被杀时不丢已消耗能量的结果
+                    const now = Date.now();
+                    if (now - lastPersistAt > 20000) {
+                        lastPersistAt = now;
+                        storageService.setRepositories(get().repositories);
+                    }
                 },
                 language,
                 concurrency,
@@ -437,43 +474,50 @@ export const useStore = create<AppState>((set, get) => ({
                 controller.signal
             );
 
-            // 不可变更新仓库数据，确保 Zustand 订阅和 memo 组件稳定刷新
-            const updatedById = new Map(updated.map(repo => [repo.id, repo]));
-            const nextRepositories = repositories.map(repo => {
-                const updatedRepo = updatedById.get(repo.id);
-                if (!updatedRepo) return repo;
-
-                return {
-                    ...repo,
-                    aiSummary: updatedRepo.aiSummary,
-                    aiTags: updatedRepo.aiTags,
-                    aiPlatforms: updatedRepo.aiPlatforms,
-                    analyzedAt: updatedRepo.analyzedAt,
-                    analysisFailed: updatedRepo.analysisFailed,
-                };
-            });
-
-            set({ repositories: nextRepositories });
-            storageService.setRepositories(nextRepositories);
-
-            // 更新统计信息
-            const successCount = updated.filter(r => !r.analysisFailed).length;
-            const failCount = updated.filter(r => r.analysisFailed).length;
-            set({
-                analyzeStats: {
-                    lastAnalyzeAt: new Date().toISOString(),
-                    totalAnalyzed: updated.length,
-                    successCount,
-                    failCount,
-                }
-            });
-
-            // 显示完成提示
+            // 被中止的批次跳过收尾（二审修正）：stopAnalyze 已同步复位并落盘部分结果；
+            // 若 abort 后 promise 延迟 settle，此处无条件执行会用旧批次的 updated 覆盖
+            // 新批次/已完成批次写入的状态与落盘数据（含误标 analysisFailed）
             if (!controller.signal.aborted) {
+                // 不可变更新仓库数据，确保 Zustand 订阅和 memo 组件稳定刷新
+                // 使用最新 state 而非任务开始时的快照，避免长时间批处理覆盖期间的其他修改（同步、标签等）
+                const updatedById = new Map(updated.map(repo => [repo.id, repo]));
+                const nextRepositories = get().repositories.map(repo => {
+                    const updatedRepo = updatedById.get(repo.id);
+                    if (!updatedRepo) return repo;
+
+                    return {
+                        ...repo,
+                        aiSummary: updatedRepo.aiSummary,
+                        aiTags: updatedRepo.aiTags,
+                        aiPlatforms: updatedRepo.aiPlatforms,
+                        analyzedAt: updatedRepo.analyzedAt,
+                        analysisFailed: updatedRepo.analysisFailed,
+                    };
+                });
+
+                set({ repositories: nextRepositories });
+                storageService.setRepositories(nextRepositories);
+
+                // 更新统计信息
+                const successCount = updated.filter(r => !r.analysisFailed).length;
+                const failCount = updated.filter(r => r.analysisFailed).length;
+                set({
+                    analyzeStats: {
+                        lastAnalyzeAt: new Date().toISOString(),
+                        totalAnalyzed: updated.length,
+                        successCount,
+                        failCount,
+                    }
+                });
+
+                // 显示完成提示
+                const quotaHint = failCount >= 5
+                    ? (settings.language === 'zh' ? '（连续失败已自动停止，疑似 AI 额度耗尽）' : ' (auto-stopped after repeated failures, AI quota may be exhausted)')
+                    : '';
                 window.githubStarsAPI.showNotification(
                     settings.language === 'zh'
-                        ? `分析完成：${successCount} 成功，${failCount} 失败`
-                        : `Analysis complete: ${successCount} success, ${failCount} failed`
+                        ? `分析完成：${successCount} 成功，${failCount} 失败${quotaHint}`
+                        : `Analysis complete: ${successCount} success, ${failCount} failed${quotaHint}`
                 );
             }
 
@@ -482,22 +526,33 @@ export const useStore = create<AppState>((set, get) => ({
                 console.error('Auto analyze failed:', error);
             }
         } finally {
-            set({
-                isAnalyzing: false,
-                analyzeAbortController: null,
-                analyzeProgress: null
-            });
+            // token 守卫（H1）：仅当 store 中的 controller 仍是本次批次时才复位，
+            // 避免被中止批次的收尾逻辑覆盖用户新启动批次的状态
+            if (get().analyzeAbortController === controller) {
+                set({
+                    isAnalyzing: false,
+                    analyzeAbortController: null,
+                    analyzeProgress: null
+                });
+            }
         }
     },
 
     stopAnalyze: () => {
         const { analyzeAbortController, settings } = get();
-        if (analyzeAbortController) {
-            analyzeAbortController.abort();
-            window.githubStarsAPI.showNotification(
-                settings.language === 'zh' ? '分析已中止' : 'Analysis stopped'
-            );
-        }
+        if (!analyzeAbortController) return;
+
+        // 1. 先中止批次循环：此后被中止的 AI 调用 reject 时 signal.aborted 已为 true，不会误标 analysisFailed
+        analyzeAbortController.abort();
+        // 2. 中止进行中的 utools.ai 调用（官方 PromiseLike.abort()，最多并发 5 个）
+        window.githubStarsAPI.abortAiCall?.();
+        // 3. 同步复位状态（H1：官方未保证 abort 后 promise 会 settle，不能依赖 startAutoAnalyze 的 finally）
+        set({ isAnalyzing: false, analyzeAbortController: null, analyzeProgress: null });
+        // 4. 落盘已完成的就地修改（部分分析结果）
+        get().saveRepositories();
+        window.githubStarsAPI.showNotification(
+            settings.language === 'zh' ? '分析已中止' : 'Analysis stopped'
+        );
     },
 
     getAvailablePlatforms: () => {

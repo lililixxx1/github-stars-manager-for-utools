@@ -122,6 +122,11 @@ async function syncIncrementalRepos(
 
         if (!repos || repos.length === 0) {
             if (page === 1) {
+                // 本地有数据却返回空列表，视为异常（API 故障/限流误报），
+                // 中止同步保护本地数据——否则会被当作空全量同步清空所有仓库及 AI 分析状态
+                if (existingRepos.length > 0) {
+                    throw new Error('GitHub 返回空仓库列表，同步已中止（本地数据未受影响）');
+                }
                 return {
                     mode: 'full',
                     repos: [],

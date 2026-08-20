@@ -9,6 +9,7 @@ import { AnalyzeProgress } from './components/AnalyzeProgress';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { t } from './locales';
 import { logger } from './utils/logger';
+import { checkAnalysisNeeded } from './utils/analysis';
 
 function setupRepositorySearchSubInput(isFocus = true): void {
     if (typeof utools === 'undefined') return;
@@ -107,17 +108,13 @@ const App: React.FC = () => {
             if (isAnalyzing) return;
 
             if (currentSettings?.autoAnalyzeOnOpen && currentToken) {
-                // 筛选需要分析的仓库
-                const toAnalyze = currentRepos.filter(r => !r.analyzedAt && !r.analysisFailed);
+                // 筛选需要分析的仓库（与 startAutoAnalyze 使用同一判断，含失败冷却）
+                const toAnalyze = currentRepos.filter(r => checkAnalysisNeeded(r).needsAnalyze);
 
                 if (toAnalyze.length > 0) {
-                    // 如果数量太多，提示用户确认
-                    if (toAnalyze.length > 50) {
-                        setPendingAnalyzeCount(toAnalyze.length);
-                        setShowAnalyzeConfirm(true);
-                    } else {
-                        state.startAutoAnalyze();
-                    }
+                    // 自动触发的分析一律先确认（R7）：额度消耗不可逆，任何数量都应有一次显式确认
+                    setPendingAnalyzeCount(toAnalyze.length);
+                    setShowAnalyzeConfirm(true);
                 }
             }
         }, 3000);  // 延迟 3 秒，在版本检查之后
