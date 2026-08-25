@@ -1,4 +1,4 @@
-import type { Repository, Settings, Release, Category, SyncState } from '../types';
+import type { Repository, Settings, Release, SyncState } from '../types';
 
 export const storageService = {
     // ==================== Settings ====================
@@ -60,14 +60,5 @@ export const storageService = {
 
     setReleaseSubscriptions(ids: Set<number>): void {
         window.githubStarsAPI.setReleaseSubscriptions(Array.from(ids));
-    },
-
-    // ==================== Categories ====================
-    getCategories(): Category[] {
-        return window.githubStarsAPI.getCategories();
-    },
-
-    setCategories(categories: Category[]): void {
-        window.githubStarsAPI.setCategories(categories);
     },
 };

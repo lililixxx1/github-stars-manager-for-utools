@@ -120,6 +120,31 @@ export class Benchmark {
     }
 
     /**
+     * 单次一次性计时（不预热、不重跑）
+     * 用于启动加载/同步等一次性副作用操作的基线测量
+     */
+    static timeOnce<T>(name: string, fn: () => T): T {
+        const start = performance.now();
+        try {
+            return fn();
+        } finally {
+            console.log(`[benchmark] ${name}: ${(performance.now() - start).toFixed(1)}ms`);
+        }
+    }
+
+    /**
+     * 单次一次性异步计时（不预热、不重跑）
+     */
+    static async timeOnceAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
+        const start = performance.now();
+        try {
+            return await fn();
+        } finally {
+            console.log(`[benchmark] ${name}: ${(performance.now() - start).toFixed(1)}ms`);
+        }
+    }
+
+    /**
      * 比较新旧实现
      *
      * @param name - 测试名称

@@ -8,6 +8,7 @@ import { PLATFORM_NONE } from '../constants/platforms';
 import { checkAnalysisNeeded } from '../utils/analysis';
 import { createFilteredReposPipeline } from './selectors';
 import { logger } from '../utils/logger';
+import { Benchmark } from '../utils/benchmark';
 
 interface AppState {
     // 页面导航
@@ -167,8 +168,6 @@ function mergeRepoWithExistingData(
         analysisFailed: existing.analysisFailed,
         alias: existing.alias,
         customTags: existing.customTags || [],
-        customCategory: existing.customCategory,
-        userNotes: existing.userNotes,
         customDescription: existing.customDescription,
         isSubscribed,
     };
@@ -241,19 +240,21 @@ export const useStore = create<AppState>((set, get) => ({
     repositories: [],
     setRepositories: (repos) => set({ repositories: repos, ...buildNoteIndex(repos) }),
     loadRepositories: () => {
-        const repos = storageService.getRepositories();
-        // 订阅状态同步机制说明:
-        // - 主数据源: gh:releaseSubscriptions (独立数组存储)
-        // - 派生数据: Repository.isSubscribed (便于 UI 快速访问)
-        // - 此处从 dbStorage 同步订阅状态到 Repository 对象
-        // - 详见: docs/design/design-release-tracking.md §4.1 数据模型
-        const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
-        const migrated = repos.map(r => ({
-            ...r,
-            customTags: r.customTags || [],
-            isSubscribed: subscriptionIds.includes(r.id),
-        }));
-        set({ repositories: migrated, ...buildNoteIndex(migrated) });
+        Benchmark.timeOnce('startup:loadRepositories', () => {
+            const repos = storageService.getRepositories();
+            // 订阅状态同步机制说明:
+            // - 主数据源: gh:releaseSubscriptions (独立数组存储)
+            // - 派生数据: Repository.isSubscribed (便于 UI 快速访问)
+            // - 此处从 dbStorage 同步订阅状态到 Repository 对象
+            // - 详见: docs/design/design-release-tracking.md §4.1 数据模型
+            const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
+            const migrated = repos.map(r => ({
+                ...r,
+                customTags: r.customTags || [],
+                isSubscribed: subscriptionIds.includes(r.id),
+            }));
+            set({ repositories: migrated, ...buildNoteIndex(migrated) });
+        });
     },
     saveRepositories: () => {
         storageService.setRepositories(get().repositories);
@@ -304,53 +305,55 @@ export const useStore = create<AppState>((set, get) => ({
 
         if (!token || syncStatus === 'syncing') return;
 
-        set({ syncStatus: 'syncing', syncProgress: { current: 0, total: 0 } });
+        await Benchmark.timeOnceAsync('sync:syncRepositories', async () => {
+            set({ syncStatus: 'syncing', syncProgress: { current: 0, total: 0 } });
 
-        try {
-            const syncState = storageService.getSyncState();
-            const result = await githubService.syncRepos(token, repositories, syncState, (current, total) => {
-                set({ syncProgress: { current, total } });
-            });
+            try {
+                const syncState = storageService.getSyncState();
+                const result = await githubService.syncRepos(token, repositories, syncState, (current, total) => {
+                    set({ syncProgress: { current, total } });
+                });
 
-            logger.log('[Sync] 完成同步', {
-                mode: result.mode,
-                fetchedRepos: result.repos.length,
-                processedCount: result.processedCount,
-            });
+                logger.log('[Sync] 完成同步', {
+                    mode: result.mode,
+                    fetchedRepos: result.repos.length,
+                    processedCount: result.processedCount,
+                });
 
-            const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
+                const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
 
-            const mergedRepos = result.mode === 'full'
-                ? mergeFullSyncedRepositories(result.repos, repositories, subscriptionIds)
-                : mergeIncrementalRepositories(result.repos, repositories, subscriptionIds);
+                const mergedRepos = result.mode === 'full'
+                    ? mergeFullSyncedRepositories(result.repos, repositories, subscriptionIds)
+                    : mergeIncrementalRepositories(result.repos, repositories, subscriptionIds);
 
-            const nextSyncState = githubService.buildSyncState(mergedRepos, syncState, result.mode);
-            const nextSettings = {
-                ...settings,
-                lastSyncTime: Date.now(),
-            };
+                const nextSyncState = githubService.buildSyncState(mergedRepos, syncState, result.mode);
+                const nextSettings = {
+                    ...settings,
+                    lastSyncTime: Date.now(),
+                };
 
-            storageService.setSettings(nextSettings);
-            storageService.setSyncState(nextSyncState);
+                storageService.setSettings(nextSettings);
+                storageService.setSyncState(nextSyncState);
 
-            set({
-                repositories: mergedRepos,
-                ...buildNoteIndex(mergedRepos),
-                settings: nextSettings,
-                syncError: null,
-                syncStatus: 'completed',
-                syncProgress: {
-                    current: result.processedCount || mergedRepos.length,
-                    total: result.processedCount || mergedRepos.length,
-                },
-            });
-            get().saveRepositories();
+                set({
+                    repositories: mergedRepos,
+                    ...buildNoteIndex(mergedRepos),
+                    settings: nextSettings,
+                    syncError: null,
+                    syncStatus: 'completed',
+                    syncProgress: {
+                        current: result.processedCount || mergedRepos.length,
+                        total: result.processedCount || mergedRepos.length,
+                    },
+                });
+                get().saveRepositories();
 
-            setTimeout(() => set({ syncStatus: 'idle' }), 3000);
-        } catch (error: any) {
-            console.error('Sync failed:', error);
-            set({ syncError: error?.message || String(error), syncStatus: 'error' });
-        }
+                setTimeout(() => set({ syncStatus: 'idle' }), 3000);
+            } catch (error: any) {
+                console.error('Sync failed:', error);
+                set({ syncError: error?.message || String(error), syncStatus: 'error' });
+            }
+        });
     },
 
     // 设置
@@ -608,11 +611,13 @@ export const useStore = create<AppState>((set, get) => ({
     // 过滤后的仓库（使用优化后的筛选管道 v1.7.0）
     getFilteredRepos: () => {
         const { repositories, searchFilter, noteRepoIds, noteContentByRepoId } = get();
-        const pipeline = createFilteredReposPipeline(searchFilter, {
-            hasNote: (repoId) => noteRepoIds.has(repoId),
-            getNoteContent: (repoId) => noteContentByRepoId.get(repoId) || '',
+        return Benchmark.timeOnce('render:getFilteredRepos', () => {
+            const pipeline = createFilteredReposPipeline(searchFilter, {
+                hasNote: (repoId) => noteRepoIds.has(repoId),
+                getNoteContent: (repoId) => noteContentByRepoId.get(repoId) || '',
+            });
+            return pipeline(repositories);
         });
-        return pipeline(repositories);
     },
 
     // ========== 🆕 v1.4.0 版本追踪 ==========

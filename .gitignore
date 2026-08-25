@@ -36,3 +36,6 @@ npm-debug.log*
 .env
 .env.local
 .env.*.local
+
+# ZCode session state
+.zcode/

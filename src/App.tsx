@@ -205,10 +205,6 @@ const App: React.FC = () => {
                             }
                         }
                         break;
-                    case 'github-stars-releases': // 🆕 v1.4.0 版本通知点击
-                        useStore.getState().setReleasesInitialTab('updates');
-                        setCurrentPage('releases');
-                        break;
                 }
             });
 
@@ -251,6 +247,7 @@ const App: React.FC = () => {
                 onConfirm={handleAnalyzeConfirm}
                 onCancel={() => setShowAnalyzeConfirm(false)}
             />
+            <AnalyzeProgress />
             {currentPage === 'detail' && <DetailPage />}
             {currentPage === 'settings' && <SettingsPage />}
             {currentPage === 'tags' && <TagsPage />}

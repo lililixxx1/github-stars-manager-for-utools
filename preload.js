@@ -309,26 +309,6 @@ window.githubStarsAPI = {
     setReadReleaseIds: (ids) => utools.dbStorage.setItem('gh:readReleases', ids),
     getReleaseSubscriptions: () => utools.dbStorage.getItem('gh:releaseSubscriptions') || [],
     setReleaseSubscriptions: (ids) => utools.dbStorage.setItem('gh:releaseSubscriptions', ids),
-    getCategories: () => utools.dbStorage.getItem('gh:categories') || [],
-    setCategories: (categories) => utools.dbStorage.setItem('gh:categories', categories),
-    getReposMeta: () => utools.dbStorage.getItem('gh:repos:meta'),
-    setReposMeta: (meta) => utools.dbStorage.setItem('gh:repos:meta', meta),
-    getReposShard: (index) => {
-        const meta = utools.dbStorage.getItem('gh:repos:meta');
-        return utools.dbStorage.getItem(getReposShardKey(getReposShardPrefix(meta), index));
-    },
-    setReposShard: (index, data) => utools.dbStorage.setItem(getReposShardKey(REPOS_SHARD_KEY_PREFIX, index), data),
-    removeReposShard: (index) => utools.dbStorage.removeItem(getReposShardKey(REPOS_SHARD_KEY_PREFIX, index)),
-    removeReposMeta: () => utools.dbStorage.removeItem('gh:repos:meta'),
-
-    // ========== 版本检测状态 🆕 v1.4.0 ==========
-    getReleaseCheckStatus: () => utools.dbStorage.getItem('gh:releaseCheckStatus') || {
-        lastCheckedAt: null,
-        checking: false,
-        newCount: 0,
-        error: null,
-    },
-    setReleaseCheckStatus: (status) => utools.dbStorage.setItem('gh:releaseCheckStatus', status),
 
     // ========== 标签管理 🆕 v1.1.0 ==========
     getTags: () => utools.dbStorage.getItem('gh:tags') || [],

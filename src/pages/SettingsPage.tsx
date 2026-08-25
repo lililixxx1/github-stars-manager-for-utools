@@ -16,7 +16,7 @@ export const SettingsPage: React.FC = () => {
     const {
         settings, saveSettings, token, setCurrentPage,
         repositories, setRepositories, saveRepositories,
-        isAnalyzing, analyzeProgress, startAutoAnalyze, stopAnalyze,
+        isAnalyzing, startAutoAnalyze, stopAnalyze,
         releaseCheckStatus, checkReleaseUpdates, setReleasesInitialTab,
     } = useStore();
 
@@ -284,15 +284,6 @@ export const SettingsPage: React.FC = () => {
                         </button>
                     </div>
                     {!token && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-warning)' }}>{lang === 'zh' ? '⚠️ 请先配置 GitHub Token 以使用 AI 分析功能' : '⚠️ Please configure GitHub Token to use AI analysis'}</div>}
-                    {isAnalyzing && analyzeProgress && (
-                        <div style={{ marginTop: 12 }}>
-                            <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginBottom: 4 }}>{lang === 'zh' ? '正在分析: ' : 'Analyzing: '}{analyzeProgress.currentRepo}</div>
-                            <div style={{ height: 4, background: 'var(--color-surface-secondary)', borderRadius: 2 }}>
-                                <div style={{ height: '100%', width: `${Math.round((analyzeProgress.current / analyzeProgress.total) * 100)}%`, background: 'linear-gradient(90deg, var(--color-primary), var(--color-primary-light))', borderRadius: 2, transition: 'width 0.3s ease' }} />
-                            </div>
-                            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>{analyzeProgress.current}/{analyzeProgress.total}</div>
-                        </div>
-                    )}
                     {!isAnalyzing && repositories.length > 0 && (
                         <div style={{ marginTop: 12, fontSize: 12, color: 'var(--color-text-muted)' }}>
                             {lang === 'zh' ? `已分析: ${repositories.filter(r => r.analyzedAt && !r.analysisFailed).length} / ${repositories.length} 个仓库` : `Analyzed: ${repositories.filter(r => r.analyzedAt && !r.analysisFailed).length} / ${repositories.length} repos`}

@@ -47,9 +47,7 @@ export interface Repository {
     // 用户自定义字段 (v1.1.0)
     alias?: string;                      // 用户设置的别名
     customTags: string[];                // 用户自定义标签ID列表 (v1.1.0 必填，默认[])
-    userNotes?: string;                  // 用户备注 (兼容旧字段)
     customDescription?: string;
-    customCategory?: string;
     isSubscribed?: boolean;
 
     // 元数据
@@ -136,15 +134,6 @@ export interface SyncState {
     lastFullSyncAt: number | null;       // 最近一次全量同步时间
 }
 
-// ==================== 自定义分类 ====================
-export interface Category {
-    id: string;
-    name: string;
-    icon: string;
-    keywords: string[];
-    isCustom?: boolean;
-}
-
 // ==================== 搜索过滤 ====================
 export interface SearchFilter {
     keyword: string;
@@ -225,16 +214,6 @@ export interface GithubStarsAPI {
     setReadReleaseIds: (ids: number[]) => void;
     getReleaseSubscriptions: () => number[];
     setReleaseSubscriptions: (ids: number[]) => void;
-    getCategories: () => Category[];
-    setCategories: (categories: Category[]) => void;
-
-    // ========== 分片存储 ==========
-    getReposMeta: () => { sharded: boolean; totalShards: number; shardPrefix?: string } | null;
-    setReposMeta: (meta: { sharded: boolean; totalShards: number; shardPrefix?: string }) => void;
-    getReposShard: (index: number) => string | null;
-    setReposShard: (index: number, data: string) => void;
-    removeReposShard: (index: number) => void;
-    removeReposMeta: () => void;
 
     // ========== 标签操作 🆕 v1.1.0 ==========
     getTags: () => Tag[];
@@ -265,8 +244,6 @@ export interface GithubStarsAPI {
 
     // ========== 版本检测 🆕 v1.4.0 ==========
     getLatestRelease: (owner: string, repo: string, token: string) => Promise<Release | null>;
-    getReleaseCheckStatus: () => ReleaseCheckStatus;
-    setReleaseCheckStatus: (status: ReleaseCheckStatus) => void;
 }
 
 declare global {
