@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { Modal } from './Modal';
 
 interface ConfirmDialogProps {
     isOpen: boolean;
@@ -13,6 +14,14 @@ interface ConfirmDialogProps {
     autoFocusButton?: 'confirm' | 'cancel';
 }
 
+/**
+ * 确认弹窗（基于 Modal 的焦点圈定/还原能力）
+ *
+ * 对外 props 与旧版完全兼容：
+ * - Escape / 遮罩点击 / 关闭按钮 → onCancel
+ * - autoFocusButton 缺省时：danger 聚焦取消、default 聚焦确认
+ * - loading 期间禁止关闭与提交
+ */
 export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
     isOpen,
     title,
@@ -27,78 +36,48 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 }) => {
     const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
     const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
-    const previousActiveElementRef = useRef<HTMLElement | null>(null);
 
+    // 初始焦点目标（Modal 的通用初始聚焦之后执行，覆盖为其结果）
     useEffect(() => {
         if (!isOpen) return;
-
-        previousActiveElementRef.current = document.activeElement instanceof HTMLElement
-            ? document.activeElement
-            : null;
 
         const focusTarget = (autoFocusButton ?? (variant === 'danger' ? 'cancel' : 'confirm')) === 'confirm'
             ? confirmButtonRef.current
             : cancelButtonRef.current;
         window.requestAnimationFrame(() => focusTarget?.focus());
-
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key !== 'Escape') return;
-
-            event.preventDefault();
-            onCancel();
-        };
-
-        document.addEventListener('keydown', handleKeyDown, true);
-        return () => {
-            document.removeEventListener('keydown', handleKeyDown, true);
-            window.requestAnimationFrame(() => previousActiveElementRef.current?.focus());
-        };
-    }, [autoFocusButton, isOpen, onCancel, variant]);
+    }, [autoFocusButton, isOpen, variant]);
 
     if (!isOpen) return null;
 
-    const confirmBtnStyle = variant === 'danger'
-        ? { background: 'var(--color-error)', color: 'white' }
-        : {};
-
     return (
-        <div
-            style={{
-                position: 'fixed',
-                inset: 0,
-                backgroundColor: 'rgba(0,0,0,0.5)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                zIndex: 1000
-            }}
-        >
-            <div
-                className="card animate-fade-in"
-                style={{ padding: 24, maxWidth: 400, width: '100%', margin: '0 16px' }}
-                onClick={(e) => e.stopPropagation()}
-            >
-                <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>
-                    {title}
-                </h3>
-                <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: 24 }}>
-                    {message}
-                </p>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
-                    <button ref={cancelButtonRef} className="btn btn-secondary" onClick={onCancel} disabled={loading}>
+        <Modal
+            isOpen={isOpen}
+            onClose={loading ? () => undefined : onCancel}
+            title={title}
+            footer={
+                <>
+                    <button
+                        ref={cancelButtonRef}
+                        className="btn btn-secondary"
+                        onClick={onCancel}
+                        disabled={loading}
+                    >
                         {cancelText}
                     </button>
                     <button
                         ref={confirmButtonRef}
-                        className="btn"
-                        style={confirmBtnStyle}
+                        className={`btn ${variant === 'danger' ? 'btn-danger' : 'btn-primary'}`}
                         onClick={onConfirm}
                         disabled={loading}
                     >
                         {loading ? '处理中...' : confirmText}
                     </button>
-                </div>
-            </div>
-        </div>
+                </>
+            }
+        >
+            <p style={{ fontSize: 'var(--text-md)', color: 'var(--color-text-secondary)', lineHeight: 1.6, margin: 0 }}>
+                {message}
+            </p>
+        </Modal>
     );
 };

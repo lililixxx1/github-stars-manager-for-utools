@@ -149,8 +149,8 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             title: t('releases', lang),
             action: handleOpenReleases,
             style: {
-                background: 'var(--color-primary-light)',
-                color: 'var(--color-primary)',
+                background: 'var(--color-primary)',
+                color: 'white',
             },
             content: (
                 <>
@@ -660,7 +660,7 @@ const SortMenu = memo<{
     <div style={{
         position: 'absolute', top: '100%', right: 0, marginTop: 4,
         background: 'var(--color-surface)', border: '1px solid var(--color-border)',
-        borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+        borderRadius: 8, boxShadow: 'var(--shadow-md)',
         minWidth: 160, zIndex: 100, overflow: 'hidden',
     }}>
         {SORT_OPTIONS.map((opt, index) => (

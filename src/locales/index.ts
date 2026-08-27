@@ -240,6 +240,13 @@ export const i18n = {
         emptyNoTags: '暂无标签',
         emptyNoNotes: '暂无笔记',
 
+        // 设计系统基础组件 🆕 v1.7.x
+        commonClose: '关闭',
+        toggleOn: '已开启',
+        toggleOff: '已关闭',
+        emptyStateTitle: '暂无内容',
+        toastDismiss: '关闭提示',
+
         // 其他
         about: '关于',
         version: '版本',
@@ -484,6 +491,13 @@ export const i18n = {
         emptyNoSearchResult: 'No matching repositories found',
         emptyNoTags: 'No tags',
         emptyNoNotes: 'No notes',
+
+        // Design System Basics 🆕 v1.7.x
+        commonClose: 'Close',
+        toggleOn: 'On',
+        toggleOff: 'Off',
+        emptyStateTitle: 'Nothing here yet',
+        toastDismiss: 'Dismiss notification',
 
         // Other
         about: 'About',

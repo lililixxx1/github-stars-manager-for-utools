@@ -6,9 +6,10 @@ import { t } from '../locales';
 import type { SortBy } from '../types';
 import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
 import { FilterBar, type FilterBarHandle } from './home/components/FilterBar';
+import { EmptyState } from '../components/EmptyState';
 import {
     RefreshCw, ChevronLeft, ChevronRight,
-    Star, Sparkles, FileText
+    Star, Sparkles, FileText, Package, SearchX
 } from 'lucide-react';
 
 export const HomePage: React.FC = () => {
@@ -229,7 +230,7 @@ export const HomePage: React.FC = () => {
             {/* 错误提示 */}
             {syncError && (
                 <div style={{
-                    padding: '8px 16px', background: 'var(--color-error)',
+                    padding: '8px 16px', background: 'var(--color-error-strong)',
                     color: 'white', fontSize: 13, display: 'flex',
                     alignItems: 'center', justifyContent: 'space-between',
                 }}>
@@ -251,18 +252,18 @@ export const HomePage: React.FC = () => {
                 tabIndex={keyboardArea === 'list' ? 0 : -1}
             >
                 {currentRepos.length === 0 ? (
-                    <div style={{
-                        display: 'flex', flexDirection: 'column', alignItems: 'center',
-                        justifyContent: 'center', height: '100%', color: 'var(--color-text-muted)',
-                    }}>
-                        <p>{repositories.length === 0 ? t('noRepos', lang) : t('noResults', lang)}</p>
-                        {repositories.length === 0 && (
-                            <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={handleSync}>
+                    <EmptyState
+                        icon={repositories.length === 0
+                            ? <Package size={48} strokeWidth={1.5} />
+                            : <SearchX size={48} strokeWidth={1.5} />}
+                        title={repositories.length === 0 ? t('noRepos', lang) : t('noResults', lang)}
+                        action={repositories.length === 0 ? (
+                            <button className="btn btn-primary" onClick={handleSync}>
                                 <RefreshCw size={14} />
                                 {t('syncNow', lang)}
                             </button>
-                        )}
-                    </div>
+                        ) : undefined}
+                    />
                 ) : viewMode === 'card' ? (
                     // 卡片视图
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -345,12 +346,16 @@ export const HomePage: React.FC = () => {
                                     {(repo.customTags || []).slice(0, 3).map((tagId) => {
                                         const tag = tags.find(t => t.id === tagId);
                                         if (!tag) return null;
+                                        // 有自定义色：6 位 hex 追加 alpha（如 #3b82f6 → #3b82f620）；无色：color-mix 调出的 primary 软底
+                                        const tagBg = tag.color
+                                            ? (/^#[0-9a-fA-F]{6}$/.test(tag.color) ? `${tag.color}20` : tag.color)
+                                            : 'color-mix(in srgb, var(--color-primary) 12%, transparent)';
                                         return (
                                             <span
                                                 key={tag.id}
                                                 style={{
                                                     fontSize: 10, padding: '1px 6px', borderRadius: 999,
-                                                    background: (tag.color || 'var(--color-primary)') + '20',
+                                                    background: tagBg,
                                                     color: tag.color || 'var(--color-primary)',
                                                     border: `1px solid ${tag.color || 'var(--color-primary)'}`,
                                                 }}

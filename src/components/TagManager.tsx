@@ -308,18 +308,18 @@ export const TagManager: React.FC<TagManagerProps> = ({
             {(isAdding || isEditing) && (
                 <div style={{
                     position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-                    backgroundColor: 'rgba(255, 255, 255, 0.4)',
+                    backgroundColor: 'var(--color-overlay)',
                     backdropFilter: 'blur(2px)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     zIndex: 100
                 }}>
                     <div className="card" style={{
                         borderRadius: 12,
-                        border: '1px solid #818cf8',
+                        border: '1px solid var(--color-border)',
                         padding: 24,
                         width: '90%',
                         maxWidth: 480,
-                        boxShadow: '0 10px 25px rgba(0,0,0,0.05)',
+                        boxShadow: 'var(--shadow-lg)',
                         display: 'flex', flexDirection: 'column', gap: 14
                     }}>
                         <div className="flex items-center justify-between mb-1">
@@ -440,15 +440,8 @@ export const TagManager: React.FC<TagManagerProps> = ({
                         {/* 操作按钮组 */}
                         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
                             <button
-                                className="btn"
-                                style={{
-                                    padding: '8px 24px',
-                                    backgroundColor: '#f3f4f6',
-                                    color: '#374151',
-                                    border: '1px solid #e5e7eb',
-                                    borderRadius: 8,
-                                    fontSize: 14
-                                }}
+                                className="btn btn-secondary btn-sm"
+                                style={{ padding: '8px 24px' }}
                                 onClick={() => {
                                     setIsAdding(false);
                                     setIsEditing(false);
@@ -459,20 +452,8 @@ export const TagManager: React.FC<TagManagerProps> = ({
                                 {t('cancel', lang)}
                             </button>
                             <button
-                                className="btn"
-                                style={{
-                                    padding: '8px 24px',
-                                    backgroundColor: '#6366f1',
-                                    color: 'white',
-                                    border: 'none',
-                                    borderRadius: 8,
-                                    fontSize: 14,
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 6,
-                                    opacity: !newTagName.trim() ? 0.6 : 1,
-                                    cursor: !newTagName.trim() ? 'not-allowed' : 'pointer'
-                                }}
+                                className="btn btn-primary btn-sm"
+                                style={{ padding: '8px 24px' }}
                                 onClick={isEditing ? handleUpdateTag : handleAddTag}
                                 disabled={!newTagName.trim()}
                             >
@@ -527,8 +508,7 @@ export const TagManager: React.FC<TagManagerProps> = ({
                                 {t('cancel', lang)}
                             </button>
                             <button
-                                className="btn btn-primary"
-                                style={{ backgroundColor: 'var(--color-error)' }}
+                                className="btn btn-danger"
                                 onClick={confirmDeleteTag}
                             >
                                 {t('confirm', lang)}

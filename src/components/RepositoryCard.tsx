@@ -69,7 +69,7 @@ export const RepositoryCard = memo<RepositoryCardProps>(({ repo, onClick, langua
             onClick={handleClick}
             style={isActive ? {
                 borderColor: 'var(--color-primary)',
-                boxShadow: '0 0 0 2px rgba(99, 102, 241, 0.18), 0 4px 16px rgba(0, 0, 0, 0.06)',
+                boxShadow: '0 0 0 2px rgba(99, 102, 241, 0.18), var(--shadow-sm)',
                 transform: 'translateY(-1px)',
             } : undefined}
         >

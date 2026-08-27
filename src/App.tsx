@@ -7,6 +7,7 @@ import { TagsPage } from './pages/TagsPage';
 import { ReleasesPage } from './pages/ReleasesPage';
 import { AnalyzeProgress } from './components/AnalyzeProgress';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { ToastHost } from './components/Toast';
 import { t } from './locales';
 import { logger } from './utils/logger';
 
@@ -248,6 +249,7 @@ const App: React.FC = () => {
                 onCancel={() => setShowAnalyzeConfirm(false)}
             />
             <AnalyzeProgress />
+            <ToastHost />
             {currentPage === 'detail' && <DetailPage />}
             {currentPage === 'settings' && <SettingsPage />}
             {currentPage === 'tags' && <TagsPage />}

@@ -126,7 +126,7 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel }: Releas
                     width: '90%', maxWidth: '720px', maxHeight: '85vh',
                     display: 'flex', flexDirection: 'column',
                     padding: 0, overflow: 'hidden',
-                    boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)'
+                    boxShadow: 'var(--shadow-lg)'
                 }}
                 onClick={(e) => e.stopPropagation()}
             >

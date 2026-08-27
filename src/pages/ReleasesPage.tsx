@@ -247,7 +247,7 @@ export function ReleasesPage() {
                 {releaseCheckStatus.newCount > 0 && activeTab === 'updates' && (
                     <span style={{
                         padding: '2px 8px', fontSize: 13, fontWeight: 500,
-                        color: 'var(--color-primary)', background: 'var(--color-primary-light)', opacity: 0.9, borderRadius: 12
+                        color: 'white', background: 'var(--color-primary)', borderRadius: 12
                     }}>
                         {releaseCheckStatus.newCount} {t('newReleases', lang)}
                     </span>
@@ -441,7 +441,7 @@ export function ReleasesPage() {
                                 <button className="btn btn-secondary" onClick={() => setShowConfirmDialog(false)}>
                                     {t('cancel', lang)}
                                 </button>
-                                <button className="btn" style={{ background: 'var(--color-error)', color: 'white' }} onClick={confirmClearAll}>
+                                <button className="btn btn-danger" onClick={confirmClearAll}>
                                     {t('confirm', lang)}
                                 </button>
                             </div>

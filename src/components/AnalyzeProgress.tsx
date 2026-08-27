@@ -20,7 +20,7 @@ export const AnalyzeProgress: React.FC = () => {
             borderRadius: 12,
             padding: 16,
             width: 300,
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+            boxShadow: 'var(--shadow-md)',
             zIndex: 1000,
         }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
