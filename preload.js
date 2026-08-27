@@ -80,6 +80,15 @@ const githubAPI = {
 const zlib = require('node:zlib');
 const MAX_REPOS_CHUNK_SIZE = 900 * 1024;
 const REPOS_SHARD_KEY_PREFIX = 'gh:repos:shard';
+const REPOS_META_KEY = 'gh:repos:meta';
+const REPOS_FLAT_KEY = 'gh:repos';
+const REPOS_FORMAT_VERSION = 2;
+const REPOS_CACHE_FLAT_KEY = 'flat';
+const NOTE_INDEX_KEY = 'gh:noteIndex';
+const GITHUB_HTTP_RETRY_LIMIT = 3;
+
+// 模块级复用的 HTTPS Agent（keep-alive 连接池）
+const githubHttpAgent = new https.Agent({ keepAlive: true });
 
 function getReposShardKey(prefix, index) {
     return `${prefix}:${index}`;
@@ -122,13 +131,32 @@ function requestGitHub(path, token, options = {}) {
     return requestGitHubRaw(path, token, options).then(result => result.data);
 }
 
-function requestGitHubRaw(path, token, options = {}) {
+/**
+ * 解析 retry-after 响应头（秒数或 HTTP 日期）为毫秒延迟
+ * @param {string|undefined} headerValue
+ * @returns {number|null} 毫秒；无法解析时返回 null
+ */
+function parseRetryDelayMs(headerValue) {
+    if (!headerValue) return null;
+    const seconds = Number(headerValue);
+    if (Number.isFinite(seconds)) {
+        return Math.max(0, seconds * 1000);
+    }
+    const httpDate = Date.parse(headerValue);
+    if (!Number.isNaN(httpDate)) {
+        return Math.max(0, httpDate - Date.now());
+    }
+    return null;
+}
+
+function requestGitHubRaw(path, token, options = {}, attempt = 0) {
     return new Promise((resolve, reject) => {
         console.log('[GitHub API] Request:', path);
         const reqOptions = {
             hostname: 'api.github.com',
             path: path,
             method: 'GET',
+            agent: githubHttpAgent,
             headers: {
                 'User-Agent': 'GitHubStarsManager-uTools',
                 'Authorization': `Bearer ${token}`,
@@ -149,22 +177,37 @@ function requestGitHubRaw(path, token, options = {}) {
                 stream = res.pipe(zlib.createInflate());
             }
 
-            let data = '';
+            const chunks = [];
             stream.on('data', chunk => {
-                data += chunk.toString();
+                chunks.push(chunk);
             });
             stream.on('end', () => {
-                console.log('[GitHub API] Response complete, data length:', data.length);
+                const body = Buffer.concat(chunks).toString('utf8');
+                console.log('[GitHub API] Response complete, data length:', body.length);
                 try {
-                    const json = JSON.parse(data);
+                    const json = JSON.parse(body);
                     if (res.statusCode >= 200 && res.statusCode < 300) {
                         resolve({ data: json, headers: res.headers });
-                    } else {
-                        console.error('[GitHub API] Error:', res.statusCode, json.message || data.substring(0, 300));
-                        reject(new Error(json.message || `HTTP ${res.statusCode}`));
+                        return;
                     }
+
+                    const status = res.statusCode;
+
+                    // 403/429 限流：读 retry-after 头（秒数或 HTTP 日期），指数退避重试最多 3 次
+                    if ((status === 403 || status === 429) && attempt < GITHUB_HTTP_RETRY_LIMIT) {
+                        const headerDelay = parseRetryDelayMs(res.headers['retry-after']);
+                        const delay = headerDelay !== null ? headerDelay : 1000 * Math.pow(2, attempt);
+                        console.warn(`[GitHub API] ${status} limited, retry ${attempt + 1}/${GITHUB_HTTP_RETRY_LIMIT} in ${delay}ms for:`, path);
+                        setTimeout(() => {
+                            requestGitHubRaw(path, token, options, attempt + 1).then(resolve, reject);
+                        }, delay);
+                        return;
+                    }
+
+                    console.error('[GitHub API] Error:', status, json.message || body.substring(0, 300));
+                    reject(new Error(json.message || `HTTP ${status}`));
                 } catch (e) {
-                    console.error('[GitHub API] Parse error:', e.message, 'data:', data.substring(0, 300));
+                    console.error('[GitHub API] Parse error:', e.message, 'data:', body.substring(0, 300));
                     reject(new Error('Invalid JSON response'));
                 }
             });
@@ -188,27 +231,61 @@ function requestGitHubRaw(path, token, options = {}) {
     });
 }
 
-// ==================== 异步辅助函数 (v1.7.0) ====================
+// ==================== 仓库存储（v2 分片 + 内存缓存） ====================
 
-function loadStoredRepos() {
-    const meta = utools.dbStorage.getItem('gh:repos:meta');
-    if (!meta?.sharded) {
-        return utools.dbStorage.getItem('gh:repos') || [];
+/**
+ * preload 内存缓存：repos 单一进出口。
+ * key 由 meta 派生（`${sharded}|${shardPrefix}|${totalShards}`），未分片（扁平存储）用固定 key。
+ * key 未变直接命中缓存；所有写路径写完磁盘后同步更新缓存。
+ */
+let reposCache = { key: null, repos: [], repoIndex: null };
+
+function readReposMeta() {
+    return utools.dbStorage.getItem(REPOS_META_KEY);
+}
+
+function computeReposCacheKey(meta) {
+    if (!meta?.sharded) return REPOS_CACHE_FLAT_KEY;
+    return `${meta.sharded}|${getReposShardPrefix(meta)}|${meta.totalShards}`;
+}
+
+/**
+ * 读取仓库（带内存缓存）。所有内部读取路径一律走这里。
+ * 兼容旧格式：盲切分片（无 formatVersion/repoIndex）按 join+parse 读取，repoIndex 置 null。
+ * @returns {{ key: string, repos: Array, repoIndex: Object|null }}
+ */
+function readCachedRepos() {
+    const meta = readReposMeta();
+    const key = computeReposCacheKey(meta);
+    if (reposCache.key === key) {
+        return reposCache;
     }
 
-    const shardPrefix = getReposShardPrefix(meta);
-    const chunks = [];
-    for (let index = 0; index < meta.totalShards; index++) {
-        const chunk = utools.dbStorage.getItem(getReposShardKey(shardPrefix, index));
-        if (chunk) chunks.push(chunk);
+    let repos = [];
+    if (meta?.sharded) {
+        const shardPrefix = getReposShardPrefix(meta);
+        const chunks = [];
+        for (let index = 0; index < meta.totalShards; index++) {
+            const chunk = utools.dbStorage.getItem(getReposShardKey(shardPrefix, index));
+            if (chunk) chunks.push(chunk);
+        }
+        try {
+            repos = JSON.parse(chunks.join(''));
+        } catch (error) {
+            console.error('[ReposStorage] 分片数据解析失败:', error);
+            repos = [];
+        }
+    } else {
+        repos = utools.dbStorage.getItem(REPOS_FLAT_KEY) || [];
     }
 
-    try {
-        return JSON.parse(chunks.join(''));
-    } catch (error) {
-        console.error('[ReposStorage] 分片数据解析失败:', error);
-        return [];
-    }
+    const repoIndex = (meta?.formatVersion === REPOS_FORMAT_VERSION
+        && meta.repoIndex && typeof meta.repoIndex === 'object')
+        ? meta.repoIndex
+        : null;
+
+    reposCache = { key, repos, repoIndex };
+    return reposCache;
 }
 
 function removeRepoShards(totalShards, shardPrefix = REPOS_SHARD_KEY_PREFIX) {
@@ -217,39 +294,250 @@ function removeRepoShards(totalShards, shardPrefix = REPOS_SHARD_KEY_PREFIX) {
     }
 }
 
-function saveStoredRepos(repos) {
-    const oldMeta = utools.dbStorage.getItem('gh:repos:meta');
-    const json = JSON.stringify(repos);
+function byteLengthOf(text) {
+    return Buffer.byteLength(text, 'utf8');
+}
 
-    if (json.length < MAX_REPOS_CHUNK_SIZE) {
-        utools.dbStorage.setItem('gh:repos', repos);
-        utools.dbStorage.removeItem('gh:repos:meta');
+/**
+ * 打包预留空间：装片时留出余量，后续 patchRepo/patchReposBatch 增量重写同一分片时
+ * （如追加 aiSummary/alias 等字段）不必因小幅膨胀回退整库重写。
+ * 分片重写上限仍是 MAX_REPOS_CHUNK_SIZE。
+ */
+const REPOS_PACK_HEADROOM = 64 * 1024;
+
+/**
+ * 按仓库边界打包分片文本（formatVersion 2）。
+ * - 逐仓库 JSON.stringify，按累计字节（UTF-8，含 '['、','、']' 分隔符）装片，
+ *   每片 ≤ MAX_REPOS_CHUNK_SIZE - REPOS_PACK_HEADROOM（为增量更新留余量）；
+ * - 保证每个仓库完整落在单片内（单仓库 JSON 超限时单片独放，不切）；
+ * - 所有分片按顺序 join('') 正好是完整 JSON 数组文本（首片以 '[' 开始，非末片以 ',' 结尾，
+ *   末片以 ']' 结尾），因此新旧读法都能 join+parse —— 兼容性关键。
+ * @param {Array} repos
+ * @returns {{ chunks: string[], repoIndex: Object, totalBytes: number }}
+ */
+function packReposIntoShards(repos) {
+    const packLimit = MAX_REPOS_CHUNK_SIZE - REPOS_PACK_HEADROOM;
+    const shards = [];      // string[][]: 每片内各仓库的 JSON 文本
+    const shardBytes = [];  // 每片累计字节数（含该片分隔符）
+    const repoIndex = {};
+
+    const beginShard = () => {
+        shards.push([]);
+        // 首片预留 '[' 与结束符（',' 或 ']'）各 1 字节；其余片预留结束符 1 字节
+        shardBytes.push(shards.length === 1 ? 2 : 1);
+    };
+
+    for (const repo of repos) {
+        const repoJson = JSON.stringify(repo);
+        const repoBytes = byteLengthOf(repoJson);
+
+        if (shards.length === 0) {
+            beginShard();
+        } else if (shards[shards.length - 1].length > 0
+            && shardBytes[shards.length - 1] + 1 + repoBytes > packLimit) {
+            beginShard();
+        }
+
+        const shardIndex = shards.length - 1;
+        if (shards[shardIndex].length > 0) {
+            shardBytes[shardIndex] += 1; // 与前一成员的 ','
+        }
+        shards[shardIndex].push(repoJson);
+        shardBytes[shardIndex] += repoBytes;
+        repoIndex[String(repo.id)] = shardIndex;
+    }
+
+    if (shards.length === 0) {
+        beginShard(); // 空数组：占位单片（实际会走扁平路径）
+    }
+
+    const chunks = shards.map((parts, index) => {
+        let text = parts.join(',');
+        if (index === 0) {
+            text = '[' + text;
+        }
+        text += (index === shards.length - 1) ? ']' : ',';
+        return text;
+    });
+
+    const totalBytes = shardBytes.reduce((sum, bytes) => sum + bytes, 0);
+    return { chunks, repoIndex, totalBytes };
+}
+
+/**
+ * 全量写入仓库（v2 新格式：按仓库边界打包 + repoIndex）。
+ * 仅供同步/导入/旧格式迁移等整体替换场景；单仓/批量增量请走 patchRepoById / patchReposByIdsBatch。
+ * 写完磁盘后同步更新内存缓存。
+ * @param {Array} repos
+ */
+function writeRepos(repos) {
+    const oldMeta = readReposMeta();
+    const { chunks, repoIndex, totalBytes } = packReposIntoShards(repos);
+
+    if (totalBytes < MAX_REPOS_CHUNK_SIZE) {
+        utools.dbStorage.setItem(REPOS_FLAT_KEY, repos);
+        utools.dbStorage.removeItem(REPOS_META_KEY);
         if (oldMeta?.totalShards) {
             removeRepoShards(oldMeta.totalShards, getReposShardPrefix(oldMeta));
         }
+        reposCache = { key: REPOS_CACHE_FLAT_KEY, repos, repoIndex: null };
         return;
     }
 
-    const chunks = [];
-    for (let index = 0; index < json.length; index += MAX_REPOS_CHUNK_SIZE) {
-        chunks.push(json.slice(index, index + MAX_REPOS_CHUNK_SIZE));
-    }
-
+    // shardPrefix 每次轮换（含时间戳/随机串），防止误删旧分片
     const nextShardPrefix = `${REPOS_SHARD_KEY_PREFIX}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
     chunks.forEach((chunk, index) => {
         utools.dbStorage.setItem(getReposShardKey(nextShardPrefix, index), chunk);
     });
 
-    utools.dbStorage.setItem('gh:repos:meta', {
+    const meta = {
         sharded: true,
         totalShards: chunks.length,
         shardPrefix: nextShardPrefix,
-    });
-    utools.dbStorage.removeItem('gh:repos');
+        formatVersion: REPOS_FORMAT_VERSION,
+        repoIndex,
+    };
+    utools.dbStorage.setItem(REPOS_META_KEY, meta);
+    utools.dbStorage.removeItem(REPOS_FLAT_KEY);
 
     if (oldMeta?.totalShards) {
         removeRepoShards(oldMeta.totalShards, getReposShardPrefix(oldMeta));
     }
+
+    reposCache = { key: computeReposCacheKey(meta), repos, repoIndex };
+}
+
+/**
+ * 重写单个分片（同片成员集合不变，仅成员内容更新）。
+ * @returns {boolean} 是否成功；分片超限（如 AI 总结使内容显著膨胀）时返回 false，调用方应回退整库重写
+ */
+function rewriteShard(repos, repoIndex, meta, shardIndex) {
+    const members = repos.filter(repo => repoIndex[String(repo.id)] === shardIndex);
+    const parts = members.map(repo => JSON.stringify(repo));
+
+    let text = parts.join(',');
+    if (shardIndex === 0) {
+        text = '[' + text;
+    }
+    text += (shardIndex === meta.totalShards - 1) ? ']' : ',';
+
+    if (byteLengthOf(text) > MAX_REPOS_CHUNK_SIZE) {
+        return false;
+    }
+    utools.dbStorage.setItem(getReposShardKey(getReposShardPrefix(meta), shardIndex), text);
+    return true;
+}
+
+function isShardIndexUsable(meta, repoIndex, id) {
+    if (!meta?.sharded || meta.formatVersion !== REPOS_FORMAT_VERSION || !repoIndex) {
+        return false;
+    }
+    const shardIndex = repoIndex[String(id)];
+    return Number.isInteger(shardIndex)
+        && shardIndex >= 0
+        && shardIndex < meta.totalShards;
+}
+
+/**
+ * 单仓库增量写（v2）：只重写目标仓库所在分片（同片成员集合不变）。
+ * 旧格式（无 formatVersion/repoIndex）或扁平存储：整库升级写（一次性迁移到新格式/单键重写）。
+ * @param {number} id
+ * @param {Object} patch
+ */
+function patchRepoById(id, patch) {
+    const cache = readCachedRepos();
+    const exists = cache.repos.some(repo => repo.id === id);
+    if (!exists) {
+        console.warn('[ReposStorage] patchRepo: 未找到仓库', id);
+        return;
+    }
+
+    const repos = cache.repos.map(repo => (repo.id === id ? { ...repo, ...patch } : repo));
+    const meta = readReposMeta();
+
+    if (isShardIndexUsable(meta, cache.repoIndex, id)) {
+        const shardIndex = cache.repoIndex[String(id)];
+        if (rewriteShard(repos, cache.repoIndex, meta, shardIndex)) {
+            reposCache = { key: cache.key, repos, repoIndex: cache.repoIndex };
+            return;
+        }
+        console.warn('[ReposStorage] patchRepo: 分片超限，回退整库重写');
+    }
+
+    writeRepos(repos);
+}
+
+/**
+ * 批量增量写（v2）：一次读缓存 → 应用全部 patch → 按 repoIndex 分组，只重写受影响分片。
+ * 未迁移旧格式则整库升级写。给批量 AI 分析等收尾场景使用（替代全量重写）。
+ * @param {Array<{ id: number, patch: Object }>} updates
+ */
+function patchReposByIdsBatch(updates) {
+    if (!Array.isArray(updates) || updates.length === 0) {
+        return;
+    }
+
+    const cache = readCachedRepos();
+    const patchMap = new Map();
+    for (const { id, patch } of updates) {
+        patchMap.set(id, patch);
+    }
+
+    const exists = new Set(cache.repos.map(repo => repo.id));
+    let changed = false;
+    const repos = cache.repos.map(repo => {
+        const patch = patchMap.get(repo.id);
+        if (!patch) return repo;
+        changed = true;
+        return { ...repo, ...patch };
+    });
+    if (!changed) {
+        return;
+    }
+
+    const meta = readReposMeta();
+
+    if (meta?.sharded && meta.formatVersion === REPOS_FORMAT_VERSION && cache.repoIndex) {
+        const affectedShards = new Set();
+        let indexComplete = true;
+        for (const id of patchMap.keys()) {
+            if (!exists.has(id)) continue;
+            if (!isShardIndexUsable(meta, cache.repoIndex, id)) {
+                indexComplete = false;
+                break;
+            }
+            affectedShards.add(cache.repoIndex[String(id)]);
+        }
+
+        if (indexComplete && affectedShards.size > 0) {
+            try {
+                for (const shardIndex of affectedShards) {
+                    if (!rewriteShard(repos, cache.repoIndex, meta, shardIndex)) {
+                        throw new Error(`分片 ${shardIndex} 重写超限`);
+                    }
+                }
+                reposCache = { key: cache.key, repos, repoIndex: cache.repoIndex };
+                return;
+            } catch (error) {
+                console.error('[ReposStorage] patchReposBatch: 增量写失败，回退整库重写:', error);
+                // 已有部分分片落盘，缓存失效，强制整库重写以恢复一致性
+                reposCache = { key: null, repos: [], repoIndex: null };
+            }
+        }
+    }
+
+    writeRepos(repos);
+}
+
+// ==================== 笔记索引（gh:noteIndex） ====================
+
+function getNoteKey(repoId) {
+    return `gh:note:${repoId}`;
+}
+
+function readNoteIndex() {
+    const index = utools.dbStorage.getItem(NOTE_INDEX_KEY);
+    return Array.isArray(index) ? index : null;
 }
 
 /**
@@ -268,21 +556,6 @@ function yieldToMain() {
     });
 }
 
-/**
- * 增量更新仓库数据
- * @param {Array} updatedRepos - 要更新的仓库列表
- */
-async function patchRepos(updatedRepos) {
-    const allRepos = loadStoredRepos();
-    const updatedMap = new Map(updatedRepos.map(r => [r.id, r]));
-
-    const merged = allRepos.map(repo =>
-        updatedMap.has(repo.id) ? updatedMap.get(repo.id) : repo
-    );
-
-    saveStoredRepos(merged);
-}
-
 // ==================== 暴露给前端 ====================
 window.githubStarsAPI = {
     // GitHub API
@@ -299,8 +572,21 @@ window.githubStarsAPI = {
     setSettings: (settings) => utools.dbCryptoStorage.setItem('gh:settings', settings),
     getToken: () => utools.dbCryptoStorage.getItem('gh:token'),
     setToken: (token) => utools.dbCryptoStorage.setItem('gh:token', token),
-    getRepos: () => loadStoredRepos(),
-    setRepos: (repos) => saveStoredRepos(repos),
+    getRepos: () => {
+        const cached = readCachedRepos();
+        // 元素级拷贝：防止渲染层突变污染 preload 内存缓存
+        return cached.repos.map(repo => ({
+            ...repo,
+            customTags: [...(repo.customTags || [])],
+            topics: [...(repo.topics || [])],
+            aiTags: [...(repo.aiTags || [])],
+        }));
+    },
+    setRepos: (repos) => writeRepos(repos),
+    // 🆕 v2 单仓库增量写：只重写目标仓库所在分片（详情页 AI 回写、别名/标签修改等）
+    patchRepo: (id, patch) => patchRepoById(id, patch),
+    // 🆕 v2 批量增量写：按 repoIndex 分组只重写受影响分片（批量 AI 分析收尾等）
+    patchReposBatch: (updates) => patchReposByIdsBatch(updates),
     getSyncState: () => utools.dbStorage.getItem('gh:syncState'),
     setSyncState: (state) => utools.dbStorage.setItem('gh:syncState', state),
     getStoredReleases: () => utools.dbStorage.getItem('gh:releases') || [],
@@ -345,20 +631,20 @@ window.githubStarsAPI = {
     },
 
     /**
-     * 删除标签（异步分片版本 v1.7.0）
-     * 优化：分片更新 + 让出主线程 + 错误处理
+     * 删除标签（原子化版本 v2 重构）
+     * 优化：单次读缓存 → 内存剥离标签 → yieldToMain → writeRepos 一次写（替代旧的分批 patch）
      * @param {string} id - 标签ID
-     * @returns {Promise<{updated: number, errors: number}>}
+     * @returns {Promise<{updated: number, errors: number}>} 写失败时 reject（不吞错）
      */
     deleteTag: async (id) => {
-        // 1. 删除标签并重新排序（同步操作，很快）
+        // 1. 删除标签定义并重排（同步操作，很快）
         const tags = window.githubStarsAPI.getTags().filter(t => t.id !== id);
         tags.forEach((t, i) => { t.order = i; });
         window.githubStarsAPI.setTags(tags);
 
-        // 2. 只筛选受影响的仓库
-        const repos = window.githubStarsAPI.getRepos();
-        const affectedRepos = repos.filter(repo =>
+        // 2. 单次读取缓存，筛选受影响的仓库
+        const cache = readCachedRepos();
+        const affectedRepos = cache.repos.filter(repo =>
             repo.customTags && repo.customTags.includes(id)
         );
 
@@ -366,43 +652,21 @@ window.githubStarsAPI = {
             return { updated: 0, errors: 0 };
         }
 
-        // 3. 分片处理
-        const CHUNK_SIZE = 50;
-        let updatedCount = 0;
-        const errors = [];
+        // 3. 写前让出主线程，随后一次写入
+        await yieldToMain();
 
-        for (let i = 0; i < affectedRepos.length; i += CHUNK_SIZE) {
-            const chunk = affectedRepos.slice(i, i + CHUNK_SIZE);
-
-            try {
-                // 让出主线程，避免阻塞 UI
-                await yieldToMain();
-
-                // 更新这一批仓库
-                const updatedChunk = chunk.map(repo => ({
+        const merged = cache.repos.map(repo =>
+            repo.customTags && repo.customTags.includes(id)
+                ? {
                     ...repo,
-                    customTags: (repo.customTags || []).filter(t => t !== id),
+                    customTags: repo.customTags.filter(t => t !== id),
                     updatedAt: Date.now()
-                }));
+                }
+                : repo
+        );
+        writeRepos(merged);
 
-                // 合并更新
-                await patchRepos(updatedChunk);
-                updatedCount += updatedChunk.length;
-            } catch (error) {
-                errors.push({ chunk: i, error });
-                // 继续处理其他批次，不中断
-                console.error(`[deleteTag] 批次 ${i} 更新失败:`, error);
-            }
-        }
-
-        if (errors.length > 0) {
-            console.error('[deleteTag] 部分批次更新失败:', errors);
-        }
-
-        return {
-            updated: updatedCount,
-            errors: errors.length
-        };
+        return { updated: affectedRepos.length, errors: 0 };
     },
 
     reorderTags: (tagIds) => {
@@ -415,9 +679,9 @@ window.githubStarsAPI = {
         window.githubStarsAPI.setTags(reordered);
     },
 
-    // ========== 笔记管理 🆕 v1.1.0 ==========
+    // ========== 笔记管理 🆕 v1.1.0（v2 增加笔记索引 gh:noteIndex） ==========
     getNote: (repoId) => {
-        return utools.dbStorage.getItem(`gh:note:${repoId}`);
+        return utools.dbStorage.getItem(getNoteKey(repoId));
     },
 
     setNote: (repoId, content) => {
@@ -429,20 +693,71 @@ window.githubStarsAPI = {
             createdAt: existing?.createdAt || Date.now(),
             updatedAt: Date.now()
         };
-        utools.dbStorage.setItem(`gh:note:${repoId}`, note);
+        utools.dbStorage.setItem(getNoteKey(repoId), note);
+
+        // 维护笔记索引；索引尚不存在（老用户未迁移）时不新建，避免漏掉未扫描的旧笔记，
+        // 等 getAllNotes 首次全量扫描时再建立完整索引
+        const index = readNoteIndex();
+        if (index && !index.includes(repoId)) {
+            index.push(repoId);
+            utools.dbStorage.setItem(NOTE_INDEX_KEY, index);
+        }
         return note;
     },
 
     deleteNote: (repoId) => {
-        utools.dbStorage.removeItem(`gh:note:${repoId}`);
+        utools.dbStorage.removeItem(getNoteKey(repoId));
+        const index = readNoteIndex();
+        if (index) {
+            const next = index.filter(id => id !== repoId);
+            if (next.length !== index.length) {
+                utools.dbStorage.setItem(NOTE_INDEX_KEY, next);
+            }
+        }
     },
 
     getAllNotes: () => {
-        // 通过遍历仓库获取所有笔记
-        const repos = loadStoredRepos();
-        return repos
-            .map(r => window.githubStarsAPI.getNote(r.id))
-            .filter(Boolean);
+        const cached = readCachedRepos();
+        const validRepoIds = new Set(cached.repos.map(repo => repo.id));
+        let index = readNoteIndex();
+        let persistIndex = false;
+
+        if (!index) {
+            // 老用户：无索引 → 走旧全量扫描一次，随后持久化索引
+            index = [];
+            for (const repoId of validRepoIds) {
+                if (utools.dbStorage.getItem(getNoteKey(repoId))) {
+                    index.push(repoId);
+                }
+            }
+            persistIndex = true;
+        }
+
+        const notes = [];
+        const nextIndex = [];
+        for (const repoId of index) {
+            // 顺手清理孤儿笔记（repoId 不在当前 repos 里的 gh:note:<id>）。
+            // 注：utools.dbStorage 仅提供 getItem/setItem/removeItem，无法枚举全部键，
+            // 因此只能清理索引可发现的孤儿；索引建立前遗留的孤儿（仓库早已删除）不可枚举，保持原样。
+            if (!validRepoIds.has(repoId)) {
+                utools.dbStorage.removeItem(getNoteKey(repoId));
+                persistIndex = true;
+                continue;
+            }
+            const note = utools.dbStorage.getItem(getNoteKey(repoId));
+            if (note) {
+                notes.push(note);
+                nextIndex.push(repoId);
+            } else {
+                persistIndex = true; // 索引项对应的笔记已被删，收缩索引
+            }
+        }
+
+        if (persistIndex) {
+            utools.dbStorage.setItem(NOTE_INDEX_KEY, nextIndex);
+        }
+
+        return notes;
     },
 
     // ========== 系统操作 ==========

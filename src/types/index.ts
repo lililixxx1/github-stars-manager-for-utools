@@ -206,6 +206,8 @@ export interface GithubStarsAPI {
     setToken: (token: string) => void;
     getRepos: () => Repository[];
     setRepos: (repos: Repository[]) => void;
+    patchRepo: (id: number, patch: Partial<Repository>) => void;                          // 🆕 v2 单仓库增量写
+    patchReposBatch: (updates: Array<{ id: number; patch: Partial<Repository> }>) => void; // 🆕 v2 批量增量写
     getSyncState: () => SyncState | null;
     setSyncState: (state: SyncState) => void;
     getStoredReleases: () => Release[];
@@ -220,7 +222,7 @@ export interface GithubStarsAPI {
     setTags: (tags: Tag[]) => void;
     addTag: (tag: Omit<Tag, 'id' | 'createdAt' | 'updatedAt'>) => Tag;
     updateTag: (id: string, updates: Partial<Omit<Tag, 'id' | 'createdAt'>>) => Tag | null;
-    deleteTag: (id: string) => void;
+    deleteTag: (id: string) => Promise<void>;          // v2 preload 侧为 async（原子化写入）
     reorderTags: (tagIds: string[]) => void;
 
     // ========== 笔记操作 🆕 v1.1.0 ==========

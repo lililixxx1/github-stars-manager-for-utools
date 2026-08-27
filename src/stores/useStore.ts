@@ -219,7 +219,7 @@ function buildNoteIndex(repositories: Repository[]): {
     const noteRepoIds = new Set<number>();
     const noteContentByRepoId = new Map<number, string>();
 
-    for (const note of window.githubStarsAPI.getAllNotes()) {
+    for (const note of storageService.getAllNotes()) {
         if (!validRepoIds.has(note.repoId)) continue;
 
         noteRepoIds.add(note.repoId);
@@ -247,11 +247,11 @@ export const useStore = create<AppState>((set, get) => ({
             // - 派生数据: Repository.isSubscribed (便于 UI 快速访问)
             // - 此处从 dbStorage 同步订阅状态到 Repository 对象
             // - 详见: docs/design/design-release-tracking.md §4.1 数据模型
-            const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
+            const subscriptionIds = storageService.getReleaseSubscriptions();
             const migrated = repos.map(r => ({
                 ...r,
                 customTags: r.customTags || [],
-                isSubscribed: subscriptionIds.includes(r.id),
+                isSubscribed: subscriptionIds.has(r.id),
             }));
             set({ repositories: migrated, ...buildNoteIndex(migrated) });
         });
@@ -320,11 +320,12 @@ export const useStore = create<AppState>((set, get) => ({
                     processedCount: result.processedCount,
                 });
 
-                const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
+                const subscriptionIds = storageService.getReleaseSubscriptions();
+                const subscriptionIdList = Array.from(subscriptionIds);
 
                 const mergedRepos = result.mode === 'full'
-                    ? mergeFullSyncedRepositories(result.repos, repositories, subscriptionIds)
-                    : mergeIncrementalRepositories(result.repos, repositories, subscriptionIds);
+                    ? mergeFullSyncedRepositories(result.repos, repositories, subscriptionIdList)
+                    : mergeIncrementalRepositories(result.repos, repositories, subscriptionIdList);
 
                 const nextSyncState = githubService.buildSyncState(mergedRepos, syncState, result.mode);
                 const nextSettings = {
@@ -457,7 +458,19 @@ export const useStore = create<AppState>((set, get) => ({
             });
 
             set({ repositories: nextRepositories });
-            storageService.setRepositories(nextRepositories);
+            // v2 批量增量落盘：只重写 AI 字段所在的受影响分片（替代全量 setRepositories）
+            storageService.patchReposBatch(
+                updated.map(repo => ({
+                    id: repo.id,
+                    patch: {
+                        aiSummary: repo.aiSummary,
+                        aiTags: repo.aiTags,
+                        aiPlatforms: repo.aiPlatforms,
+                        analyzedAt: repo.analyzedAt,
+                        analysisFailed: repo.analysisFailed,
+                    },
+                }))
+            );
 
             // 更新统计信息
             const successCount = updated.filter(r => !r.analysisFailed).length;
@@ -519,20 +532,20 @@ export const useStore = create<AppState>((set, get) => ({
     // ========== 🆕 v1.1.0 标签管理 ==========
     tags: [],
     loadTags: () => {
-        const tags = window.githubStarsAPI.getTags();
+        const tags = storageService.getTags();
         set({ tags });
     },
     setTags: (tags) => {
-        window.githubStarsAPI.setTags(tags);
+        storageService.setTags(tags);
         set({ tags });
     },
     addTag: (tagData) => {
-        const newTag = window.githubStarsAPI.addTag(tagData);
+        const newTag = storageService.addTag(tagData);
         set((state) => ({ tags: [...state.tags, newTag] }));
         return newTag;
     },
     updateTag: (id, updates) => {
-        const updated = window.githubStarsAPI.updateTag(id, updates);
+        const updated = storageService.updateTag(id, updates);
         if (updated) {
             set((state) => ({
                 tags: state.tags.map((t) => (t.id === id ? updated : t)),
@@ -541,7 +554,10 @@ export const useStore = create<AppState>((set, get) => ({
         return updated;
     },
     deleteTag: (id) => {
-        window.githubStarsAPI.deleteTag(id);
+        // v2 preload 为 async（单次读 + 一次原子写入）；失败不吞，记录错误
+        storageService.deleteTag(id).catch((error) => {
+            console.error('[deleteTag] 删除标签失败:', error);
+        });
         set((state) => ({
             tags: state.tags.filter((t) => t.id !== id),
             // 直接更新仓库中的 customTags，避免重新加载导致页面闪烁
@@ -552,7 +568,7 @@ export const useStore = create<AppState>((set, get) => ({
         }));
     },
     reorderTags: (tagIds) => {
-        window.githubStarsAPI.reorderTags(tagIds);
+        storageService.reorderTags(tagIds);
         get().loadTags();
     },
 
@@ -566,11 +582,11 @@ export const useStore = create<AppState>((set, get) => ({
     },
     hasRepoNote: (repoId) => get().noteRepoIds.has(repoId),
     loadNote: (repoId) => {
-        const note = window.githubStarsAPI.getNote(repoId);
+        const note = storageService.getNote(repoId);
         set({ currentNote: note });
     },
     saveNote: (repoId, content) => {
-        const note = window.githubStarsAPI.setNote(repoId, content);
+        const note = storageService.setNote(repoId, content);
         set((state) => {
             const noteRepoIds = new Set(state.noteRepoIds);
             const noteContentByRepoId = new Map(state.noteContentByRepoId);
@@ -581,7 +597,7 @@ export const useStore = create<AppState>((set, get) => ({
         return note;
     },
     deleteNote: (repoId) => {
-        window.githubStarsAPI.deleteNote(repoId);
+        storageService.deleteNote(repoId);
         set((state) => {
             const noteRepoIds = new Set(state.noteRepoIds);
             const noteContentByRepoId = new Map(state.noteContentByRepoId);
@@ -605,7 +621,8 @@ export const useStore = create<AppState>((set, get) => ({
                 r.id === id ? { ...r, ...updates } : r
             ),
         }));
-        get().saveRepositories();
+        // v2 单仓库增量落盘：只重写该仓库所在分片（替代全量 saveRepositories）
+        storageService.patchRepo(id, updates);
     },
 
     // 过滤后的仓库（使用优化后的筛选管道 v1.7.0）
@@ -633,8 +650,8 @@ export const useStore = create<AppState>((set, get) => ({
     togglingSubscriptions: new Set<number>(), // 🆕 v1.6.0 正在切换订阅的仓库 ID（防竞态）
 
     loadReleases: () => {
-        const stored = window.githubStarsAPI.getStoredReleases();
-        const readIds = new Set(window.githubStarsAPI.getReadReleaseIds());
+        const stored = storageService.getReleases();
+        const readIds = storageService.getReadReleaseIds();
         // 计算已读状态
         const releasesWithReadStatus = stored.map(r => ({
             ...r,
@@ -647,7 +664,7 @@ export const useStore = create<AppState>((set, get) => ({
         const { releases } = get();
         // 清理过期缓存
         const cleaned = releaseService.cleanupCache(releases);
-        window.githubStarsAPI.setStoredReleases(cleaned);
+        storageService.setReleases(cleaned);
     },
 
     checkReleaseUpdates: async () => {
@@ -662,9 +679,9 @@ export const useStore = create<AppState>((set, get) => ({
         if (!token) return;
 
         // 获取订阅的仓库
-        const subscribedRepoIds = window.githubStarsAPI.getReleaseSubscriptions();
-        logger.log('[ReleaseCheck] 订阅的仓库ID列表', subscribedRepoIds);
-        if (subscribedRepoIds.length === 0) return;
+        const subscribedRepoIds = storageService.getReleaseSubscriptions();
+        logger.log('[ReleaseCheck] 订阅的仓库ID列表', Array.from(subscribedRepoIds));
+        if (subscribedRepoIds.size === 0) return;
 
         set({
             releaseCheckStatus: {
@@ -676,7 +693,7 @@ export const useStore = create<AppState>((set, get) => ({
 
         try {
             const { updates, errors } = await releaseService.checkSubscribedRepos(
-                subscribedRepoIds,
+                Array.from(subscribedRepoIds),
                 token,
                 repositories.map(r => ({ id: r.id, fullName: r.fullName })),
                 (current, total, repoName) => {
@@ -702,7 +719,7 @@ export const useStore = create<AppState>((set, get) => ({
 
             if (updates.length > 0) {
                 // 🆕 v1.5.1 方案3: 构建本地已知仓库 ID 集合，区分"首次获取"和"真正更新"
-                const storedReleases = window.githubStarsAPI.getStoredReleases();
+                const storedReleases = storageService.getReleases();
                 const knownRepoIds = new Set(storedReleases.map(r => r.repository.id));
 
                 logger.log('[ReleaseCheck] 本地已缓存的版本数据', {
@@ -737,10 +754,10 @@ export const useStore = create<AppState>((set, get) => ({
                 const cleaned = releaseService.cleanupCache(allReleases);
 
                 // 保存到存储
-                window.githubStarsAPI.setStoredReleases(cleaned);
+                storageService.setReleases(cleaned);
 
                 // 更新状态
-                const readIds = new Set(window.githubStarsAPI.getReadReleaseIds());
+                const readIds = storageService.getReadReleaseIds();
                 const releasesWithReadStatus = cleaned.map(r => ({
                     ...r,
                     isRead: readIds.has(r.id),
@@ -807,11 +824,11 @@ export const useStore = create<AppState>((set, get) => ({
 
     markReleaseRead: (releaseId: number) => {
         const { releases } = get();
-        const readIds = window.githubStarsAPI.getReadReleaseIds();
+        const readIds = storageService.getReadReleaseIds();
 
-        if (!readIds.includes(releaseId)) {
-            readIds.push(releaseId);
-            window.githubStarsAPI.setReadReleaseIds(readIds);
+        if (!readIds.has(releaseId)) {
+            readIds.add(releaseId);
+            storageService.setReadReleaseIds(readIds);
         }
 
         set({
@@ -828,13 +845,13 @@ export const useStore = create<AppState>((set, get) => ({
     markAllReleasesRead: () => {
         const { releases } = get();
         // 🆕 v1.6.2 只将已订阅仓库的 Release 标记为已读
-        const subscribedRepoIds = window.githubStarsAPI.getReleaseSubscriptions();
-        const subscribedReleases = releases.filter(r => subscribedRepoIds.includes(r.repository.id));
+        const subscribedRepoIds = storageService.getReleaseSubscriptions();
+        const subscribedReleases = releases.filter(r => subscribedRepoIds.has(r.repository.id));
         const allIds = subscribedReleases.map(r => r.id);
-        window.githubStarsAPI.setReadReleaseIds(allIds);
+        storageService.setReadReleaseIds(new Set(allIds));
 
         set({
-            releases: releases.map(r => subscribedRepoIds.includes(r.repository.id) ? { ...r, isRead: true } : r),
+            releases: releases.map(r => subscribedRepoIds.has(r.repository.id) ? { ...r, isRead: true } : r),
             releaseCheckStatus: {
                 ...get().releaseCheckStatus,
                 newCount: 0,
@@ -845,8 +862,8 @@ export const useStore = create<AppState>((set, get) => ({
     getUnreadCount: () => {
         const { releases } = get();
         // 🆕 v1.6.2 仅统计已订阅仓库的未读更新，避免退订后仍有未读角标
-        const subscribedRepoIds = window.githubStarsAPI.getReleaseSubscriptions();
-        return releases.filter(r => !r.isRead && subscribedRepoIds.includes(r.repository.id)).length;
+        const subscribedRepoIds = storageService.getReleaseSubscriptions();
+        return releases.filter(r => !r.isRead && subscribedRepoIds.has(r.repository.id)).length;
     },
 
     setReleaseFilter: (filter: Partial<ReleaseFilter>) => {
@@ -858,14 +875,15 @@ export const useStore = create<AppState>((set, get) => ({
     // ========== 🆕 v1.5.0 订阅管理 ==========
     getSubscribedRepos: () => {
         const { repositories } = get();
-        const ids = window.githubStarsAPI.getReleaseSubscriptions();
+        const ids = storageService.getReleaseSubscriptions();
         // 过滤出存在的仓库（清理无效订阅）
-        const validIds = ids.filter(id => repositories.some(r => r.id === id));
+        const validIds = Array.from(ids).filter(id => repositories.some(r => r.id === id));
         // 如果有无效订阅，自动清理
-        if (validIds.length !== ids.length) {
-            window.githubStarsAPI.setReleaseSubscriptions(validIds);
+        if (validIds.length !== ids.size) {
+            storageService.setReleaseSubscriptions(new Set(validIds));
         }
-        return repositories.filter(r => validIds.includes(r.id));
+        const validIdSet = new Set(validIds);
+        return repositories.filter(r => validIdSet.has(r.id));
     },
 
     // 🆕 v1.6.0: 乐观更新 + 后台异步获取基准版本（解决订阅按钮延迟问题）
@@ -873,16 +891,16 @@ export const useStore = create<AppState>((set, get) => ({
     toggleSubscription: (repoId: number) => {
         logger.log('[toggleSubscription] 开始', { repoId });
 
-        const ids = window.githubStarsAPI.getReleaseSubscriptions();
-        const index = ids.indexOf(repoId);
+        const ids = storageService.getReleaseSubscriptions();
+        const isSubscribed = ids.has(repoId);
 
         logger.log('[toggleSubscription] 当前订阅状态', {
-            当前订阅列表: ids,
-            是否已订阅: index !== -1,
-            操作: index === -1 ? '添加订阅' : '取消订阅',
+            当前订阅列表: Array.from(ids),
+            是否已订阅: isSubscribed,
+            操作: isSubscribed ? '取消订阅' : '添加订阅',
         });
 
-        if (index === -1) {
+        if (!isSubscribed) {
             // ========== 新订阅：乐观更新 ==========
 
             // 🔧 只对新订阅检查锁（取消订阅是同步操作，不需要锁保护）
@@ -893,9 +911,9 @@ export const useStore = create<AppState>((set, get) => ({
             }
 
             // 1️⃣ 立即更新订阅状态（乐观更新）
-            ids.push(repoId);
-            window.githubStarsAPI.setReleaseSubscriptions(ids);
-            logger.log('[toggleSubscription] 订阅列表已更新（乐观）', { 新订阅列表: ids });
+            ids.add(repoId);
+            storageService.setReleaseSubscriptions(ids);
+            logger.log('[toggleSubscription] 订阅列表已更新（乐观）', { 新订阅列表: Array.from(ids) });
 
             // 2️⃣ 触发响应式更新
             set((state) => ({ subscriptionVersion: state.subscriptionVersion + 1 }));
@@ -936,7 +954,7 @@ export const useStore = create<AppState>((set, get) => ({
                                 updatedReleases = [newRelease, ...currentReleases];
                             }
 
-                            window.githubStarsAPI.setStoredReleases(updatedReleases);
+                            storageService.setReleases(updatedReleases);
                             set({ releases: updatedReleases });
                         }
                     })
@@ -955,15 +973,15 @@ export const useStore = create<AppState>((set, get) => ({
             }
         } else {
             // ========== 取消订阅：立即生效（无锁检查）==========
-            ids.splice(index, 1);
-            window.githubStarsAPI.setReleaseSubscriptions(ids);
-            logger.log('[toggleSubscription] 取消订阅成功', { 新订阅列表: ids });
+            ids.delete(repoId);
+            storageService.setReleaseSubscriptions(ids);
+            logger.log('[toggleSubscription] 取消订阅成功', { 新订阅列表: Array.from(ids) });
             set((state) => ({ subscriptionVersion: state.subscriptionVersion + 1 }));
         }
     },
 
     clearAllSubscriptions: () => {
-        window.githubStarsAPI.setReleaseSubscriptions([]);
+        storageService.setReleaseSubscriptions(new Set<number>());
         // 同步清理 Repository 对象上的 isSubscribed 并触发响应式更新
         set((state) => ({
             subscriptionVersion: state.subscriptionVersion + 1,
