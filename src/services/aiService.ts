@@ -135,6 +135,12 @@ export const aiService = {
 
     /**
      * 批量分析仓库
+     *
+     * 阶段3 不可变契约：传入的 repo 对象与 store 中是同一引用，
+     * 因此这里**绝不原地突变**——分析结果构造为新对象放入 results，
+     * 由调用方（useStore.startAutoAnalyze）合并进状态数组。
+     * 未被分析（结果为 null）的仓库保持原引用返回。
+     *
      * @param repos 要分析的仓库列表
      * @param token GitHub Token
      * @param onProgress 进度回调
@@ -164,22 +170,30 @@ export const aiService = {
 
                 try {
                     const result = await aiService.analyzeRepository(repo, token, language, model);
-                    if (result && !signal?.aborted) {
-                        repo.aiSummary = result.summary;
-                        repo.aiTags = result.tags;
-                        repo.aiPlatforms = result.platforms;
-                        repo.analyzedAt = new Date().toISOString();
-                        repo.analysisFailed = false;
+                    if (!signal?.aborted) {
+                        if (result) {
+                            // 构造新对象，不触碰传入引用（搜索索引 WeakMap 依赖引用不可变语义）
+                            results.set(repo.id, {
+                                ...repo,
+                                aiSummary: result.summary,
+                                aiTags: result.tags,
+                                aiPlatforms: result.platforms,
+                                analyzedAt: new Date().toISOString(),
+                                analysisFailed: false,
+                            });
+                        } else {
+                            // 分析结果为空：保持原对象不变
+                            results.set(repo.id, repo);
+                        }
                     }
                 } catch (error) {
                     if (!signal?.aborted) {
                         console.error(`Failed to analyze ${repo.fullName}:`, error);
-                        repo.analysisFailed = true;
+                        results.set(repo.id, { ...repo, analysisFailed: true });
                     }
                 }
 
                 if (!signal?.aborted) {
-                    results.set(repo.id, repo);  // 使用 Map 保证唯一性
                     completed++;
                     onProgress(completed, repos.length, repo);
                 }

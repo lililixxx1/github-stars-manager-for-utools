@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useStore } from '../stores/useStore';
 import { useProgressStore } from '../stores/useProgressStore';
 import { storageService } from '../services/storageService';
@@ -172,7 +172,11 @@ export const SettingsPage: React.FC = () => {
         { value: 'dark', icon: <Moon size={14} />, label: t('darkTheme', lang) },
     ] as const;
 
-    const subscribedCount = window.githubStarsAPI.getReleaseSubscriptions().length;
+    // 订阅数从 store 派生（阶段3：订阅单源 repositories.isSubscribed，不渲染期直读存储）
+    const subscribedCount = useMemo(
+        () => repositories.reduce((count, r) => (r.isSubscribed ? count + 1 : count), 0),
+        [repositories]
+    );
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>

@@ -12,11 +12,37 @@ import { ToastHost } from './components/Toast';
 import { t } from './locales';
 import { logger } from './utils/logger';
 
+// ==================== 子输入框关键词防抖（阶段3 性能重构） ====================
+
+/** 防抖间隔：每敲一个字符不再全量重算筛选管道 */
+const SUBINPUT_DEBOUNCE_MS = 120;
+
+/** 模块级防抖定时器（setSubInput 回调闭包不稳定，不能用 ref 挂在组件上） */
+let subInputDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 取消挂起的防抖写入（程序化设置关键词前必须调用，避免旧词复活） */
+function cancelPendingSubInputKeyword(): void {
+    if (subInputDebounceTimer !== null) {
+        clearTimeout(subInputDebounceTimer);
+        subInputDebounceTimer = null;
+    }
+}
+
+/** 防抖写入关键词（仅用于子输入框 onChange 打字路径） */
+function scheduleSubInputKeyword(text: string): void {
+    cancelPendingSubInputKeyword();
+    subInputDebounceTimer = setTimeout(() => {
+        subInputDebounceTimer = null;
+        useStore.getState().setSearchFilter({ keyword: text });
+    }, SUBINPUT_DEBOUNCE_MS);
+}
+
 function setupRepositorySearchSubInput(isFocus = true): void {
     if (typeof utools === 'undefined') return;
 
     utools.setSubInput(({ text }) => {
-        useStore.getState().setSearchFilter({ keyword: text });
+        // 打字路径走 120ms 防抖：筛选管道（搜索/排序）不再每键全量重算
+        scheduleSubInputKeyword(text);
     }, '搜索仓库...', isFocus);
 }
 
@@ -95,9 +121,8 @@ const App: React.FC = () => {
             if (useProgressStore.getState().releaseCheckStatus.checking) return;
 
             if (currentToken && currentSettings?.autoCheckReleaseUpdates !== false) {
-                // 检查是否有订阅的仓库
-                const subscriptions = window.githubStarsAPI.getReleaseSubscriptions();
-                if (subscriptions.length > 0) {
+                // 检查是否有订阅的仓库（订阅单源：store 内 subscribedRepoIds，loadRepositories 已装载）
+                if (state.subscribedRepoIds.size > 0) {
                     state.checkReleaseUpdates();
                 }
             }
@@ -142,6 +167,8 @@ const App: React.FC = () => {
         };
 
         const handleSearch = (e: CustomEvent) => {
+            // 程序化设置关键词：不走防抖，并取消挂起的防抖定时器避免旧词复活
+            cancelPendingSubInputKeyword();
             useStore.getState().setSearchFilter({ keyword: e.detail.query });
         };
 
@@ -187,6 +214,8 @@ const App: React.FC = () => {
 
                         setCurrentPage('home');
                         // 🆕 v1.6.4 清空上次搜索词，使空子输入框与"全部仓库"列表保持一致
+                        // 程序化路径：取消挂起的防抖定时器，避免旧关键词在清空后复活
+                        cancelPendingSubInputKeyword();
                         useStore.getState().setSearchFilter({ keyword: '' });
                         // 设置子输入框
                         setupRepositorySearchSubInput(true);
@@ -194,6 +223,8 @@ const App: React.FC = () => {
                     case 'github-stars-search':
                         setCurrentPage('home');
                         if (typeof payload === 'string') {
+                            // 程序化路径：立即生效并取消挂起的防抖写入
+                            cancelPendingSubInputKeyword();
                             useStore.getState().setSearchFilter({ keyword: payload });
                             setupRepositorySearchSubInput(true);
                             if (payload) {
@@ -210,6 +241,8 @@ const App: React.FC = () => {
                                 setCurrentPage('detail');
                             } else {
                                 setCurrentPage('home');
+                                // 程序化路径：立即生效并取消挂起的防抖写入
+                                cancelPendingSubInputKeyword();
                                 useStore.getState().setSearchFilter({ keyword: payload });
                                 setupRepositorySearchSubInput(true);
                             }
@@ -230,6 +263,8 @@ const App: React.FC = () => {
         // 🆕 v1.6.4 双向管理子输入框：进入 home 时挂载，离开 home 时移除
         if (currentPage === 'home') {
             // 返回首页时清空上次搜索词，与空子输入框保持一致（方案B 语义）
+            // 程序化清空：取消挂起的防抖定时器，避免旧关键词复活
+            cancelPendingSubInputKeyword();
             useStore.getState().setSearchFilter({ keyword: '' });
             setupRepositorySearchSubInput(true);
         } else {

@@ -39,18 +39,22 @@ export function ReleasesPage() {
     const clearAllSubscriptions = useStore((state) => state.clearAllSubscriptions);
     const releasesInitialTab = useStore((state) => state.releasesInitialTab);
     const setReleasesInitialTab = useStore((state) => state.setReleasesInitialTab);
+    // 阶段3：Tab 持久化迁移到 settings（走既有 saveSettings 路径，删除 localStorage 用法）
+    const saveSettings = useStore((state) => state.saveSettings);
 
     // 版本检查状态来自独立的 progress store
     const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
 
     // 订阅 repositories 状态以触发响应式更新
     const repositories = useStore((state) => state.repositories);
-    const subscriptionVersion = useStore((state) => state.subscriptionVersion);
+    // 订阅单源：内存 subscribedRepoIds（阶段3 起不渲染期直读存储表）
+    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
 
     const lang = (settings.language || 'zh') as Language;
     const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
     const [activeTab, setActiveTab] = useState<TabType>(() => {
-        return releasesInitialTab || (localStorage.getItem('releasesTab') as TabType) || 'updates';
+        // 初始 Tab 优先级：跳转指定 > 上次停留（settings.lastReleasesTab）> 默认 updates
+        return releasesInitialTab || useStore.getState().settings.lastReleasesTab || 'updates';
     });
     const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 
@@ -79,10 +83,10 @@ export function ReleasesPage() {
         }
     }, [releases.length, releaseCheckStatus.newCount, releaseCheckStatus.checking]);
 
-    // 保存 Tab 状态
+    // 保存 Tab 状态（阶段3：走 settings 持久化）
     const handleTabChange = (tab: TabType) => {
         setActiveTab(tab);
-        localStorage.setItem('releasesTab', tab);
+        saveSettings({ lastReleasesTab: tab });
     };
 
     useBackShortcut({
@@ -103,11 +107,10 @@ export function ReleasesPage() {
         deps: [handleBack, selectedRelease, showConfirmDialog],
     });
 
-    // 筛选版本
-    const subscribedRepoIds = window.githubStarsAPI.getReleaseSubscriptions();
-    const filteredReleases = releases.filter((release) => {
+    // 筛选版本（阶段3：useMemo 化 + 订阅单源，去除渲染期存储读）
+    const filteredReleases = useMemo(() => releases.filter((release) => {
         // 🆕 v1.6.0: 只显示仍处于订阅状态仓库的 Release（隐藏取消订阅后的"幽灵"卡片）
-        if (!subscribedRepoIds.includes(release.repository.id)) {
+        if (!subscribedRepoIds.has(release.repository.id)) {
             return false;
         }
 
@@ -121,11 +124,12 @@ export function ReleasesPage() {
             if (!hasAsset) return false;
         }
         return true;
-    });
+    }), [releases, releaseFilter, subscribedRepoIds]);
 
-    const sortedReleases = [...filteredReleases].sort(
+    // 排序也 memo 化：发布时间比较只在这份数据变化时执行
+    const sortedReleases = useMemo(() => [...filteredReleases].sort(
         (a, b) => new Date(b.publishedAt || b.published_at || '').getTime() - new Date(a.publishedAt || a.published_at || '').getTime()
-    );
+    ), [filteredReleases]);
 
     // 使用 useMemo 构建仓库 Map，避免重复查找
     const repositoryMap = useMemo(() => {
@@ -134,11 +138,10 @@ export function ReleasesPage() {
         return map;
     }, [repositories]);
 
-    // 使用 useMemo 计算已订阅仓库（响应式更新）
+    // 使用 useMemo 计算已订阅仓库（订阅单源派生，响应式更新）
     const subscribedRepos = useMemo(() => {
-        const ids = window.githubStarsAPI.getReleaseSubscriptions();
-        return repositories.filter(r => ids.includes(r.id));
-    }, [repositories, subscriptionVersion]);
+        return repositories.filter(r => subscribedRepoIds.has(r.id));
+    }, [repositories, subscribedRepoIds]);
 
     const handleCheckUpdates = async () => {
         await checkReleaseUpdates();
@@ -167,7 +170,7 @@ export function ReleasesPage() {
         // 存储待撤销数据
         pendingUnsubscribeRef.current = { repoId: repo.id, repoName: repo.fullName };
 
-        // 立即更新 UI（通过 store 统一操作 dbStorage + subscriptionVersion）
+        // 立即更新 UI（store 统一维护 dbStorage + 内存订阅单源 + repositories.isSubscribed）
         toggleSubscription(repo.id);
 
         // 显示 Toast

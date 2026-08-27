@@ -86,14 +86,17 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     // 精确订阅（阶段2 性能重构）
     const searchFilter = useStore((state) => state.searchFilter);
     const setSearchFilter = useStore((state) => state.setSearchFilter);
+    // 阶段3 排序收敛：排序菜单改用专用 action（原子写 settings + searchFilter）
+    const setSortPreference = useStore((state) => state.setSortPreference);
     const setCurrentPage = useStore((state) => state.setCurrentPage);
-    const subscriptionVersion = useStore((state) => state.subscriptionVersion);
-    // 未读数依赖 releases 与订阅数据，订阅二者保持角标响应式（原先靠全量订阅驱动）
+    // 订阅单源：内存 subscribedRepoIds（阶段3 起不再渲染期直读存储表/subscriptionVersion）
+    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
+    // 未读数依赖 releases 与订阅数据，订阅二者保持角标响应式
     const releases = useStore((state) => state.releases);
     const getUnreadCount = useStore((state) => state.getUnreadCount);
     const unreadCount = useMemo(
         () => getUnreadCount(),
-        [getUnreadCount, releases, subscriptionVersion]
+        [getUnreadCount, releases, subscribedRepoIds]
     );
     const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
 
@@ -106,20 +109,21 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
     const showUnreadBadge = unreadCount > 0 || releaseCheckStatus.checking;
+    // 订阅数从 store 派生（repositories.isSubscribed 由 loadRepositories/toggle/clear 维护）
     const subscribedCount = useMemo(
-        () => window.githubStarsAPI?.getReleaseSubscriptions?.().length || 0,
-        [subscriptionVersion]
+        () => repositories.reduce((count, r) => (r.isSubscribed ? count + 1 : count), 0),
+        [repositories]
     );
 
-    // 排序操作
+    // 排序操作（阶段3：走 setSortPreference，排序偏好原子持久化）
     const handleSortChange = useCallback((sortBy: SortBy) => {
-        setSearchFilter({ sortBy });
+        setSortPreference({ sortBy });
         setShowSortMenu(false);
-    }, [setSearchFilter]);
+    }, [setSortPreference]);
 
     const toggleSortOrder = useCallback(() => {
-        setSearchFilter({ sortOrder: searchFilter.sortOrder === 'asc' ? 'desc' : 'asc' });
-    }, [searchFilter.sortOrder, setSearchFilter]);
+        setSortPreference({ sortOrder: searchFilter.sortOrder === 'asc' ? 'desc' : 'asc' });
+    }, [searchFilter.sortOrder, setSortPreference]);
 
     const handleOpenReleases = useCallback(() => {
         setCurrentPage('releases');
@@ -807,9 +811,24 @@ const PlatformFilterBar = memo<{
     onClear: () => void;
 }>(({ repositories, selectedPlatforms, lang, onClose, onPlatformToggle, onClear }) => {
     const { containerRef, syncActiveIndex } = useFilterPanelNav({ enabled: true, onClose });
-    const unanalyzedCount = repositories.filter(r =>
-        !r.analyzedAt && !r.analysisFailed
-    ).length;
+
+    // 阶段3 派生统计 memo 化：一次遍历生成平台计数 Map + 未分析计数
+    // （原实现每个平台选项各做一次全量 filter，约 9 次遍历）
+    const { platformCounts, unanalyzedCount } = useMemo(() => {
+        const counts = new Map<string, number>();
+        let unanalyzed = 0;
+        for (const repo of repositories) {
+            if (!repo.analyzedAt && !repo.analysisFailed) {
+                unanalyzed++;
+            }
+            if (repo.aiPlatforms) {
+                for (const platform of repo.aiPlatforms) {
+                    counts.set(platform, (counts.get(platform) || 0) + 1);
+                }
+            }
+        }
+        return { platformCounts: counts, unanalyzedCount: unanalyzed };
+    }, [repositories]);
 
     return (
         <div
@@ -845,7 +864,7 @@ const PlatformFilterBar = memo<{
 
             {/* 平台选项 */}
             {PLATFORM_OPTIONS.map((platform) => {
-                const count = repositories.filter(r => r.aiPlatforms?.includes(platform.id)).length;
+                const count = platformCounts.get(platform.id) || 0;
                 const isSelected = selectedPlatforms.includes(platform.id);
                 return (
                     <button

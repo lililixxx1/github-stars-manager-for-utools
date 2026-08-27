@@ -29,6 +29,8 @@ interface AppState {
     // 搜索过滤
     searchFilter: SearchFilter;
     setSearchFilter: (filter: Partial<SearchFilter>) => void;
+    // 🆕 阶段3 排序偏好唯一写入口：原子地持久化 settings + 更新 searchFilter
+    setSortPreference: (updates: { sortBy?: SortBy; sortOrder?: SortOrder }) => void;
 
     // 同步（进度状态 syncStatus/syncProgress/syncError 已迁至 useProgressStore，避免双源）
     syncRepositories: () => Promise<void>; // 🆕 v1.6.3 同步方法移至 store（支持全局调用）
@@ -94,10 +96,10 @@ interface AppState {
     setReleaseFilter: (filter: Partial<ReleaseFilter>) => void;
 
     // ========== 🆕 v1.5.0 订阅管理 ==========
+    subscribedRepoIds: Set<number>;                 // 🆕 阶段3 订阅单源（内存态，来源 gh:releaseSubscriptions）
     getSubscribedRepos: () => Repository[];           // 获取已订阅仓库（派生）
     toggleSubscription: (repoId: number) => void;     // 切换订阅状态（v1.6.0 乐观更新）
     clearAllSubscriptions: () => void;                // 清空所有订阅
-    subscriptionVersion: number;                       // 订阅版本号（用于触发响应式更新）
     togglingSubscriptions: Set<number>;               // 🆕 v1.6.0 正在切换订阅的仓库 ID（防竞态）
     releasesInitialTab?: 'updates' | 'subscriptions'; // 🆕 v1.5.0 设置页跳转到版本页时的初始 Tab
     setReleasesInitialTab: (tab?: 'updates' | 'subscriptions') => void;
@@ -234,8 +236,8 @@ export const useStore = create<AppState>((set, get) => ({
             const repos = storageService.getRepositories();
             // 订阅状态同步机制说明:
             // - 主数据源: gh:releaseSubscriptions (独立数组存储)
-            // - 派生数据: Repository.isSubscribed (便于 UI 快速访问)
-            // - 此处从 dbStorage 同步订阅状态到 Repository 对象
+            // - 内存单源: subscribedRepoIds (Set，阶段3 起组件一律从这里派生，渲染期不直读存储)
+            // - 派生数据: Repository.isSubscribed (便于 UI 快速访问，由本处及订阅 actions 维护)
             // - 详见: docs/design/design-release-tracking.md §4.1 数据模型
             const subscriptionIds = storageService.getReleaseSubscriptions();
             const migrated = repos.map(r => ({
@@ -243,7 +245,7 @@ export const useStore = create<AppState>((set, get) => ({
                 customTags: r.customTags || [],
                 isSubscribed: subscriptionIds.has(r.id),
             }));
-            set({ repositories: migrated, ...buildNoteIndex(migrated) });
+            set({ repositories: migrated, subscribedRepoIds: subscriptionIds, ...buildNoteIndex(migrated) });
         });
     },
     saveRepositories: () => {
@@ -262,17 +264,34 @@ export const useStore = create<AppState>((set, get) => ({
             currentPageNum: 1,
         }));
 
-        // 🆕 v1.6.2 持久化排序设置到 settings
-        if (filter.sortBy !== undefined || filter.sortOrder !== undefined) {
-            const currentSettings = get().settings;
-            const newSettings = {
-                ...currentSettings,
-                defaultSortBy: filter.sortBy ?? currentSettings.defaultSortBy,
-                defaultSortOrder: filter.sortOrder ?? currentSettings.defaultSortOrder,
-            };
-            storageService.setSettings(newSettings);
-            set({ settings: newSettings });
-        }
+        // 阶段3 排序收敛：setSearchFilter 不再持久化排序偏好。
+        // 排序的唯一写入口是 setSortPreference（UI 操作），
+        // 唯一回填读路径是 loadSettings（settings.defaultSortBy/Order → searchFilter）。
+    },
+
+    /**
+     * 🆕 阶段3 排序偏好唯一写入口（替代 v1.6.2 在 setSearchFilter 内的持久化分支）
+     *
+     * 数据流向：UI 改排序 → 本 action 原子地
+     *   1. 写 settings.defaultSortBy/defaultSortOrder（持久化）
+     *   2. 写 searchFilter.sortBy/sortOrder（本次会话生效）
+     * → 重启后 loadSettings 把 settings 回填 searchFilter。
+     */
+    setSortPreference: (updates) => {
+        const state = get();
+        const nextSortBy = updates.sortBy ?? state.searchFilter.sortBy;
+        const nextSortOrder = updates.sortOrder ?? state.searchFilter.sortOrder;
+        const nextSettings = {
+            ...state.settings,
+            defaultSortBy: nextSortBy,
+            defaultSortOrder: nextSortOrder,
+        };
+        storageService.setSettings(nextSettings);
+        set({
+            settings: nextSettings,
+            searchFilter: { ...state.searchFilter, sortBy: nextSortBy, sortOrder: nextSortOrder },
+            currentPageNum: 1,
+        });
     },
 
     // 🆕 v1.6.3 同步方法移至 store（支持从任意页面触发）
@@ -309,8 +328,8 @@ export const useStore = create<AppState>((set, get) => ({
                     processedCount: result.processedCount,
                 });
 
-                const subscriptionIds = storageService.getReleaseSubscriptions();
-                const subscriptionIdList = Array.from(subscriptionIds);
+                // 订阅单源：合并时从内存 subscribedRepoIds 取（loadRepositories/toggle 已与存储同步）
+                const subscriptionIdList = Array.from(get().subscribedRepoIds);
 
                 const mergedRepos = result.mode === 'full'
                     ? mergeFullSyncedRepositories(result.repos, repositories, subscriptionIdList)
@@ -431,7 +450,10 @@ export const useStore = create<AppState>((set, get) => ({
                 controller.signal
             );
 
-            // 不可变更新仓库数据，确保 Zustand 订阅和 memo 组件稳定刷新
+            // 合并 AI 分析结果到仓库数据。
+            // 阶段3 起 batchAnalyze 返回新对象（不再原地突变传入的 repo），
+            // 此处逐字段 spread 合并生成新的 repositories 数组/对象，
+            // Zustand 订阅与 memo 组件按引用稳定刷新，搜索索引 WeakMap 同步失效。
             const updatedById = new Map(updated.map(repo => [repo.id, repo]));
             const nextRepositories = repositories.map(repo => {
                 const updatedRepo = updatedById.get(repo.id);
@@ -628,7 +650,7 @@ export const useStore = create<AppState>((set, get) => ({
     // ========== 🆕 v1.4.0 版本追踪 ==========
     releases: [],
     releaseFilter: { ...defaultReleaseFilter },
-    subscriptionVersion: 0, // 订阅版本号，用于触发响应式更新
+    subscribedRepoIds: new Set<number>(), // 🆕 阶段3 订阅单源（loadRepositories 时装载）
     togglingSubscriptions: new Set<number>(), // 🆕 v1.6.0 正在切换订阅的仓库 ID（防竞态）
 
     loadReleases: () => {
@@ -668,8 +690,8 @@ export const useStore = create<AppState>((set, get) => ({
             return;
         }
 
-        // 获取订阅的仓库
-        const subscribedRepoIds = storageService.getReleaseSubscriptions();
+        // 获取订阅的仓库（订阅单源：内存 subscribedRepoIds）
+        const subscribedRepoIds = get().subscribedRepoIds;
         logger.log('[ReleaseCheck] 订阅的仓库ID列表', Array.from(subscribedRepoIds));
         if (subscribedRepoIds.size === 0) return;
 
@@ -816,8 +838,8 @@ export const useStore = create<AppState>((set, get) => ({
 
     markAllReleasesRead: () => {
         const { releases } = get();
-        // 🆕 v1.6.2 只将已订阅仓库的 Release 标记为已读
-        const subscribedRepoIds = storageService.getReleaseSubscriptions();
+        // 🆕 v1.6.2 只将已订阅仓库的 Release 标记为已读（订阅单源：内存 Set）
+        const subscribedRepoIds = get().subscribedRepoIds;
         const subscribedReleases = releases.filter(r => subscribedRepoIds.has(r.repository.id));
         const allIds = subscribedReleases.map(r => r.id);
         storageService.setReadReleaseIds(new Set(allIds));
@@ -829,9 +851,9 @@ export const useStore = create<AppState>((set, get) => ({
     },
 
     getUnreadCount: () => {
-        const { releases } = get();
+        const { releases, subscribedRepoIds } = get();
         // 🆕 v1.6.2 仅统计已订阅仓库的未读更新，避免退订后仍有未读角标
-        const subscribedRepoIds = storageService.getReleaseSubscriptions();
+        // 阶段3 起纯派生：releases + 内存订阅 Set，不读存储
         return releases.filter(r => !r.isRead && subscribedRepoIds.has(r.repository.id)).length;
     },
 
@@ -843,28 +865,31 @@ export const useStore = create<AppState>((set, get) => ({
 
     // ========== 🆕 v1.5.0 订阅管理 ==========
     getSubscribedRepos: () => {
-        const { repositories } = get();
-        const ids = storageService.getReleaseSubscriptions();
+        const { repositories, subscribedRepoIds } = get();
         // 过滤出存在的仓库（清理无效订阅）
-        const validIds = Array.from(ids).filter(id => repositories.some(r => r.id === id));
-        // 如果有无效订阅，自动清理
-        if (validIds.length !== ids.size) {
-            storageService.setReleaseSubscriptions(new Set(validIds));
+        const validIds = Array.from(subscribedRepoIds).filter(id => repositories.some(r => r.id === id));
+        // 如果有无效订阅，自动清理（存储 + 内存单源同步更新）
+        if (validIds.length !== subscribedRepoIds.size) {
+            const cleaned = new Set(validIds);
+            storageService.setReleaseSubscriptions(cleaned);
+            set({ subscribedRepoIds: cleaned });
+            return repositories.filter(r => cleaned.has(r.id));
         }
-        const validIdSet = new Set(validIds);
-        return repositories.filter(r => validIdSet.has(r.id));
+        return repositories.filter(r => subscribedRepoIds.has(r.id));
     },
 
     // 🆕 v1.6.0: 乐观更新 + 后台异步获取基准版本（解决订阅按钮延迟问题）
     // 🔧 v1.6.2: 修复取消订阅被锁阻止的问题，将锁检查移至新订阅分支内部
+    // 🔧 阶段3: 订阅单源化——同步维护内存 subscribedRepoIds 与 repositories[].isSubscribed
+    //          （不可变更新），组件不再需要渲染期直读存储表或 subscriptionVersion
     toggleSubscription: (repoId: number) => {
         logger.log('[toggleSubscription] 开始', { repoId });
 
-        const ids = storageService.getReleaseSubscriptions();
-        const isSubscribed = ids.has(repoId);
+        const currentIds = get().subscribedRepoIds;
+        const isSubscribed = currentIds.has(repoId);
 
         logger.log('[toggleSubscription] 当前订阅状态', {
-            当前订阅列表: Array.from(ids),
+            当前订阅列表: Array.from(currentIds),
             是否已订阅: isSubscribed,
             操作: isSubscribed ? '取消订阅' : '添加订阅',
         });
@@ -879,15 +904,20 @@ export const useStore = create<AppState>((set, get) => ({
                 return;
             }
 
-            // 1️⃣ 立即更新订阅状态（乐观更新）
-            ids.add(repoId);
-            storageService.setReleaseSubscriptions(ids);
-            logger.log('[toggleSubscription] 订阅列表已更新（乐观）', { 新订阅列表: Array.from(ids) });
+            // 1️⃣ 立即更新订阅状态（乐观更新：存储 + 内存单源 + 仓库派生字段）
+            const nextIds = new Set(currentIds);
+            nextIds.add(repoId);
+            storageService.setReleaseSubscriptions(nextIds);
+            logger.log('[toggleSubscription] 订阅列表已更新（乐观）', { 新订阅列表: Array.from(nextIds) });
 
-            // 2️⃣ 触发响应式更新
-            set((state) => ({ subscriptionVersion: state.subscriptionVersion + 1 }));
+            set((state) => ({
+                subscribedRepoIds: nextIds,
+                repositories: state.repositories.map(r =>
+                    r.id === repoId ? { ...r, isSubscribed: true } : r
+                ),
+            }));
 
-            // 3️⃣ 后台异步获取基准版本（不阻塞 UI）
+            // 2️⃣ 后台异步获取基准版本（不阻塞 UI）
             const repo = get().repositories.find(r => r.id === repoId);
             const token = get().token;
 
@@ -942,18 +972,25 @@ export const useStore = create<AppState>((set, get) => ({
             }
         } else {
             // ========== 取消订阅：立即生效（无锁检查）==========
-            ids.delete(repoId);
-            storageService.setReleaseSubscriptions(ids);
-            logger.log('[toggleSubscription] 取消订阅成功', { 新订阅列表: Array.from(ids) });
-            set((state) => ({ subscriptionVersion: state.subscriptionVersion + 1 }));
+            const nextIds = new Set(currentIds);
+            nextIds.delete(repoId);
+            storageService.setReleaseSubscriptions(nextIds);
+            logger.log('[toggleSubscription] 取消订阅成功', { 新订阅列表: Array.from(nextIds) });
+
+            set((state) => ({
+                subscribedRepoIds: nextIds,
+                repositories: state.repositories.map(r =>
+                    r.id === repoId ? { ...r, isSubscribed: false } : r
+                ),
+            }));
         }
     },
 
     clearAllSubscriptions: () => {
         storageService.setReleaseSubscriptions(new Set<number>());
-        // 同步清理 Repository 对象上的 isSubscribed 并触发响应式更新
+        // 同步清理内存单源与 Repository 对象上的 isSubscribed（不可变更新触发响应）
         set((state) => ({
-            subscriptionVersion: state.subscriptionVersion + 1,
+            subscribedRepoIds: new Set<number>(),
             repositories: state.repositories.map(r => ({
                 ...r,
                 isSubscribed: false,

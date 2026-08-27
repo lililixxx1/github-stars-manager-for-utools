@@ -75,8 +75,8 @@ export const DetailPage: React.FC = () => {
         controlRefs.current[id] = element;
     }, []);
 
-    // 订阅状态从 dbStorage 派生（单一数据源）
-    const subscriptionVersion = useStore(state => state.subscriptionVersion);
+    // 订阅状态从 store 内存单源派生（阶段3：不渲染期直读存储表）
+    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
 
     useEffect(() => {
         loadTags();
@@ -111,10 +111,8 @@ export const DetailPage: React.FC = () => {
 
     const isSubscribed = useMemo(() => {
         if (!repo) return false;
-
-        const ids = window.githubStarsAPI.getReleaseSubscriptions();
-        return ids.includes(repo.id);
-    }, [repo?.id, subscriptionVersion]);
+        return subscribedRepoIds.has(repo.id);
+    }, [repo?.id, subscribedRepoIds]);
 
     useEffect(() => {
         if (!selectedRepo) {

@@ -4,7 +4,6 @@ import { useProgressStore } from '../stores/useProgressStore';
 import { RepositoryCard } from '../components/RepositoryCard';
 import { SyncProgress } from '../components/SyncProgress';
 import { t } from '../locales';
-import type { SortBy } from '../types';
 import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
 import { FilterBar, type FilterBarHandle } from './home/components/FilterBar';
 import { EmptyState } from '../components/EmptyState';
@@ -156,24 +155,10 @@ export const HomePage: React.FC = () => {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [activeRepo, currentPageNum, currentRepos.length, handleRepoClick, keyboardArea, totalPages]);
 
-    // 🆕 v1.6.2 初始化时从 settings 恢复排序设置
-    // 使用 useRef 确保只恢复一次，避免每次 settings 变化都重置
-    const sortRestoredRef = useRef(false);
-    useEffect(() => {
-        // 避免重复恢复
-        if (sortRestoredRef.current) return;
-        // 确保 settings 已加载（检查是否有有效的 defaultSortBy）
-        if (!settings.defaultSortBy) return;
-
-        sortRestoredRef.current = true;
-        const { searchFilter, setSearchFilter } = useStore.getState();
-        if (settings.defaultSortBy && settings.defaultSortBy !== searchFilter.sortBy) {
-            setSearchFilter({ sortBy: settings.defaultSortBy as SortBy });
-        }
-        if (settings.defaultSortOrder && settings.defaultSortOrder !== searchFilter.sortOrder) {
-            setSearchFilter({ sortOrder: settings.defaultSortOrder });
-        }
-    }, [settings.defaultSortBy, settings.defaultSortOrder]); // 监听 settings 变化
+    // 阶段3 排序收敛：排序偏好只在两处流动——
+    // ① UI 改排序 → store.setSortPreference（原子写 settings + searchFilter）
+    // ② 启动 → loadSettings 把 settings.defaultSortBy/Order 回填 searchFilter
+    // （原 v1.6.2 的 sortRestoredRef 兜底恢复块为第三条冗余路径，已删除）
 
     const toggleViewMode = useCallback(() => {
         setViewMode(viewMode === 'card' ? 'list' : 'card');

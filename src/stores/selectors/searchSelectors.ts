@@ -8,7 +8,7 @@
 
 import type { Repository } from '@/types';
 import type { FilterContext } from './filterSelectors';
-import { emptyFilterContext } from './filterSelectors';
+import { emptyFilterContext, getSearchIndex } from './filterSelectors';
 
 /** 相关度评分结果 */
 interface RelevanceScore {
@@ -33,17 +33,19 @@ export const calculateRelevance = (keywords: string[], context: FilterContext = 
             let score = 0;
             let allMatch = true;
 
-            // 预计算搜索字段
+            // 预计算搜索字段：原始/用户字段走 WeakMap 缓存索引；
+            // AI 字段（aiSummary/aiTags）每轮现算，不缓存
+            const index = getSearchIndex(repo);
             const fields = {
-                name: repo.name.toLowerCase(),
-                fullName: repo.fullName.toLowerCase(),
-                alias: (repo.alias || '').toLowerCase(),
-                description: (repo.description || '').toLowerCase(),
+                name: index.name,
+                fullName: index.fullName,
+                alias: index.alias,
+                description: index.description,
                 aiSummary: (repo.aiSummary || '').toLowerCase(),
-                topics: (repo.topics || []).map(t => t.toLowerCase()),
+                topics: index.topics,
                 aiTags: (repo.aiTags || []).map(t => t.toLowerCase()),
-                customTags: (repo.customTags || []).map(t => t.toLowerCase()),
-                owner: repo.owner.login.toLowerCase(),
+                customTags: index.customTags,
+                owner: index.ownerLogin,
             };
 
             const noteContent = context.getNoteContent(repo.id).toLowerCase();

@@ -124,6 +124,7 @@ export interface Settings {
     defaultSortOrder: SortOrder;         // 默认排序方向 🆕 v1.1.0
     autoAnalyzeOnOpen?: boolean;         // 🆕 v1.3.0 启动时自动分析
     autoCheckReleaseUpdates?: boolean;   // 🆕 v1.4.0 启动时自动检查版本更新
+    lastReleasesTab?: 'updates' | 'subscriptions';  // 🆕 阶段3 版本页 Tab 持久化（替代 localStorage，唯一绕过 utools 存储之处）
 }
 
 // ==================== 同步状态 ====================

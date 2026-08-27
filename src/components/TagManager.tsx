@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useStore } from '../stores/useStore';
 import { TagBadge } from './TagBadge';
 import { t } from '../locales';
@@ -165,10 +165,18 @@ export const TagManager: React.FC<TagManagerProps> = ({
     // 显示时优先使用本地状态
     const displayTags = localTags ?? sortedTags;
 
-    // 统计每个标签关联的仓库数量
-    const getTagCount = (tagId: string) => {
-        return repositories.filter(r => r.customTags?.includes(tagId)).length;
-    };
+    // 统计每个标签关联的仓库数量（阶段3 memo 化：一次遍历生成 Map，
+    // 替代原先每个标签一次全量 filter 的 O(tags × repos) 计算）
+    const tagCounts = useMemo(() => {
+        const counts = new Map<string, number>();
+        for (const repo of repositories) {
+            for (const tagId of repo.customTags || []) {
+                counts.set(tagId, (counts.get(tagId) || 0) + 1);
+            }
+        }
+        return counts;
+    }, [repositories]);
+    const getTagCount = useCallback((tagId: string) => tagCounts.get(tagId) || 0, [tagCounts]);
 
     // 拖拽传感器配置
     const sensors = useSensors(
