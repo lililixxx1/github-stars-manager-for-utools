@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useStore } from '../stores/useStore';
 import { useProgressStore } from '../stores/useProgressStore';
 import { RepositoryCard } from '../components/RepositoryCard';
@@ -11,6 +12,13 @@ import {
     RefreshCw, ChevronLeft, ChevronRight,
     Star, Sparkles, FileText, Package, SearchX
 } from 'lucide-react';
+
+// 🆕 阶段6 虚拟滚动："全部"模式（itemsPerPage=0）的行高初始估计。
+// 行高并不固定（卡片描述两行裁剪、标签换行；列表行内容单/双行），
+// 实际高度一律由 virtualizer.measureElement 动态测量，这里仅作首帧/未测行的估计：
+// 卡片 ≈ .card padding 16×2 + 标题 22 + 描述两行 39 + 底栏 18 + 行距 8；列表行 ≈ padding 12×2 + 两行内容 + 1px 分割线
+const CARD_ROW_ESTIMATE = 130;
+const LIST_ROW_ESTIMATE = 66;
 
 export const HomePage: React.FC = () => {
     // 精确订阅（阶段2 性能重构）：每个字段单独 selector，避免全量订阅
@@ -38,22 +46,44 @@ export const HomePage: React.FC = () => {
     const setSyncError = useProgressStore((state) => state.setSyncError);
 
     const lang = (settings.language || 'zh') as 'zh' | 'en';
-    const itemsPerPage = settings.itemsPerPage || 20;
+    // 🆕 阶段6 itemsPerPage 语义：正数=每页条数（分页，现状不变）；0=全部（不 slice，整表进虚拟列表）。默认 20 不变。
+    // 注意不能再用 `|| 20` 兜底——那会把 0 当 falsy 吞掉
+    const itemsPerPageSetting = settings.itemsPerPage ?? 20;
+    const isShowAllMode = itemsPerPageSetting === 0;
+    const itemsPerPage = isShowAllMode ? 20 : itemsPerPageSetting;
     const filteredRepos = useMemo(
         () => getFilteredRepos(),
         [repositories, searchFilter, tags, noteRepoIds, noteContentByRepoId]
     );
-    const totalPages = Math.max(1, Math.ceil(filteredRepos.length / itemsPerPage));
-    const currentRepos = filteredRepos.slice(
-        (currentPageNum - 1) * itemsPerPage,
-        currentPageNum * itemsPerPage
-    );
+    // "全部"模式恒为单页（分页条自然隐藏：totalPages > 1 不成立）
+    const totalPages = isShowAllMode ? 1 : Math.max(1, Math.ceil(filteredRepos.length / itemsPerPage));
+    // "全部"模式不 slice：整表引用直接交给虚拟列表，避免每次筛选变化复制大数组
+    const currentRepos = isShowAllMode
+        ? filteredRepos
+        : filteredRepos.slice(
+            (currentPageNum - 1) * itemsPerPage,
+            currentPageNum * itemsPerPage
+        );
     const [activeRepoIndex, setActiveRepoIndex] = useState<number | null>(null);
     const [keyboardArea, setKeyboardArea] = useState<'toolbar' | 'list'>('list');
     const itemRefs = useRef<Record<number, HTMLDivElement | null>>({});
     const listContainerRef = useRef<HTMLDivElement | null>(null);
     const filterBarRef = useRef<FilterBarHandle | null>(null);
     const activeRepo = activeRepoIndex === null ? null : currentRepos[activeRepoIndex] ?? null;
+
+    // 🆕 阶段6 虚拟滚动："全部"模式下行级虚拟化，仅渲染视口附近的行。
+    // - measureElement 动态测高（行高不固定，禁止固定 estimateSize 假设），estimateSize 仅首帧估计
+    // - getItemKey 用 repo.id：筛选/排序变化后避免行错位复用
+    // - overscan 5：上下多预备几行，滚动时不露白
+    // - 分页模式（itemsPerPage>0）enabled:false 完全旁路，滚动容器/渲染与升级前一致
+    const listVirtualizer = useVirtualizer({
+        count: currentRepos.length,
+        getScrollElement: () => listContainerRef.current,
+        estimateSize: () => (viewMode === 'card' ? CARD_ROW_ESTIMATE : LIST_ROW_ESTIMATE),
+        getItemKey: (index) => currentRepos[index]?.id ?? index,
+        overscan: 5,
+        enabled: isShowAllMode,
+    });
 
     // 获取所有语言
     const allLanguages = useMemo(() => {
@@ -80,14 +110,35 @@ export const HomePage: React.FC = () => {
         });
     }, [currentRepos.length, currentPageNum, viewMode]);
 
+    // 🆕 阶段6："全部"模式无分页语义，把页码归 1，避免切回分页模式时停留在越界页码
+    useEffect(() => {
+        if (isShowAllMode && currentPageNum !== 1) {
+            setCurrentPageNum(1);
+        }
+    }, [isShowAllMode, currentPageNum, setCurrentPageNum]);
+
+    // 🆕 阶段6：切换视图（卡片/列表）行高量级完全不同，清除已测缓存按新视图重测
+    useEffect(() => {
+        if (isShowAllMode) {
+            listVirtualizer.measure();
+        }
+    }, [viewMode, isShowAllMode, listVirtualizer]);
+
     useEffect(() => {
         if (!activeRepo) return;
+
+        if (isShowAllMode) {
+            // 虚拟模式下未挂载行没有 DOM ref，统一走 scrollToIndex 跟随；
+            // align:'auto' 仅在行未完全可见时滚动，等价原 scrollIntoView 的 block:'nearest'
+            listVirtualizer.scrollToIndex(activeRepoIndex ?? 0, { align: 'auto' });
+            return;
+        }
 
         itemRefs.current[activeRepo.id]?.scrollIntoView({
             block: 'nearest',
             inline: 'nearest',
         });
-    }, [activeRepo?.id]);
+    }, [activeRepo?.id, activeRepoIndex, isShowAllMode, listVirtualizer]);
 
     const handleSync = useCallback(async () => {
         await useStore.getState().syncRepositories();
@@ -130,6 +181,9 @@ export const HomePage: React.FC = () => {
             }
 
             if (event.key === 'ArrowRight') {
+                // 🆕 阶段6："全部"模式无分页语义，左右翻页键直接忽略
+                // （不改为滚动到首/末：与分页模式的按键预期不一致，且上下键已覆盖滚动跟随）
+                if (isShowAllMode) return;
                 if (currentPageNum >= totalPages) return;
                 event.preventDefault();
                 setCurrentPageNum(currentPageNum + 1);
@@ -138,6 +192,8 @@ export const HomePage: React.FC = () => {
             }
 
             if (event.key === 'ArrowLeft') {
+                // 🆕 阶段6：同上，"全部"模式忽略翻页键
+                if (isShowAllMode) return;
                 if (currentPageNum <= 1) return;
                 event.preventDefault();
                 setCurrentPageNum(currentPageNum - 1);
@@ -153,7 +209,7 @@ export const HomePage: React.FC = () => {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [activeRepo, currentPageNum, currentRepos.length, handleRepoClick, keyboardArea, totalPages]);
+    }, [activeRepo, currentPageNum, currentRepos.length, handleRepoClick, isShowAllMode, keyboardArea, totalPages]);
 
     // 阶段3 排序收敛：排序偏好只在两处流动——
     // ① UI 改排序 → store.setSortPreference（原子写 settings + searchFilter）
@@ -163,6 +219,60 @@ export const HomePage: React.FC = () => {
     const toggleViewMode = useCallback(() => {
         setViewMode(viewMode === 'card' ? 'list' : 'card');
     }, [viewMode, setViewMode]);
+
+    // 🆕 阶段6：列表视图行内容（分页/虚拟两种模式共用同一份 JSX，保证 DOM 输出一致）
+    const renderListRowContent = (repo: typeof repositories[0]) => (
+        <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>
+                    {repo.alias || repo.name}
+                </span>
+                {repo.alias && (
+                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                        ({repo.fullName})
+                    </span>
+                )}
+                <span style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 'auto', fontSize: 12, color: 'var(--color-text-secondary)' }}>
+                    <Star size={12} style={{ color: 'var(--color-accent)' }} />
+                    {repo.stargazersCount.toLocaleString()}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
+                    {repo.language}
+                </span>
+                {/* 笔记标识 */}
+                {hasRepoNote(repo.id) && (
+                    <FileText size={12} style={{ color: 'var(--color-primary)' }} />
+                )}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {repo.description || t('noDescription', lang)}
+                </span>
+                {/* 标签 */}
+                {(repo.customTags || []).slice(0, 3).map((tagId) => {
+                    const tag = tags.find(t => t.id === tagId);
+                    if (!tag) return null;
+                    // 有自定义色：6 位 hex 追加 alpha（如 #3b82f6 → #3b82f620）；无色：color-mix 调出的 primary 软底
+                    const tagBg = tag.color
+                        ? (/^#[0-9a-fA-F]{6}$/.test(tag.color) ? `${tag.color}20` : tag.color)
+                        : 'color-mix(in srgb, var(--color-primary) 12%, transparent)';
+                    return (
+                        <span
+                            key={tag.id}
+                            style={{
+                                fontSize: 10, padding: '1px 6px', borderRadius: 999,
+                                background: tagBg,
+                                color: tag.color || 'var(--color-primary)',
+                                border: `1px solid ${tag.color || 'var(--color-primary)'}`,
+                            }}
+                        >
+                            {tag.icon} {tag.name}
+                        </span>
+                    );
+                })}
+            </div>
+        </>
+    );
 
     // 首次使用引导
     if (!token) {
@@ -263,6 +373,65 @@ export const HomePage: React.FC = () => {
                             </button>
                         ) : undefined}
                     />
+                ) : isShowAllMode ? (
+                    // 🆕 阶段6 "全部"模式：虚拟列表，仅渲染视口附近的行。
+                    // 外层占位 div 撑起总高度；行绝对定位 + translateY 布局；
+                    // ref=measureElement + data-index 动态测高，getItemKey=repo.id 防错位复用。
+                    // aria-activedescendant 协议不变（行 id 命名沿用 repo-option-{id}，
+                    // 未挂载行无 DOM 节点属浏览器可容忍行为）
+                    <div style={{ position: 'relative', height: listVirtualizer.getTotalSize(), width: '100%' }}>
+                        {listVirtualizer.getVirtualItems().map((virtualRow) => {
+                            const repo = currentRepos[virtualRow.index];
+                            if (!repo) return null;
+                            const isActive = activeRepoIndex === virtualRow.index;
+                            return (
+                                <div
+                                    key={virtualRow.key}
+                                    id={`repo-option-${repo.id}`}
+                                    role="option"
+                                    aria-selected={isActive}
+                                    data-index={virtualRow.index}
+                                    ref={listVirtualizer.measureElement}
+                                    onClick={viewMode === 'card' ? undefined : () => handleRepoClick(repo)}
+                                    onMouseEnter={() => {
+                                        setActiveRepoIndex(virtualRow.index);
+                                        setKeyboardArea('list');
+                                    }}
+                                    style={{
+                                        position: 'absolute',
+                                        top: 0,
+                                        left: 0,
+                                        width: '100%',
+                                        transform: `translateY(${virtualRow.start}px)`,
+                                        // 还原两种视图的原有行样式：卡片=8px 行距（原 flex gap），列表=原行内边距与高亮边
+                                        ...(viewMode === 'card'
+                                            ? { paddingBottom: 8 }
+                                            : {
+                                                padding: '12px 16px',
+                                                borderBottom: '1px solid var(--color-border)',
+                                                cursor: 'pointer',
+                                                transition: 'background 0.15s',
+                                                background: isActive ? 'var(--color-surface-hover)' : 'transparent',
+                                                borderLeft: isActive ? '3px solid var(--color-primary)' : '3px solid transparent',
+                                            }),
+                                    }}
+                                >
+                                    {viewMode === 'card' ? (
+                                        // 虚拟行滚出视口即卸载、滚回即重挂载：禁用 animate-fade-in 避免动画重播闪烁
+                                        <RepositoryCard
+                                            repo={repo}
+                                            onClick={handleRepoClick}
+                                            language={lang}
+                                            isActive={isActive}
+                                            disableAnimation
+                                        />
+                                    ) : (
+                                        renderListRowContent(repo)
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
                 ) : viewMode === 'card' ? (
                     // 卡片视图
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -291,7 +460,7 @@ export const HomePage: React.FC = () => {
                         })}
                     </div>
                 ) : (
-                    // 列表视图
+                    // 列表视图（分页模式，行为与阶段6 前一致）
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
                         {currentRepos.map((repo, index) => {
                             const isActive = activeRepoIndex === index;
@@ -316,54 +485,7 @@ export const HomePage: React.FC = () => {
                                     borderLeft: isActive ? '3px solid var(--color-primary)' : '3px solid transparent',
                                 }}
                             >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                    <span style={{ fontSize: 14, fontWeight: 500 }}>
-                                        {repo.alias || repo.name}
-                                    </span>
-                                    {repo.alias && (
-                                        <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                                            ({repo.fullName})
-                                        </span>
-                                    )}
-                                    <span style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 'auto', fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                                        <Star size={12} style={{ color: 'var(--color-accent)' }} />
-                                        {repo.stargazersCount.toLocaleString()}
-                                    </span>
-                                    <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                                        {repo.language}
-                                    </span>
-                                    {/* 笔记标识 */}
-                                    {hasRepoNote(repo.id) && (
-                                        <FileText size={12} style={{ color: 'var(--color-primary)' }} />
-                                    )}
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                                    <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {repo.description || t('noDescription', lang)}
-                                    </span>
-                                    {/* 标签 */}
-                                    {(repo.customTags || []).slice(0, 3).map((tagId) => {
-                                        const tag = tags.find(t => t.id === tagId);
-                                        if (!tag) return null;
-                                        // 有自定义色：6 位 hex 追加 alpha（如 #3b82f6 → #3b82f620）；无色：color-mix 调出的 primary 软底
-                                        const tagBg = tag.color
-                                            ? (/^#[0-9a-fA-F]{6}$/.test(tag.color) ? `${tag.color}20` : tag.color)
-                                            : 'color-mix(in srgb, var(--color-primary) 12%, transparent)';
-                                        return (
-                                            <span
-                                                key={tag.id}
-                                                style={{
-                                                    fontSize: 10, padding: '1px 6px', borderRadius: 999,
-                                                    background: tagBg,
-                                                    color: tag.color || 'var(--color-primary)',
-                                                    border: `1px solid ${tag.color || 'var(--color-primary)'}`,
-                                                }}
-                                            >
-                                                {tag.icon} {tag.name}
-                                            </span>
-                                        );
-                                    })}
-                                </div>
+                                {renderListRowContent(repo)}
                             </div>
                             );
                         })}

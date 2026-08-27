@@ -49,6 +49,7 @@ export const i18n = {
         noRepos: '暂无仓库数据，请先同步',
         noResults: '没有找到匹配的仓库',
         itemsPerPage: '每页显示数量',
+        itemsPerPageAll: '全部',  // 🆕 阶段6 itemsPerPage=0 全部展示（虚拟滚动）
 
         // 仓库操作
         openInGithub: '在 GitHub 中打开',
@@ -301,6 +302,7 @@ export const i18n = {
         noRepos: 'No repositories yet, please sync first',
         noResults: 'No matching repositories found',
         itemsPerPage: 'Items per Page',
+        itemsPerPageAll: 'All',  // Stage 6: itemsPerPage=0 shows all (virtualized)
 
         // Repository Actions
         openInGithub: 'Open in GitHub',

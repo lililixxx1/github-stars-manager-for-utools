@@ -118,7 +118,7 @@ export interface Settings {
     aiConcurrency?: number;
     theme: 'light' | 'dark' | 'auto';
     defaultView: ViewMode;
-    itemsPerPage: number;
+    itemsPerPage: number;                // 每页条数；0 = 全部展示（阶段6 首页虚拟滚动，不 slice 不分页）
     language: 'zh' | 'en';
     defaultSortBy: SortBy;               // 默认排序字段 🆕 v1.1.0
     defaultSortOrder: SortOrder;         // 默认排序方向 🆕 v1.1.0

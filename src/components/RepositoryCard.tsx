@@ -8,6 +8,8 @@ interface RepositoryCardProps {
     onClick: (repo: Repository) => void;
     language: 'zh' | 'en';
     isActive?: boolean;
+    /** 🆕 阶段6：虚拟列表行复用/重挂载时禁用入场动画（animate-fade-in），避免滚动重播闪烁。默认 false，分页模式行为不变 */
+    disableAnimation?: boolean;
 }
 
 function formatNumber(num: number): string {
@@ -39,7 +41,7 @@ function timeAgo(dateStr: string, lang: 'zh' | 'en'): string {
  * const handleClick = useCallback((repo) => { ... }, []);
  * <RepositoryCard repo={repo} onClick={handleClick} language="zh" />
  */
-export const RepositoryCard = memo<RepositoryCardProps>(({ repo, onClick, language, isActive = false }) => {
+export const RepositoryCard = memo<RepositoryCardProps>(({ repo, onClick, language, isActive = false, disableAnimation = false }) => {
     // 使用 useMemo 缓存计算结果
     const displayName = useMemo(() => repo.alias || repo.name, [repo.alias, repo.name]);
 
@@ -65,7 +67,7 @@ export const RepositoryCard = memo<RepositoryCardProps>(({ repo, onClick, langua
 
     return (
         <div
-            className="card cursor-pointer animate-fade-in"
+            className={disableAnimation ? 'card cursor-pointer' : 'card cursor-pointer animate-fade-in'}
             onClick={handleClick}
             style={isActive ? {
                 borderColor: 'var(--color-primary)',

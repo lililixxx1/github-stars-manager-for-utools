@@ -360,13 +360,21 @@ export const SettingsPage: React.FC = () => {
                     </div>
                 </div>
 
-                {/* 每页数量 */}
+                {/* 每页数量 🆕 阶段6：0 = 全部（首页虚拟滚动） */}
                 <div className="card" style={{ marginBottom: 12 }}>
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{t('itemsPerPage', lang)}</h3>
                     <div style={{ display: 'flex', gap: 8 }}>
                         {[10, 20, 50, 100].map((n) => (
                             <button key={n} className={`btn ${settings.itemsPerPage === n ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => saveSettings({ itemsPerPage: n })} style={{ flex: 1 }}>{n}</button>
                         ))}
+                        <button
+                            className={`btn ${settings.itemsPerPage === 0 ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+                            onClick={() => saveSettings({ itemsPerPage: 0 })}
+                            style={{ flex: 1 }}
+                            title={lang === 'zh' ? '不分页，全部展示（虚拟滚动）' : 'Show all without pagination (virtualized)'}
+                        >
+                            {t('itemsPerPageAll', lang)}
+                        </button>
                     </div>
                 </div>
 
