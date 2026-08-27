@@ -5,12 +5,15 @@ import { storageService } from '../services/storageService';
 import { githubService } from '../services/githubService';
 import { t } from '../locales';
 import { TokenHelp, TokenHelpHeaderButton } from '../components/TokenHelp';
+import { Toggle } from '../components/Toggle';
 import { logger } from '../utils/logger';
 import { useBackShortcut } from '../hooks/useBackShortcut';
 import {
     ArrowLeft, Key, Check, X, Loader2, Download, Upload,
-    Sun, Moon, Monitor, Globe, Sparkles, Play, StopCircle, Zap, Bell
+    Sun, Moon, Monitor, Globe, Sparkles, Play, StopCircle, Zap, Bell,
+    AlertTriangle, Link2, BrainCircuit, Rss, Palette, Database
 } from 'lucide-react';
+import pkg from '../../package.json';
 
 export const SettingsPage: React.FC = () => {
     const projectRepositoryUrl = 'https://github.com/lililixxx1/github-stars-manager-for-utools';
@@ -178,6 +181,14 @@ export const SettingsPage: React.FC = () => {
         [repositories]
     );
 
+    // AI 分析进度统计（阶段8：文字 + .progress-bar 进度条）
+    const analyzedStats = useMemo(() => {
+        const analyzed = repositories.filter(r => r.analyzedAt && !r.analysisFailed).length;
+        const failed = repositories.filter(r => r.analysisFailed).length;
+        const pct = repositories.length > 0 ? Math.round((analyzed / repositories.length) * 100) : 0;
+        return { analyzed, failed, pct };
+    }, [repositories]);
+
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div style={{
@@ -192,7 +203,11 @@ export const SettingsPage: React.FC = () => {
                 <h2 style={{ fontSize: 16, fontWeight: 600 }}>{t('settings', lang)}</h2>
             </div>
 
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }} className="animate-fade-in">
+            {/* 阶段8：9 卡分 5 节（标题带图标），进入动画由 App.tsx 页面容器统一提供 */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+                {/* ===== GitHub 连接 ===== */}
+                <h4 className="settings-section-title"><Link2 size={14} />{t('settingsGroupConnection', lang)}</h4>
+
                 {/* GitHub Token */}
                 <div className="card" style={{ marginBottom: 12 }}>
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -236,6 +251,9 @@ export const SettingsPage: React.FC = () => {
                     />
                 </div>
 
+                {/* ===== AI 分析 ===== */}
+                <h4 className="settings-section-title"><BrainCircuit size={14} />{t('settingsGroupAI', lang)}</h4>
+
                 {/* AI 模型 */}
                 <div className="card" style={{ marginBottom: 12 }}>
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -272,40 +290,64 @@ export const SettingsPage: React.FC = () => {
                 <div className="card" style={{ marginBottom: 12 }}>
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
                         <Zap size={14} style={{ color: 'var(--color-primary)' }} />
-                        {lang === 'zh' ? 'AI 分析设置' : 'AI Analysis Settings'}
+                        {t('aiAnalysisSettings', lang)}
                     </h3>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
                         <div>
-                            <div style={{ fontSize: 13, fontWeight: 500 }}>{lang === 'zh' ? '启动时自动分析' : 'Auto-analyze on startup'}</div>
-                            <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '打开插件时自动分析未分析的仓库，每次分析消耗AI能量' : 'Analyze unanalyzed repos when plugin opens'}</div>
+                            <div style={{ fontSize: 13, fontWeight: 500 }}>{t('autoAnalyzeOnOpen', lang)}</div>
+                            <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{t('autoAnalyzeOnOpenHint', lang)}</div>
                         </div>
-                        <button className={`btn ${settings.autoAnalyzeOnOpen ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => saveSettings({ autoAnalyzeOnOpen: !settings.autoAnalyzeOnOpen })} style={{ minWidth: 60 }}>
-                            {settings.autoAnalyzeOnOpen ? (lang === 'zh' ? '开' : 'On') : (lang === 'zh' ? '关' : 'Off')}
-                        </button>
+                        <Toggle
+                            checked={!!settings.autoAnalyzeOnOpen}
+                            onChange={(checked) => saveSettings({ autoAnalyzeOnOpen: checked })}
+                            aria-label={t('autoAnalyzeOnOpen', lang)}
+                        />
                     </div>
                     <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>{lang === 'zh' ? '并发数' : 'Concurrency'}</div>
-                        <div style={{ display: 'flex', gap: 8 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>{t('concurrency', lang)}</div>
+                        {/* 阶段8：等宽数字按钮收敛为分段控件 */}
+                        <div className="segmented" style={{ width: '100%' }}>
                             {[1, 2, 3, 4, 5].map((n) => (
-                                <button key={n} className={`btn ${(settings.aiConcurrency || 1) === n ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => saveSettings({ aiConcurrency: n })} style={{ flex: 1 }}>{n}</button>
+                                <button
+                                    key={n}
+                                    type="button"
+                                    className={`segmented-item${(settings.aiConcurrency || 1) === n ? ' active' : ''}`}
+                                    onClick={() => saveSettings({ aiConcurrency: n })}
+                                    aria-pressed={(settings.aiConcurrency || 1) === n}
+                                >
+                                    {n}
+                                </button>
                             ))}
                         </div>
-                        <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>{lang === 'zh' ? '并发数越高分析越快，但可能触发限流' : 'Higher concurrency is faster but may trigger rate limits'}</div>
+                        <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>{t('concurrencyHint', lang)}</div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <button className="btn btn-primary btn-sm" onClick={() => isAnalyzing ? stopAnalyze() : startAutoAnalyze()} disabled={!token || repositories.length === 0} style={{ flex: 1 }} title={!token ? (lang === 'zh' ? '请先配置 GitHub Token' : 'Please configure GitHub Token first') : repositories.length === 0 ? (lang === 'zh' ? '请先同步仓库' : 'Please sync repositories first') : undefined}>
-                            {isAnalyzing ? <><StopCircle size={14} />{lang === 'zh' ? '停止分析' : 'Stop Analysis'}</> : <><Play size={14} />{lang === 'zh' ? '立即分析' : 'Analyze Now'}</>}
+                            {isAnalyzing ? <><StopCircle size={14} />{t('stopAnalysis', lang)}</> : <><Play size={14} />{t('analyzeNow', lang)}</>}
                         </button>
                     </div>
-                    {!token && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-warning)' }}>{lang === 'zh' ? '⚠️ 请先配置 GitHub Token 以使用 AI 分析功能' : '⚠️ Please configure GitHub Token to use AI analysis'}</div>}
+                    {!token && (
+                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <AlertTriangle size={12} />
+                            {lang === 'zh' ? '请先配置 GitHub Token 以使用 AI 分析功能' : 'Please configure GitHub Token to use AI analysis'}
+                        </div>
+                    )}
                     {!isAnalyzing && repositories.length > 0 && (
-                        <div style={{ marginTop: 12, fontSize: 12, color: 'var(--color-text-muted)' }}>
-                            {lang === 'zh' ? `已分析: ${repositories.filter(r => r.analyzedAt && !r.analysisFailed).length} / ${repositories.length} 个仓库` : `Analyzed: ${repositories.filter(r => r.analyzedAt && !r.analysisFailed).length} / ${repositories.length} repos`}
-                            {repositories.filter(r => r.analysisFailed).length > 0 && <span style={{ color: 'var(--color-error)', marginLeft: 8 }}>({lang === 'zh' ? '失败' : 'Failed'}: {repositories.filter(r => r.analysisFailed).length})</span>}
+                        <div style={{ marginTop: 12 }}>
+                            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 6 }}>
+                                {t('analyzedCount', lang, { count: analyzedStats.analyzed, total: repositories.length })}
+                                {analyzedStats.failed > 0 && <span style={{ color: 'var(--color-error)', marginLeft: 8 }}>({lang === 'zh' ? '失败' : 'Failed'}: {analyzedStats.failed})</span>}
+                            </div>
+                            <div className="progress-bar">
+                                <div className="progress-bar-fill" style={{ width: `${analyzedStats.pct}%` }} />
+                            </div>
                         </div>
                     )}
                     {repositories.length === 0 && <div style={{ marginTop: 12, fontSize: 12, color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '请先同步仓库后再进行分析' : 'Please sync repositories first'}</div>}
                 </div>
+
+                {/* ===== 版本追踪 ===== */}
+                <h4 className="settings-section-title"><Rss size={14} />{t('settingsGroupReleases', lang)}</h4>
 
                 {/* 版本追踪设置 🆕 v1.4.0 */}
                 <div className="card" style={{ marginBottom: 12 }}>
@@ -313,14 +355,16 @@ export const SettingsPage: React.FC = () => {
                         <Bell size={14} style={{ color: 'var(--color-primary)' }} />
                         {t('releaseSubscription', lang)}
                     </h3>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
                         <div>
                             <div style={{ fontSize: 13, fontWeight: 500 }}>{t('autoCheckUpdates', lang)}</div>
                             <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '打开插件时自动检查订阅仓库的版本更新' : 'Automatically check for updates on startup'}</div>
                         </div>
-                        <button className={`btn ${(settings.autoCheckReleaseUpdates !== false) ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => saveSettings({ autoCheckReleaseUpdates: settings.autoCheckReleaseUpdates === false })} style={{ minWidth: 60 }}>
-                            {(settings.autoCheckReleaseUpdates !== false) ? (lang === 'zh' ? '开' : 'On') : (lang === 'zh' ? '关' : 'Off')}
-                        </button>
+                        <Toggle
+                            checked={settings.autoCheckReleaseUpdates !== false}
+                            onChange={(checked) => saveSettings({ autoCheckReleaseUpdates: checked })}
+                            aria-label={t('autoCheckUpdates', lang)}
+                        />
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                         <div>
@@ -338,8 +382,16 @@ export const SettingsPage: React.FC = () => {
                         </button>
                     </div>
                     {releaseCheckStatus.lastCheckedAt && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-text-muted)' }}>{t('lastChecked', lang)}: {new Date(releaseCheckStatus.lastCheckedAt).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US')}</div>}
-                    {releaseCheckStatus.error && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-error)' }}>⚠️ {releaseCheckStatus.error}</div>}
+                    {releaseCheckStatus.error && (
+                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-error)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <AlertTriangle size={12} />
+                            {releaseCheckStatus.error}
+                        </div>
+                    )}
                 </div>
+
+                {/* ===== 外观与语言 ===== */}
+                <h4 className="settings-section-title"><Palette size={14} />{t('settingsGroupAppearance', lang)}</h4>
 
                 {/* 主题 */}
                 <div className="card" style={{ marginBottom: 12 }}>
@@ -360,17 +412,26 @@ export const SettingsPage: React.FC = () => {
                     </div>
                 </div>
 
-                {/* 每页数量 🆕 阶段6：0 = 全部（首页虚拟滚动） */}
+                {/* 每页数量 🆕 阶段6：0 = 全部（首页虚拟滚动）；阶段8：分段控件 */}
                 <div className="card" style={{ marginBottom: 12 }}>
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{t('itemsPerPage', lang)}</h3>
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div className="segmented" style={{ width: '100%' }}>
                         {[10, 20, 50, 100].map((n) => (
-                            <button key={n} className={`btn ${settings.itemsPerPage === n ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => saveSettings({ itemsPerPage: n })} style={{ flex: 1 }}>{n}</button>
+                            <button
+                                key={n}
+                                type="button"
+                                className={`segmented-item${settings.itemsPerPage === n ? ' active' : ''}`}
+                                onClick={() => saveSettings({ itemsPerPage: n })}
+                                aria-pressed={settings.itemsPerPage === n}
+                            >
+                                {n}
+                            </button>
                         ))}
                         <button
-                            className={`btn ${settings.itemsPerPage === 0 ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+                            type="button"
+                            className={`segmented-item${settings.itemsPerPage === 0 ? ' active' : ''}`}
                             onClick={() => saveSettings({ itemsPerPage: 0 })}
-                            style={{ flex: 1 }}
+                            aria-pressed={settings.itemsPerPage === 0}
                             title={lang === 'zh' ? '不分页，全部展示（虚拟滚动）' : 'Show all without pagination (virtualized)'}
                         >
                             {t('itemsPerPageAll', lang)}
@@ -378,9 +439,12 @@ export const SettingsPage: React.FC = () => {
                     </div>
                 </div>
 
+                {/* ===== 数据 ===== */}
+                <h4 className="settings-section-title"><Database size={14} />{t('settingsGroupData', lang)}</h4>
+
                 {/* 导入导出 */}
                 <div className="card" style={{ marginBottom: 12 }}>
-                    <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{lang === 'zh' ? '数据管理' : 'Data Management'}</h3>
+                    <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{t('dataManagement', lang)}</h3>
                     <div style={{ display: 'flex', gap: 8 }}>
                         <button className="btn btn-secondary" onClick={handleExport} style={{ flex: 1 }}><Download size={14} />{t('exportData', lang)}</button>
                         <button className="btn btn-secondary" onClick={handleImport} style={{ flex: 1 }}><Upload size={14} />{t('importData', lang)}</button>
@@ -392,7 +456,7 @@ export const SettingsPage: React.FC = () => {
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>{t('about', lang)}</h3>
                     <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', lineHeight: 1.6 }}>
                         GitHub Stars Manager For uTools<br />
-                        {t('version', lang)}: 1.6.2<br />
+                        {t('version', lang)}: {pkg.version}<br />
                         <a href="#" onClick={(e) => { e.preventDefault(); window.githubStarsAPI.openExternal(projectRepositoryUrl); }} style={{ color: 'var(--color-primary)', textDecoration: 'none' }}>
                             {lang === 'zh' ? '项目地址' : 'Project Repository'}
                         </a>

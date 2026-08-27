@@ -6,11 +6,20 @@ import type { Language } from '../locales';
 
 export type ToastType = 'info' | 'success' | 'error';
 
+export interface ToastAction {
+    /** 按钮文案（如「撤销」） */
+    label: string;
+    /** 点击回调；点击后 toast 自动关闭 */
+    onClick: () => void;
+}
+
 export interface ToastOptions {
     /** 提示类型，默认 info */
     type?: ToastType;
     /** 展示时长（毫秒），默认 3000；传 0 表示常驻（需手动 dismiss） */
     duration?: number;
+    /** 可选操作按钮（如撤销），点击后关闭并执行 */
+    action?: ToastAction;
 }
 
 interface ToastItem {
@@ -18,6 +27,7 @@ interface ToastItem {
     message: string;
     type: ToastType;
     leaving: boolean;
+    action?: ToastAction;
 }
 
 type ToastListener = (items: ToastItem[]) => void;
@@ -56,9 +66,9 @@ const dismiss = (id: number): void => {
 export const toast = {
     /** 显示一条提示，返回 id（可用于手动 dismiss） */
     show(message: string, options: ToastOptions = {}): number {
-        const { type = 'info', duration = 3000 } = options;
+        const { type = 'info', duration = 3000, action } = options;
         const id = nextToastId++;
-        toastItems = [...toastItems, { id, message, type, leaving: false }];
+        toastItems = [...toastItems, { id, message, type, leaving: false, action }];
         notify();
         if (duration > 0) {
             window.setTimeout(() => dismiss(id), duration);
@@ -109,6 +119,19 @@ export const ToastHost: React.FC = () => {
                 >
                     <span className={`toast-icon-${item.type}`}>{TOAST_ICONS[item.type]}</span>
                     <span style={{ flex: 1, minWidth: 0 }}>{item.message}</span>
+                    {item.action && (
+                        <button
+                            type="button"
+                            className="toast-action"
+                            onClick={() => {
+                                const { onClick } = item.action!;
+                                toast.dismiss(item.id);
+                                onClick();
+                            }}
+                        >
+                            {item.action.label}
+                        </button>
+                    )}
                     <button
                         type="button"
                         className="toast-close"

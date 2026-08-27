@@ -111,6 +111,7 @@ export const i18n = {
         addFirstTag: '添加第一个标签',
         tagCount: '{count} 个仓库',
         dragToSort: '拖拽标签可调整顺序',
+        preview: '预览',
 
         // 视图相关 🆕 v1.1.0
         viewMode: '视图模式',
@@ -248,6 +249,14 @@ export const i18n = {
         emptyStateTitle: '暂无内容',
         toastDismiss: '关闭提示',
 
+        // 设置页分节标题 🆕 阶段8
+        settingsGroupConnection: 'GitHub 连接',
+        settingsGroupAI: 'AI 分析',
+        settingsGroupReleases: '版本追踪',
+        settingsGroupAppearance: '外观与语言',
+        settingsGroupData: '数据',
+        dataManagement: '数据管理',
+
         // 其他
         about: '关于',
         version: '版本',
@@ -364,6 +373,7 @@ export const i18n = {
         addFirstTag: 'Add first tag',
         tagCount: '{count} repos',
         dragToSort: 'Drag tags to reorder',
+        preview: 'Preview',
 
         // View 🆕 v1.1.0
         viewMode: 'View Mode',
@@ -500,6 +510,14 @@ export const i18n = {
         toggleOff: 'Off',
         emptyStateTitle: 'Nothing here yet',
         toastDismiss: 'Dismiss notification',
+
+        // Settings section titles 🆕 Stage 8
+        settingsGroupConnection: 'GitHub Connection',
+        settingsGroupAI: 'AI Analysis',
+        settingsGroupReleases: 'Release Tracking',
+        settingsGroupAppearance: 'Appearance & Language',
+        settingsGroupData: 'Data',
+        dataManagement: 'Data Management',
 
         // Other
         about: 'About',

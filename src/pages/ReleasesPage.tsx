@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Box, ArrowLeft } from 'lucide-react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { Box, ArrowLeft, Loader2, RefreshCw, Inbox, Bell } from 'lucide-react';
 import { useStore } from '../stores/useStore';
 import { useProgressStore } from '../stores/useProgressStore';
 import { ReleaseCard } from '../components/ReleaseCard';
 import { ReleaseDetail } from '../components/ReleaseDetail';
+import { EmptyState } from '../components/EmptyState';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { toast } from '../components/Toast';
 import { PLATFORM_OPTIONS } from '../constants/platforms';
 import { releaseService } from '../services/releaseService';
 import { t } from '../locales';
@@ -12,9 +15,6 @@ import type { Release, Repository } from '../types';
 import { useBackShortcut } from '../hooks/useBackShortcut';
 
 type TabType = 'updates' | 'subscriptions';
-
-// 常量
-const UNDO_TIMEOUT_MS = 5000; // 撤销取消订阅的超时时间
 
 // 格式化 Star 数
 export const formatStars = (count: number): string => {
@@ -64,10 +64,6 @@ export function ReleasesPage() {
         }
     }, [releasesInitialTab, setReleasesInitialTab]);
 
-    // 撤销功能状态
-    const [toast, setToast] = useState<{ message: string; showUndo: boolean } | null>(null);
-    const undoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const pendingUnsubscribeRef = useRef<{ repoId: number; repoName: string } | null>(null);
     const handleBack = useCallback(() => {
         setCurrentPage('home');
     }, [setCurrentPage]);
@@ -158,44 +154,18 @@ export function ReleasesPage() {
         }
     };
 
-    // 取消订阅（带撤销功能）
+    // 取消订阅（v2：全局 toast + 5 秒撤销）
     const handleUnsubscribe = (repo: Repository) => {
-        // 清除之前的撤销计时器
-        if (undoTimeoutRef.current) {
-            clearTimeout(undoTimeoutRef.current);
-            // 如果有待撤销的操作，确认执行（pending 已经在上次 toggle 时从 dbStorage 移除了，无需再次操作）
-            pendingUnsubscribeRef.current = null;
-        }
-
-        // 存储待撤销数据
-        pendingUnsubscribeRef.current = { repoId: repo.id, repoName: repo.fullName };
-
         // 立即更新 UI（store 统一维护 dbStorage + 内存订阅单源 + repositories.isSubscribed）
         toggleSubscription(repo.id);
-
-        // 显示 Toast
-        setToast({ message: t('unsubscribed', lang), showUndo: true });
-
-        // 5 秒后清除
-        undoTimeoutRef.current = setTimeout(() => {
-            pendingUnsubscribeRef.current = null;
-            setToast(null);
-        }, UNDO_TIMEOUT_MS);
-    };
-
-    // 撤销取消订阅
-    const handleUndo = () => {
-        if (undoTimeoutRef.current) {
-            clearTimeout(undoTimeoutRef.current);
-            undoTimeoutRef.current = null;
-        }
-        if (pendingUnsubscribeRef.current) {
-            // 重新添加订阅（上次 toggle 已移除，再次 toggle 会添加回来）
-            toggleSubscription(pendingUnsubscribeRef.current.repoId);
-            pendingUnsubscribeRef.current = null;
-        }
-        setToast({ message: t('subscriptionRestored', lang), showUndo: false });
-        setTimeout(() => setToast(null), 2000);
+        toast.show(t('unsubscribed', lang), {
+            type: 'info',
+            duration: 5000,
+            action: {
+                label: t('undo', lang),
+                onClick: () => toggleSubscription(repo.id),
+            },
+        });
     };
 
     // 全部取消订阅
@@ -287,10 +257,7 @@ export function ReleasesPage() {
                         {/* 筛选栏 (仅在有版本数据时显示) */}
                         {releaseCheckStatus.checking ? (
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-primary)' }}>
-                                <svg className="animate-spin" width="14" height="14" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                                </svg>
+                                <Loader2 size={14} className="animate-spin" />
                                 <span style={{ fontSize: 13 }}>{t('checkingUpdates', lang)}</span>
                             </div>
                         ) : (
@@ -298,9 +265,7 @@ export function ReleasesPage() {
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                                     <div style={{ display: 'flex', gap: 8 }}>
                                         <button className="btn btn-secondary btn-sm" onClick={handleCheckUpdates}>
-                                            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                                            </svg>
+                                            <RefreshCw size={14} />
                                             {t('checkUpdates', lang)}
                                         </button>
                                         <button className="btn btn-secondary btn-sm" onClick={handleMarkAllRead}>
@@ -331,13 +296,11 @@ export function ReleasesPage() {
                         )}
                         {/* 版本更新列表 */}
                         {sortedReleases.length === 0 ? (
-                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--color-text-muted)' }}>
-                                <svg width="48" height="48" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ marginBottom: 16, opacity: 0.5 }}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-                                </svg>
-                                <p style={{ fontSize: 16, fontWeight: 500 }}>
-                                    {releaseFilter.showUnreadOnly ? t('noUnreadReleases', lang) : t('noReleases', lang)}
-                                </p>
+                            <div style={{ flex: 1 }}>
+                                <EmptyState
+                                    icon={<Inbox size={48} strokeWidth={1.5} />}
+                                    title={releaseFilter.showUnreadOnly ? t('noUnreadReleases', lang) : t('noReleases', lang)}
+                                />
                             </div>
                         ) : (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -375,15 +338,17 @@ export function ReleasesPage() {
 
                         {/* 订阅管理列表 */}
                         {subscribedRepos.length === 0 ? (
-                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--color-text-muted)' }}>
-                                <svg width="48" height="48" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ marginBottom: 16, opacity: 0.5 }}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                                </svg>
-                                <p style={{ fontSize: 16, fontWeight: 500, color: 'var(--color-text-primary)' }}>{t('noSubscriptions', lang)}</p>
-                                <p style={{ fontSize: 13, marginTop: 8 }}>{t('noSubscriptionsHint', lang)}</p>
-                                <button className="btn btn-primary" style={{ marginTop: 24 }} onClick={() => setCurrentPage('home')}>
-                                    {t('browseRepos', lang)}
-                                </button>
+                            <div style={{ flex: 1 }}>
+                                <EmptyState
+                                    icon={<Bell size={48} strokeWidth={1.5} />}
+                                    title={t('noSubscriptions', lang)}
+                                    description={t('noSubscriptionsHint', lang)}
+                                    action={
+                                        <button className="btn btn-primary" onClick={() => setCurrentPage('home')}>
+                                            {t('browseRepos', lang)}
+                                        </button>
+                                    }
+                                />
                             </div>
                         ) : (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -429,43 +394,17 @@ export function ReleasesPage() {
                 />
             )}
 
-            {/* 确认弹窗 */}
-            {
-                showConfirmDialog && (
-                    <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
-                        <div className="card" style={{ padding: 24, maxWidth: 360, width: '100%', margin: '0 16px' }}>
-                            <h3 style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 8 }}>
-                                {t('unsubscribeConfirm', lang)}
-                            </h3>
-                            <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: 24 }}>
-                                {t('unsubscribeConfirmDesc', lang, { count: subscribedRepos.length })}
-                            </p>
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
-                                <button className="btn btn-secondary" onClick={() => setShowConfirmDialog(false)}>
-                                    {t('cancel', lang)}
-                                </button>
-                                <button className="btn btn-danger" onClick={confirmClearAll}>
-                                    {t('confirm', lang)}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )
-            }
-
-            {/* Toast 提示 */}
-            {
-                toast && (
-                    <div style={{ position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)', background: 'var(--color-text-primary)', color: 'var(--color-surface)', padding: '10px 16px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12, zIndex: 50, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
-                        <span style={{ fontSize: 13 }}>{toast.message}</span>
-                        {toast.showUndo && (
-                            <button style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-primary-light)', background: 'transparent', border: 'none', cursor: 'pointer' }} onClick={handleUndo}>
-                                {t('undo', lang)}
-                            </button>
-                        )}
-                    </div>
-                )
-            }
-        </div >
+            {/* 确认弹窗（ConfirmDialog：danger 实底 + 统一遮罩/焦点圈定） */}
+            <ConfirmDialog
+                isOpen={showConfirmDialog}
+                title={t('unsubscribeConfirm', lang)}
+                message={t('unsubscribeConfirmDesc', lang, { count: subscribedRepos.length })}
+                confirmText={t('confirm', lang)}
+                cancelText={t('cancel', lang)}
+                variant="danger"
+                onConfirm={confirmClearAll}
+                onCancel={() => setShowConfirmDialog(false)}
+            />
+        </div>
     );
 }

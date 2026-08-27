@@ -3,6 +3,8 @@ import { useStore } from '../stores/useStore';
 import { aiService } from '../services/aiService';
 import { t } from '../locales';
 import { TagBadge } from '../components/TagBadge';
+import { TagChip } from '../components/TagChip';
+import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { checkAnalysisNeeded, getCooldownHours } from '../utils/analysis';
 import { useBackShortcut } from '../hooks/useBackShortcut';
@@ -443,10 +445,19 @@ export const DetailPage: React.FC = () => {
             ? {
                 ...style,
                 outline: 'none',
-                boxShadow: '0 0 0 2px rgba(99, 102, 241, 0.28), 0 4px 14px rgba(0, 0, 0, 0.08)',
+                // roving 激活焦点环：primary token 调出的软环 + 阴影标度
+                boxShadow: '0 0 0 2px color-mix(in srgb, var(--color-primary) 45%, transparent), var(--shadow-md)',
             }
             : style
     ), [roving]);
+
+    // 别名弹窗：覆盖 Modal 默认初始焦点（关闭按钮），聚焦输入框
+    const aliasInputRef = useRef<HTMLInputElement | null>(null);
+    useEffect(() => {
+        if (editingAlias) {
+            window.requestAnimationFrame(() => aliasInputRef.current?.focus());
+        }
+    }, [editingAlias]);
 
     if (!repo) {
         return null;
@@ -548,8 +559,8 @@ export const DetailPage: React.FC = () => {
                 </button>
             </div>
 
-            {/* 内容 */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }} className="animate-slide-in">
+            {/* 内容（进入动画由 App.tsx 页面容器统一提供） */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
                 {/* 仓库信息头 */}
                 <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
                     <img
@@ -658,7 +669,8 @@ export const DetailPage: React.FC = () => {
                     <div className="card">
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                             <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                🏷️ {t('tags', lang)}
+                                <Tag size={14} />
+                                {t('tags', lang)}
                             </h3>
                             <button
                                 ref={bindControlRef('tag-add')}
@@ -700,32 +712,21 @@ export const DetailPage: React.FC = () => {
                             )}
                         </div>
 
-                        {/* 标签选择器 */}
+                        {/* 标签选择器（TagChip 共享组件，roving props 透传） */}
                         {showTagSelector && tags.length > 0 && (
                             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--color-border)' }}>
-                                {tags.map((tag) => {
-                                    const isSelected = (repo.customTags || []).includes(tag.id);
-                                    return (
-                                        <button
-                                            ref={bindControlRef(`tag-option:${tag.id}`)}
-                                            key={tag.id}
-                                            className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-ghost'}`}
-                                            style={getControlStyle(`tag-option:${tag.id}`, {
-                                                padding: '4px 8px',
-                                                borderRadius: 999,
-                                                border: `1px solid ${tag.color || 'var(--color-border)'}`,
-                                                backgroundColor: isSelected ? (tag.color || 'var(--color-primary)') : 'transparent',
-                                                color: isSelected ? '#fff' : (tag.color || 'var(--color-text-primary)'),
-                                            })}
-                                            tabIndex={roving.getTabIndex(`tag-option:${tag.id}`)}
-                                            onFocus={() => roving.setActiveId(`tag-option:${tag.id}`)}
-                                            onClick={() => handleToggleTag(tag.id)}
-                                        >
-                                            {tag.icon && <span>{tag.icon} </span>}
-                                            {tag.name}
-                                        </button>
-                                    );
-                                })}
+                                {tags.map((tag) => (
+                                    <TagChip
+                                        key={tag.id}
+                                        ref={bindControlRef(`tag-option:${tag.id}`)}
+                                        tag={tag}
+                                        selected={(repo.customTags || []).includes(tag.id)}
+                                        onClick={() => handleToggleTag(tag.id)}
+                                        tabIndex={roving.getTabIndex(`tag-option:${tag.id}`)}
+                                        onFocus={() => roving.setActiveId(`tag-option:${tag.id}`)}
+                                        style={getControlStyle(`tag-option:${tag.id}`)}
+                                    />
+                                ))}
                             </div>
                         )}
 
@@ -971,51 +972,37 @@ export const DetailPage: React.FC = () => {
                 )}
             </div>
 
-            {/* 🆕 别名编辑弹窗 */}
-            {editingAlias && (
-                <div style={{
-                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-                    background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    zIndex: 1000,
-                }}>
-                    <div style={{
-                        background: 'var(--color-surface)',
-                        borderRadius: 12,
-                        padding: 20,
-                        width: '90%',
-                        maxWidth: 400,
-                    }}>
-                        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
-                            {t('editAlias', lang)}
-                        </h3>
-                        <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 12 }}>
-                            {t('aliasHint', lang)}
-                        </p>
-                        <input
-                            type="text"
-                            value={aliasValue}
-                            onChange={(e) => setAliasValue(e.target.value)}
-                            placeholder={t('aliasPlaceholder', lang)}
-                            style={{
-                                width: '100%', padding: 10, borderRadius: 8,
-                                border: '1px solid var(--color-border)',
-                                background: 'var(--color-background)',
-                                color: 'var(--color-text-primary)',
-                                fontSize: 14,
-                            }}
-                            autoFocus
-                        />
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-                            <button className="btn btn-ghost btn-sm" onClick={handleCancelAlias}>
-                                {t('cancel', lang)}
-                            </button>
-                            <button className="btn btn-primary btn-sm" onClick={handleSaveAlias}>
-                                {t('save', lang)}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            {/* 🆕 别名编辑弹窗（统一收编 Modal：遮罩淡入/焦点圈定/Escape） */}
+            <Modal
+                isOpen={editingAlias}
+                onClose={handleCancelAlias}
+                title={t('editAlias', lang)}
+                footer={
+                    <>
+                        <button className="btn btn-ghost btn-sm" onClick={handleCancelAlias}>
+                            {t('cancel', lang)}
+                        </button>
+                        <button className="btn btn-primary btn-sm" onClick={handleSaveAlias}>
+                            {t('save', lang)}
+                        </button>
+                    </>
+                }
+            >
+                <p style={{ fontSize: 'var(--text-base)', color: 'var(--color-text-muted)', margin: '0 0 12px' }}>
+                    {t('aliasHint', lang)}
+                </p>
+                <input
+                    ref={aliasInputRef}
+                    type="text"
+                    className="input"
+                    value={aliasValue}
+                    onChange={(e) => setAliasValue(e.target.value)}
+                    placeholder={t('aliasPlaceholder', lang)}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleSaveAlias();
+                    }}
+                />
+            </Modal>
 
             {/* 🆕 笔记删除确认弹窗 */}
             <ConfirmDialog

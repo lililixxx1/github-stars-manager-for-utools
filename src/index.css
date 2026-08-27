@@ -775,6 +775,27 @@ body {
     color: var(--color-text-primary);
 }
 
+.toast-action {
+    flex-shrink: 0;
+    padding: 2px 10px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-primary);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.toast-action:hover {
+    background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+:root.dark .toast-action:hover {
+    background: color-mix(in srgb, var(--color-primary) 24%, transparent);
+}
+
 /* ---- Modal 弹窗 ---- */
 .modal-overlay {
     position: fixed;
@@ -831,6 +852,180 @@ body {
     justify-content: flex-end;
     gap: 12px;
     padding: 12px 20px 16px;
+}
+
+/* ==================== 工具栏筛选按钮 / 胶囊（阶段8 页面精修） ==================== */
+
+/* 首页工具栏图标按钮：ghost 基底，激活态 primary 实底（对比度对齐 .btn-primary） */
+.btn-filter {
+    background: transparent;
+    color: var(--color-text-secondary);
+}
+
+.btn-filter:hover:not(:disabled) {
+    background: var(--color-surface-hover);
+    color: var(--color-text-primary);
+}
+
+.btn-filter.active,
+.btn-filter.active:hover:not(:disabled) {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    color: white;
+}
+
+/* 暗色下 primary 偏亮，实底换 primary-dark 提升白字对比度 */
+:root.dark .btn-filter.active,
+:root.dark .btn-filter.active:hover:not(:disabled) {
+    background: var(--color-primary-dark);
+    border-color: var(--color-primary-dark);
+}
+
+/* 标签/平台筛选胶囊：圆角描边、透明底，选中态 .active 实底 */
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--color-border);
+    background: transparent;
+    color: var(--color-text-primary);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.chip:hover:not(:disabled) {
+    background: var(--color-surface-hover);
+}
+
+.chip:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.chip.active {
+    background: var(--color-primary);
+    border-color: var(--color-primary);
+    color: white;
+}
+
+:root.dark .chip.active {
+    background: var(--color-primary-dark);
+    border-color: var(--color-primary-dark);
+}
+
+/* 鼠标点击不显示焦点环；键盘焦点走全局 :focus-visible */
+.chip:focus:not(:focus-visible) {
+    outline: none;
+}
+
+/* ==================== 分段控件（设置页等宽数字选项） ==================== */
+.segmented {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--color-surface-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+}
+
+.segmented-item {
+    flex: 1;
+    padding: 4px 10px;
+    border: none;
+    border-radius: calc(var(--radius-md) - 3px);
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.segmented-item:hover:not(.active):not(:disabled) {
+    color: var(--color-text-primary);
+}
+
+.segmented-item:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 激活项：surface 浮起小药丸 + primary 文字（light 用 primary-dark 5.7:1，dark 用 primary 5.1:1） */
+.segmented-item.active {
+    background: var(--color-surface);
+    color: var(--color-primary-dark);
+    box-shadow: var(--shadow-sm);
+}
+
+:root.dark .segmented-item.active {
+    color: var(--color-primary);
+}
+
+.segmented-item:focus:not(:focus-visible) {
+    outline: none;
+}
+
+/* ==================== 设置页分节标题 ==================== */
+.settings-section-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 20px 0 10px;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--color-text-muted);
+}
+
+.settings-section-title svg {
+    flex-shrink: 0;
+}
+
+.settings-section-title:first-child {
+    margin-top: 0;
+}
+
+/* ==================== 卡片密度（600px 高窗口适配） ==================== */
+/* 仓库/版本卡片紧凑内边距（.card 默认 16px） */
+.card-compact {
+    padding: 13px;
+}
+
+/* ==================== 页面/面板进入动画（阶段8 动效收敛） ==================== */
+/* 页面级进入：整页一次，替代逐卡片动画 */
+.page-enter {
+    height: 100%;
+    animation: page-enter 0.18s ease-out;
+}
+
+/* 首页轻播：仅淡入，避免与首屏内容争抢 */
+.page-enter-light {
+    animation: page-enter-light 0.12s ease-out;
+}
+
+@keyframes page-enter {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes page-enter-light {
+    from { opacity: 0.4; }
+    to { opacity: 1; }
+}
+
+/* 下拉/筛选面板进场（仅进不出） */
+.panel-enter {
+    animation: panel-enter 0.15s ease-out;
+}
+
+@keyframes panel-enter {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 /* ==================== 全局焦点环（键盘可达性） ==================== */

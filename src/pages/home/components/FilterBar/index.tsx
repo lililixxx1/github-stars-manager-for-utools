@@ -22,8 +22,9 @@ import type { SortBy, SortOrder, Tag as TagType, Repository } from '@/types';
 import { shouldIgnoreGlobalKeydown } from '@/utils/keyboard';
 import {
     ArrowUpDown, Tag as TagIcon, Filter, RefreshCw, Settings,
-    LayoutGrid, List, Bell, Edit3, Plus
+    LayoutGrid, List, Bell, Edit3, Plus, Check
 } from 'lucide-react';
+import { TagChip } from '@/components/TagChip';
 
 interface FilterBarProps {
     lang: 'zh' | 'en';
@@ -50,7 +51,8 @@ interface ToolbarControl {
     title: string;
     action: () => void;
     disabled?: boolean;
-    style?: React.CSSProperties;
+    /** 激活态（primary 实底，.btn-filter.active）；语义上可按压的按钮同步输出 aria-pressed */
+    active?: boolean;
     content: React.ReactNode;
 }
 
@@ -162,10 +164,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             key: 'unread',
             title: t('releases', lang),
             action: handleOpenReleases,
-            style: {
-                background: 'var(--color-primary)',
-                color: 'white',
-            },
+            active: true,
             content: (
                 <>
                     <Bell size={14} />
@@ -207,10 +206,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             key: 'tags',
             title: t('tags', lang),
             action: () => setShowTagFilter((prev) => !prev),
-            style: {
-                background: searchFilter.customTags.length > 0 ? 'var(--color-primary)' : undefined,
-                color: searchFilter.customTags.length > 0 ? 'white' : undefined,
-            },
+            active: searchFilter.customTags.length > 0,
             content: (
                 <>
                     <TagIcon size={14} />
@@ -222,12 +218,9 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         },
         {
             key: 'platforms',
-            title: lang === 'zh' ? '平台筛选' : 'Platform Filter',
+            title: t('platformFilter', lang),
             action: () => setShowPlatformFilter((prev) => !prev),
-            style: {
-                background: searchFilter.platforms.length > 0 ? 'var(--color-primary)' : undefined,
-                color: searchFilter.platforms.length > 0 ? 'white' : undefined,
-            },
+            active: searchFilter.platforms.length > 0,
             content: (
                 <>
                     <Filter size={14} />
@@ -428,11 +421,11 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         toolbarControls
     ]);
 
-    const getToolbarButtonStyle = useCallback((index: number, style?: React.CSSProperties): React.CSSProperties => ({
-        ...style,
+    // 仅产出 roving 激活焦点环（颜色由 primary token 调出，激活/悬浮配色交由 .btn-filter 类）
+    const getToolbarButtonStyle = useCallback((index: number): React.CSSProperties => ({
         boxShadow: keyboardArea === 'toolbar' && activeControlIndex === index
-            ? '0 0 0 2px rgba(99, 102, 241, 0.22)'
-            : style?.boxShadow,
+            ? '0 0 0 2px color-mix(in srgb, var(--color-primary) 40%, transparent)'
+            : undefined,
         outline: 'none',
     }), [activeControlIndex, keyboardArea]);
 
@@ -453,15 +446,16 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                             <button
                                 key={control.key}
                                 ref={(element) => { buttonRefs.current[index] = element; }}
-                                className="btn btn-ghost btn-sm"
+                                className={`btn btn-filter btn-sm${control.active ? ' active' : ''}`}
                                 tabIndex={activeControlIndex === index ? 0 : -1}
                                 onClick={control.action}
                                 onMouseEnter={() => activateControl(index)}
                                 onFocus={() => activateControl(index)}
                                 title={control.title}
                                 aria-label={control.title}
+                                aria-pressed={control.active === undefined ? undefined : control.active}
                                 disabled={control.disabled}
-                                style={getToolbarButtonStyle(index, control.style)}
+                                style={getToolbarButtonStyle(index)}
                             >
                                 {control.content}
                             </button>
@@ -671,12 +665,15 @@ const SortMenu = memo<{
     onClose: () => void;
     onHoverItem: (index: number) => void;
 }>(({ sortBy, sortOrder, activeIndex, lang, onSortChange, onToggleOrder, onClose, onHoverItem }) => (
-    <div style={{
-        position: 'absolute', top: '100%', right: 0, marginTop: 4,
-        background: 'var(--color-surface)', border: '1px solid var(--color-border)',
-        borderRadius: 8, boxShadow: 'var(--shadow-md)',
-        minWidth: 160, zIndex: 100, overflow: 'hidden',
-    }}>
+    <div
+        className="panel-enter"
+        style={{
+            position: 'absolute', top: '100%', right: 0, marginTop: 4,
+            background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+            borderRadius: 8, boxShadow: 'var(--shadow-md)',
+            minWidth: 160, zIndex: 100, overflow: 'hidden',
+        }}
+    >
         {SORT_OPTIONS.map((opt, index) => (
             <button
                 key={opt.value}
@@ -691,11 +688,11 @@ const SortMenu = memo<{
                 onMouseEnter={() => onHoverItem(index)}
             >
                 <span style={{
-                    width: 20, display: 'inline-block', textAlign: 'center',
-                    color: 'var(--color-primary)', fontWeight: 'bold',
+                    width: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    color: 'var(--color-primary)',
                     opacity: sortBy === opt.value ? 1 : 0,
                 }}>
-                    ✓
+                    <Check size={14} />
                 </span>
                 <span style={{ marginLeft: 4 }}>{t(opt.labelKey as TranslationKey, lang)}</span>
             </button>
@@ -734,6 +731,7 @@ const TagFilterBar = memo<{
     return (
         <div
             ref={containerRef}
+            className="panel-enter"
             style={{
                 padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)', display: 'flex', flexWrap: 'wrap', gap: 6,
@@ -743,27 +741,15 @@ const TagFilterBar = memo<{
             {tags.length > 0 ? (
                 <>
                     <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{t('tags', lang)}:</span>
-                    {tags.map((tag) => {
-                        const isSelected = selectedTags.includes(tag.id);
-                        return (
-                            <button
-                                key={tag.id}
-                                className="btn btn-sm"
-                                style={{
-                                    padding: '2px 8px', borderRadius: 999,
-                                    border: `1px solid ${tag.color || 'var(--color-border)'}`,
-                                    background: isSelected ? (tag.color || 'var(--color-primary)') : 'transparent',
-                                    color: isSelected ? '#fff' : (tag.color || 'var(--color-text-primary)'),
-                                    fontSize: 12,
-                                }}
-                                onClick={() => onTagToggle(tag.id)}
-                                onFocus={syncActiveIndex}
-                            >
-                                {tag.icon && <span>{tag.icon} </span>}
-                                {tag.name}
-                            </button>
-                        );
-                    })}
+                    {tags.map((tag) => (
+                        <TagChip
+                            key={tag.id}
+                            tag={tag}
+                            selected={selectedTags.includes(tag.id)}
+                            onClick={() => onTagToggle(tag.id)}
+                            onFocus={syncActiveIndex}
+                        />
+                    ))}
                     {selectedTags.length > 0 && (
                         <button
                             className="btn btn-ghost btn-sm"
@@ -833,6 +819,7 @@ const PlatformFilterBar = memo<{
     return (
         <div
             ref={containerRef}
+            className="panel-enter"
             style={{
                 padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)', display: 'flex', flexWrap: 'wrap', gap: 6,
@@ -845,20 +832,14 @@ const PlatformFilterBar = memo<{
 
             {/* 未分析选项 */}
             <button
-                className="btn btn-sm"
-                style={{
-                    padding: '2px 8px', borderRadius: 999,
-                    border: '1px solid var(--color-border)',
-                    background: selectedPlatforms.includes(PLATFORM_NONE) ? 'var(--color-text-muted)' : 'transparent',
-                    color: selectedPlatforms.includes(PLATFORM_NONE) ? '#fff' : 'var(--color-text-primary)',
-                    fontSize: 12,
-                    opacity: unanalyzedCount === 0 ? 0.5 : 1,
-                }}
+                className={`chip${selectedPlatforms.includes(PLATFORM_NONE) ? ' active' : ''}`}
+                style={{ opacity: unanalyzedCount === 0 ? 0.5 : 1 }}
                 onClick={() => onPlatformToggle(PLATFORM_NONE)}
                 onFocus={syncActiveIndex}
                 disabled={unanalyzedCount === 0}
+                aria-pressed={selectedPlatforms.includes(PLATFORM_NONE)}
             >
-                {lang === 'zh' ? '未分析' : 'Unanalyzed'}
+                {t('platformUnanalyzed', lang)}
                 {unanalyzedCount > 0 && <span style={{ marginLeft: 4, opacity: 0.7 }}>({unanalyzedCount})</span>}
             </button>
 
@@ -869,18 +850,17 @@ const PlatformFilterBar = memo<{
                 return (
                     <button
                         key={platform.id}
-                        className="btn btn-sm"
+                        className={`chip${isSelected ? ' active' : ''}`}
                         style={{
-                            padding: '2px 8px', borderRadius: 999,
-                            border: '1px solid var(--color-primary)',
-                            background: isSelected ? 'var(--color-primary)' : 'transparent',
-                            color: isSelected ? '#fff' : 'var(--color-primary)',
-                            fontSize: 12,
+                            // 未选中态保留 primary 描边/文字的强调语义；选中态配色交由 .chip.active
+                            borderColor: 'var(--color-primary)',
+                            color: isSelected ? undefined : 'var(--color-primary)',
                             opacity: count === 0 ? 0.5 : 1,
                         }}
                         onClick={() => onPlatformToggle(platform.id)}
                         onFocus={syncActiveIndex}
                         disabled={count === 0}
+                        aria-pressed={isSelected}
                     >
                         {platform.icon} {platform.label}
                         {count > 0 && <span style={{ marginLeft: 4, opacity: 0.7 }}>({count})</span>}

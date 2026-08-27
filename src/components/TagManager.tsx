@@ -1,9 +1,11 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useStore } from '../stores/useStore';
 import { TagBadge } from './TagBadge';
+import { Modal } from './Modal';
+import { ConfirmDialog } from './ConfirmDialog';
 import { t } from '../locales';
 import type { Tag } from '../types';
-import { Plus, Edit2, Trash2, GripVertical, X, Check } from 'lucide-react';
+import { Plus, Edit2, Trash2, GripVertical, Check, Lightbulb } from 'lucide-react';
 import {
     DndContext,
     closestCenter,
@@ -267,6 +269,22 @@ export const TagManager: React.FC<TagManagerProps> = ({
         setIsEditing(true);
     };
 
+    // 关闭添加/编辑表单并清理草稿态
+    const closeTagForm = useCallback(() => {
+        setIsAdding(false);
+        setIsEditing(false);
+        setEditingTag(null);
+        setNewTagName('');
+    }, []);
+
+    // 表单弹窗：覆盖 Modal 默认初始焦点（关闭按钮），聚焦名称输入框
+    const nameInputRef = useRef<HTMLInputElement | null>(null);
+    useEffect(() => {
+        if (isAdding || isEditing) {
+            window.requestAnimationFrame(() => nameInputRef.current?.focus());
+        }
+    }, [isAdding, isEditing]);
+
     if (mode === 'select') {
         return (
             <div className="flex flex-wrap gap-2">
@@ -318,166 +336,137 @@ export const TagManager: React.FC<TagManagerProps> = ({
                 </SortableContext>
             </DndContext>
 
-            {/* 添加/编辑表单 (变成模态弹窗) */}
-            {(isAdding || isEditing) && (
-                <div style={{
-                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-                    backgroundColor: 'var(--color-overlay)',
-                    backdropFilter: 'blur(2px)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    zIndex: 100
-                }}>
-                    <div className="card" style={{
-                        borderRadius: 12,
-                        border: '1px solid var(--color-border)',
-                        padding: 24,
-                        width: '90%',
-                        maxWidth: 480,
-                        boxShadow: 'var(--shadow-lg)',
-                        display: 'flex', flexDirection: 'column', gap: 14
-                    }}>
-                        <div className="flex items-center justify-between mb-1">
-                            <h4 className="font-medium" style={{ fontSize: 16, color: 'var(--color-text-primary)' }}>
-                                {isEditing ? t('editTag', lang) : t('addTag', lang)}
-                            </h4>
-                            <button
-                                className="btn btn-ghost btn-sm"
-                                style={{ padding: 4 }}
-                                onClick={() => {
-                                    setIsAdding(false);
-                                    setIsEditing(false);
-                                    setEditingTag(null);
-                                    setNewTagName('');
-                                }}
-                            >
-                                <X size={18} />
-                            </button>
-                        </div>
+            {/* 添加/编辑表单（统一收编 Modal：遮罩淡入/焦点圈定/Escape） */}
+            <Modal
+                isOpen={isAdding || isEditing}
+                onClose={closeTagForm}
+                title={isEditing ? t('editTag', lang) : t('addTag', lang)}
+                width={480}
+                footer={
+                    <>
+                        <button className="btn btn-secondary btn-sm" onClick={closeTagForm}>
+                            {t('cancel', lang)}
+                        </button>
+                        <button
+                            className="btn btn-primary btn-sm"
+                            onClick={isEditing ? handleUpdateTag : handleAddTag}
+                            disabled={!newTagName.trim()}
+                        >
+                            <Check size={16} />
+                            {t('confirm', lang)}
+                        </button>
+                    </>
+                }
+            >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    {/* 标签名称 */}
+                    <div>
+                        <label className="block text-sm text-[var(--color-text-secondary)] mb-1">
+                            {t('tagName', lang)}
+                        </label>
+                        <input
+                            ref={nameInputRef}
+                            type="text"
+                            className="input"
+                            value={newTagName}
+                            onChange={(e) => setNewTagName(e.target.value)}
+                            placeholder={t('tagPlaceholder', lang)}
+                            style={{ width: '100%', padding: '8px 12px', fontSize: 13 }}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && newTagName.trim()) {
+                                    if (isEditing) {
+                                        handleUpdateTag();
+                                    } else {
+                                        handleAddTag();
+                                    }
+                                }
+                            }}
+                        />
+                    </div>
 
-                        {/* 标签名称 */}
-                        <div>
-                            <label className="block text-sm text-[var(--color-text-secondary)] mb-1">
-                                {t('tagName', lang)}
-                            </label>
-                            <input
-                                type="text"
-                                className="input"
-                                value={newTagName}
-                                onChange={(e) => setNewTagName(e.target.value)}
-                                placeholder={t('tagPlaceholder', lang)}
-                                style={{ width: '100%', padding: '8px 12px', fontSize: 13 }}
-                                autoFocus
-                            />
-                        </div>
-
-                        {/* 标签颜色 */}
-                        <div>
-                            <label className="block text-sm text-[var(--color-text-secondary)] mb-1">
-                                {t('tagColor', lang)}
-                            </label>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                                {PREDEFINED_COLORS.map((color) => (
-                                    <button
-                                        key={color}
-                                        style={{
-                                            width: 28,
-                                            height: 28,
-                                            borderRadius: '50%',
-                                            backgroundColor: color,
-                                            border: newTagColor === color
-                                                ? `2px solid var(--color-primary)`
-                                                : '2px solid transparent',
-                                            boxShadow: newTagColor === color
-                                                ? '0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-primary)'
-                                                : 'none',
-                                            cursor: 'pointer',
-                                            transition: 'all 0.15s ease',
-                                        }}
-                                        onClick={() => setNewTagColor(color)}
-                                    />
-                                ))}
-                            </div>
-                        </div>
-
-                        {/* 标签图标 */}
-                        <div>
-                            <label className="block text-sm text-[var(--color-text-secondary)] mb-1">
-                                {t('tagIcon', lang)}
-                            </label>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                                {PREDEFINED_ICONS.map((icon) => (
-                                    <button
-                                        key={icon}
-                                        style={{
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            width: 30,
-                                            height: 30,
-                                            borderRadius: 6,
-                                            fontSize: 14,
-                                            border: `1px solid ${newTagIcon === icon ? 'var(--color-primary)' : 'var(--color-border)'}`,
-                                            background: newTagIcon === icon ? 'var(--color-primary)' : 'var(--color-surface)',
-                                            color: newTagIcon === icon ? 'white' : 'var(--color-text-primary)',
-                                            cursor: 'pointer',
-                                            transition: 'all 0.15s ease',
-                                        }}
-                                        onClick={() => setNewTagIcon(icon)}
-                                    >
-                                        {icon}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-
-                        {/* 预览 */}
-                        <div>
-                            <label className="block text-sm text-[var(--color-text-secondary)] mb-1">
-                                预览
-                            </label>
-                            <div>
-                                <TagBadge
-                                    tag={{
-                                        id: 'preview',
-                                        name: newTagName || t('tagName', lang),
-                                        color: newTagColor,
-                                        icon: newTagIcon,
-                                        order: 0,
-                                        createdAt: Date.now(),
-                                        updatedAt: Date.now(),
+                    {/* 标签颜色 */}
+                    <div>
+                        <label className="block text-sm text-[var(--color-text-secondary)] mb-1">
+                            {t('tagColor', lang)}
+                        </label>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            {PREDEFINED_COLORS.map((color) => (
+                                <button
+                                    key={color}
+                                    aria-label={color}
+                                    style={{
+                                        width: 28,
+                                        height: 28,
+                                        borderRadius: '50%',
+                                        backgroundColor: color,
+                                        border: newTagColor === color
+                                            ? `2px solid var(--color-primary)`
+                                            : '2px solid transparent',
+                                        boxShadow: newTagColor === color
+                                            ? '0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-primary)'
+                                            : 'none',
+                                        cursor: 'pointer',
+                                        transition: 'all 0.15s ease',
                                     }}
-                                    size="md"
+                                    onClick={() => setNewTagColor(color)}
                                 />
-                            </div>
+                            ))}
                         </div>
+                    </div>
 
-                        {/* 操作按钮组 */}
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 12 }}>
-                            <button
-                                className="btn btn-secondary btn-sm"
-                                style={{ padding: '8px 24px' }}
-                                onClick={() => {
-                                    setIsAdding(false);
-                                    setIsEditing(false);
-                                    setEditingTag(null);
-                                    setNewTagName('');
+                    {/* 标签图标 */}
+                    <div>
+                        <label className="block text-sm text-[var(--color-text-secondary)] mb-1">
+                            {t('tagIcon', lang)}
+                        </label>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            {PREDEFINED_ICONS.map((icon) => (
+                                <button
+                                    key={icon}
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        width: 30,
+                                        height: 30,
+                                        borderRadius: 6,
+                                        fontSize: 14,
+                                        border: `1px solid ${newTagIcon === icon ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                                        background: newTagIcon === icon ? 'var(--color-primary)' : 'var(--color-surface)',
+                                        color: newTagIcon === icon ? 'white' : 'var(--color-text-primary)',
+                                        cursor: 'pointer',
+                                        transition: 'all 0.15s ease',
+                                    }}
+                                    onClick={() => setNewTagIcon(icon)}
+                                >
+                                    {icon}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* 预览 */}
+                    <div>
+                        <label className="block text-sm text-[var(--color-text-secondary)] mb-1">
+                            {t('preview', lang)}
+                        </label>
+                        <div>
+                            <TagBadge
+                                tag={{
+                                    id: 'preview',
+                                    name: newTagName || t('tagName', lang),
+                                    color: newTagColor,
+                                    icon: newTagIcon,
+                                    order: 0,
+                                    createdAt: Date.now(),
+                                    updatedAt: Date.now(),
                                 }}
-                            >
-                                {t('cancel', lang)}
-                            </button>
-                            <button
-                                className="btn btn-primary btn-sm"
-                                style={{ padding: '8px 24px' }}
-                                onClick={isEditing ? handleUpdateTag : handleAddTag}
-                                disabled={!newTagName.trim()}
-                            >
-                                <Check size={16} />
-                                {t('confirm', lang)}
-                            </button>
+                                size="md"
+                            />
                         </div>
                     </div>
                 </div>
-            )}
+            </Modal>
 
             {/* 添加按钮 */}
             {!isAdding && !isEditing && (
@@ -493,44 +482,23 @@ export const TagManager: React.FC<TagManagerProps> = ({
 
             {/* 提示 */}
             {tags.length > 1 && !isAdding && !isEditing && (
-                <p style={{ fontSize: 13, color: 'var(--color-text-muted)', textAlign: 'center' }}>
-                    💡 {t('dragToSort', lang)}
+                <p style={{ fontSize: 13, color: 'var(--color-text-muted)', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                    <Lightbulb size={12} />
+                    {t('dragToSort', lang)}
                 </p>
             )}
 
-            {/* 删除确认弹窗 */}
-            {tagToDelete && (
-                <div style={{
-                    position: 'fixed',
-                    top: 0, left: 0, right: 0, bottom: 0,
-                    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    zIndex: 50
-                }}>
-                    <div className="card" style={{ width: 320, padding: 24, margin: '0 16px' }}>
-                        <h4 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8, color: 'var(--color-text-primary)' }}>
-                            {lang === 'zh' ? '删除标签' : 'Delete Tag'}
-                        </h4>
-                        <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', marginBottom: 24, lineHeight: 1.5, wordBreak: 'break-all' }}>
-                            {t('deleteTagConfirm', lang, { name: tagToDelete.name })}
-                        </p>
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                            <button
-                                className="btn btn-secondary"
-                                onClick={() => setTagToDelete(null)}
-                            >
-                                {t('cancel', lang)}
-                            </button>
-                            <button
-                                className="btn btn-danger"
-                                onClick={confirmDeleteTag}
-                            >
-                                {t('confirm', lang)}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            {/* 删除确认弹窗（ConfirmDialog：danger 实底 + 焦点圈定） */}
+            <ConfirmDialog
+                isOpen={!!tagToDelete}
+                title={t('deleteTag', lang)}
+                message={tagToDelete ? t('deleteTagConfirm', lang, { name: tagToDelete.name }) : ''}
+                confirmText={t('confirm', lang)}
+                cancelText={t('cancel', lang)}
+                variant="danger"
+                onConfirm={confirmDeleteTag}
+                onCancel={() => setTagToDelete(null)}
+            />
         </div>
     );
 };

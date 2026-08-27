@@ -294,11 +294,14 @@ const App: React.FC = () => {
             />
             <AnalyzeProgress />
             <ToastHost />
-            {currentPage === 'detail' && <DetailPage />}
-            {currentPage === 'settings' && <SettingsPage />}
-            {currentPage === 'tags' && <TagsPage />}
-            {currentPage === 'releases' && <ReleasesPage />}
-            {currentPage !== 'detail' && currentPage !== 'settings' && currentPage !== 'tags' && currentPage !== 'releases' && <HomePage />}
+            {/* 阶段8：页面级进入动画统一挂在容器上（替代逐卡片动画）；首页轻播避免与首屏争抢 */}
+            {currentPage === 'detail' && <div className="page-enter"><DetailPage /></div>}
+            {currentPage === 'settings' && <div className="page-enter"><SettingsPage /></div>}
+            {currentPage === 'tags' && <div className="page-enter"><TagsPage /></div>}
+            {currentPage === 'releases' && <div className="page-enter"><ReleasesPage /></div>}
+            {currentPage !== 'detail' && currentPage !== 'settings' && currentPage !== 'tags' && currentPage !== 'releases' && (
+                <div className="page-enter page-enter-light"><HomePage /></div>
+            )}
         </>
     );
 };

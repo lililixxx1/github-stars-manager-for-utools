@@ -10,15 +10,16 @@ import { FilterBar, type FilterBarHandle } from './home/components/FilterBar';
 import { EmptyState } from '../components/EmptyState';
 import {
     RefreshCw, ChevronLeft, ChevronRight,
-    Star, Sparkles, FileText, Package, SearchX
+    Star, Sparkles, FileText, Package, SearchX, AlertTriangle, X
 } from 'lucide-react';
 
 // 🆕 阶段6 虚拟滚动："全部"模式（itemsPerPage=0）的行高初始估计。
 // 行高并不固定（卡片描述两行裁剪、标签换行；列表行内容单/双行），
 // 实际高度一律由 virtualizer.measureElement 动态测量，这里仅作首帧/未测行的估计：
-// 卡片 ≈ .card padding 16×2 + 标题 22 + 描述两行 39 + 底栏 18 + 行距 8；列表行 ≈ padding 12×2 + 两行内容 + 1px 分割线
-const CARD_ROW_ESTIMATE = 130;
-const LIST_ROW_ESTIMATE = 66;
+// 阶段8 密度调整后（.card-compact padding 13×2 + 行距 6）：卡片 ≈ 26 + 标题 22 + 描述两行 39 + 底栏 18 + 行距 6；
+// 列表行 ≈ padding 12×2 + 两行内容 44 + margin 4 + 1px 分割线
+const CARD_ROW_ESTIMATE = 122;
+const LIST_ROW_ESTIMATE = 60;
 
 export const HomePage: React.FC = () => {
     // 精确订阅（阶段2 性能重构）：每个字段单独 selector，避免全量订阅
@@ -343,18 +344,24 @@ export const HomePage: React.FC = () => {
                     color: 'white', fontSize: 13, display: 'flex',
                     alignItems: 'center', justifyContent: 'space-between',
                 }}>
-                    <span>⚠️ {syncError}</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <AlertTriangle size={14} />
+                        {syncError}
+                    </span>
                     <button
-                        style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: 14 }}
+                        style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: 14, display: 'inline-flex', alignItems: 'center', padding: 2 }}
                         onClick={() => setSyncError(null)}
-                    >✕</button>
+                        aria-label={t('commonClose', lang)}
+                    >
+                        <X size={14} />
+                    </button>
                 </div>
             )}
 
             {/* 仓库列表 */}
             <div
                 ref={listContainerRef}
-                style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'card' ? '8px 16px' : '0' }}
+                style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'card' ? '6px 16px' : '0' }}
                 role="listbox"
                 aria-label={t('repositories', lang)}
                 aria-activedescendant={keyboardArea === 'list' && activeRepo ? `repo-option-${activeRepo.id}` : undefined}
@@ -403,9 +410,9 @@ export const HomePage: React.FC = () => {
                                         left: 0,
                                         width: '100%',
                                         transform: `translateY(${virtualRow.start}px)`,
-                                        // 还原两种视图的原有行样式：卡片=8px 行距（原 flex gap），列表=原行内边距与高亮边
+                                        // 还原两种视图的原有行样式：卡片=6px 行距（原 flex gap，阶段8 密度），列表=原行内边距与高亮边
                                         ...(viewMode === 'card'
-                                            ? { paddingBottom: 8 }
+                                            ? { paddingBottom: 6 }
                                             : {
                                                 padding: '12px 16px',
                                                 borderBottom: '1px solid var(--color-border)',
@@ -417,13 +424,12 @@ export const HomePage: React.FC = () => {
                                     }}
                                 >
                                     {viewMode === 'card' ? (
-                                        // 虚拟行滚出视口即卸载、滚回即重挂载：禁用 animate-fade-in 避免动画重播闪烁
+                                        // 阶段8：卡片自身不再播 animate-fade-in，避免虚拟行重挂载时动画重播闪烁
                                         <RepositoryCard
                                             repo={repo}
                                             onClick={handleRepoClick}
                                             language={lang}
                                             isActive={isActive}
-                                            disableAnimation
                                         />
                                     ) : (
                                         renderListRowContent(repo)
@@ -433,8 +439,8 @@ export const HomePage: React.FC = () => {
                         })}
                     </div>
                 ) : viewMode === 'card' ? (
-                    // 卡片视图
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    // 卡片视图（阶段8 密度：行距 8→6）
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         {currentRepos.map((repo, index) => {
                             const isActive = activeRepoIndex === index;
                             return (
