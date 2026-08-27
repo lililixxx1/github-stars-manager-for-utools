@@ -129,7 +129,13 @@ export const TagManager: React.FC<TagManagerProps> = ({
     selectedTags = [],
     mode = 'select',
 }) => {
-    const { tags, addTag, updateTag, deleteTag, reorderTags, repositories } = useStore();
+    // 精确订阅（阶段2 性能重构）
+    const tags = useStore((state) => state.tags);
+    const addTag = useStore((state) => state.addTag);
+    const updateTag = useStore((state) => state.updateTag);
+    const deleteTag = useStore((state) => state.deleteTag);
+    const reorderTags = useStore((state) => state.reorderTags);
+    const repositories = useStore((state) => state.repositories);
     const lang = (useStore.getState().settings.language || 'zh') as 'zh' | 'en';
 
     const [isEditing, setIsEditing] = useState(false);

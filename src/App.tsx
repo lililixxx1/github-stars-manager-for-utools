@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from './stores/useStore';
+import { useProgressStore } from './stores/useProgressStore';
 import { HomePage } from './pages/HomePage';
 import { DetailPage } from './pages/DetailPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -27,7 +28,15 @@ function releaseRepositorySearchSubInput(): void {
 }
 
 const App: React.FC = () => {
-    const { currentPage, loadRepositories, loadSettings, loadToken, loadReleases, setCurrentPage, setSelectedRepo, settings } = useStore();
+    // 精确订阅（阶段2 性能重构）：根组件只订阅页面路由与设置，进度类状态在 useProgressStore
+    const currentPage = useStore((state) => state.currentPage);
+    const settings = useStore((state) => state.settings);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const setSelectedRepo = useStore((state) => state.setSelectedRepo);
+    const loadRepositories = useStore((state) => state.loadRepositories);
+    const loadSettings = useStore((state) => state.loadSettings);
+    const loadToken = useStore((state) => state.loadToken);
+    const loadReleases = useStore((state) => state.loadReleases);
 
     // AI 分析确认弹窗状态 🆕 v1.6.0
     const [showAnalyzeConfirm, setShowAnalyzeConfirm] = useState(false);
@@ -80,10 +89,10 @@ const App: React.FC = () => {
         // 🆕 v1.4.0 自动检查版本更新
         const timer = setTimeout(() => {
             const state = useStore.getState();
-            const { token: currentToken, releaseCheckStatus, settings: currentSettings } = state;
+            const { token: currentToken, settings: currentSettings } = state;
 
             // 防止重复检查
-            if (releaseCheckStatus.checking) return;
+            if (useProgressStore.getState().releaseCheckStatus.checking) return;
 
             if (currentToken && currentSettings?.autoCheckReleaseUpdates !== false) {
                 // 检查是否有订阅的仓库
@@ -102,10 +111,10 @@ const App: React.FC = () => {
         // 延迟检查自动分析（确保页面渲染完成）
         const timer = setTimeout(() => {
             const state = useStore.getState();
-            const { settings: currentSettings, token: currentToken, repositories: currentRepos, isAnalyzing } = state;
+            const { settings: currentSettings, token: currentToken, repositories: currentRepos } = state;
 
             // 防止重复分析
-            if (isAnalyzing) return;
+            if (useProgressStore.getState().isAnalyzing) return;
 
             if (currentSettings?.autoAnalyzeOnOpen && currentToken) {
                 // 筛选需要分析的仓库

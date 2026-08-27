@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Repository, PageName, SearchFilter, Settings, Tag, RepositoryNote, ViewMode, SortBy, SortOrder, AnalyzeProgress, AnalyzeStats, Release, ReleaseCheckStatus, ReleaseFilter } from '../types';
+import type { Repository, PageName, SearchFilter, Settings, Tag, RepositoryNote, ViewMode, SortBy, SortOrder, Release, ReleaseFilter } from '../types';
 import { storageService } from '../services/storageService';
 import { githubService } from '../services/githubService';
 import { aiService } from '../services/aiService';
@@ -7,6 +7,7 @@ import { releaseService } from '../services/releaseService';
 import { PLATFORM_NONE } from '../constants/platforms';
 import { checkAnalysisNeeded } from '../utils/analysis';
 import { createFilteredReposPipeline } from './selectors';
+import { useProgressStore } from './useProgressStore';
 import { logger } from '../utils/logger';
 import { Benchmark } from '../utils/benchmark';
 
@@ -29,13 +30,7 @@ interface AppState {
     searchFilter: SearchFilter;
     setSearchFilter: (filter: Partial<SearchFilter>) => void;
 
-    // 同步状态
-    syncStatus: 'idle' | 'syncing' | 'completed' | 'error';
-    syncProgress: { current: number; total: number };
-    syncError: string | null;
-    setSyncStatus: (status: 'idle' | 'syncing' | 'completed' | 'error') => void;
-    setSyncProgress: (progress: { current: number; total: number }) => void;
-    setSyncError: (error: string | null) => void;
+    // 同步（进度状态 syncStatus/syncProgress/syncError 已迁至 useProgressStore，避免双源）
     syncRepositories: () => Promise<void>; // 🆕 v1.6.3 同步方法移至 store（支持全局调用）
 
     // 设置
@@ -49,11 +44,7 @@ interface AppState {
     analyzingRepo: string | null;
     setAnalyzingRepo: (fullName: string | null) => void;
 
-    // 🆕 v1.3.0 批量 AI 分析
-    isAnalyzing: boolean;
-    analyzeProgress: AnalyzeProgress | null;
-    analyzeAbortController: AbortController | null;
-    analyzeStats: AnalyzeStats | null;
+    // 🆕 v1.3.0 批量 AI 分析（进度状态 isAnalyzing/analyzeProgress/analyzeStats/abortController 已迁至 useProgressStore）
     startAutoAnalyze: () => Promise<void>;
     stopAnalyze: () => void;
     getAvailablePlatforms: () => string[];
@@ -93,8 +84,7 @@ interface AppState {
 
     // ========== 🆕 v1.4.0 版本追踪 ==========
     releases: Release[];
-    releaseCheckStatus: ReleaseCheckStatus;
-    releaseFilter: ReleaseFilter;
+    releaseFilter: ReleaseFilter; // releaseCheckStatus 已迁至 useProgressStore
     loadReleases: () => void;
     saveReleases: () => void;
     checkReleaseUpdates: () => Promise<void>;
@@ -285,33 +275,32 @@ export const useStore = create<AppState>((set, get) => ({
         }
     },
 
-    // 同步状态
-    syncStatus: 'idle',
-    syncProgress: { current: 0, total: 0 },
-    syncError: null,
-    setSyncStatus: (status) => set({ syncStatus: status }),
-    setSyncProgress: (progress) => set({ syncProgress: progress }),
-    setSyncError: (error) => set({ syncError: error }),
-
     // 🆕 v1.6.3 同步方法移至 store（支持从任意页面触发）
     syncRepositories: async () => {
-        const { token, syncStatus, settings, repositories } = get();
-        const lang = (settings.language || 'zh') as 'zh' | 'en';
+        const { token, settings, repositories } = get();
+        const progress = useProgressStore.getState();
 
         logger.log('[syncRepositories] 开始同步检查', {
             hasToken: !!token,
-            syncStatus,
+            syncStatus: progress.syncStatus,
         });
 
-        if (!token || syncStatus === 'syncing') return;
+        if (!token || progress.syncStatus === 'syncing') return;
+
+        // busy 互斥：AI 分析 / 版本检查进行中时跳过，避免并发写 repos/releases 存储
+        if (progress.isJobBusy('sync')) {
+            logger.log('[syncRepositories] AI 分析或版本检查进行中，跳过本次同步');
+            return;
+        }
 
         await Benchmark.timeOnceAsync('sync:syncRepositories', async () => {
-            set({ syncStatus: 'syncing', syncProgress: { current: 0, total: 0 } });
+            useProgressStore.getState().setSyncStatus('syncing');
+            useProgressStore.getState().setSyncProgress({ current: 0, total: 0 });
 
             try {
                 const syncState = storageService.getSyncState();
                 const result = await githubService.syncRepos(token, repositories, syncState, (current, total) => {
-                    set({ syncProgress: { current, total } });
+                    useProgressStore.getState().setSyncProgress({ current, total });
                 });
 
                 logger.log('[Sync] 完成同步', {
@@ -340,19 +329,20 @@ export const useStore = create<AppState>((set, get) => ({
                     repositories: mergedRepos,
                     ...buildNoteIndex(mergedRepos),
                     settings: nextSettings,
-                    syncError: null,
-                    syncStatus: 'completed',
-                    syncProgress: {
-                        current: result.processedCount || mergedRepos.length,
-                        total: result.processedCount || mergedRepos.length,
-                    },
+                });
+                useProgressStore.getState().setSyncError(null);
+                useProgressStore.getState().setSyncStatus('completed');
+                useProgressStore.getState().setSyncProgress({
+                    current: result.processedCount || mergedRepos.length,
+                    total: result.processedCount || mergedRepos.length,
                 });
                 get().saveRepositories();
 
-                setTimeout(() => set({ syncStatus: 'idle' }), 3000);
+                setTimeout(() => useProgressStore.getState().setSyncStatus('idle'), 3000);
             } catch (error: any) {
                 console.error('Sync failed:', error);
-                set({ syncError: error?.message || String(error), syncStatus: 'error' });
+                useProgressStore.getState().setSyncError(error?.message || String(error));
+                useProgressStore.getState().setSyncStatus('error');
             }
         });
     },
@@ -387,18 +377,21 @@ export const useStore = create<AppState>((set, get) => ({
     analyzingRepo: null,
     setAnalyzingRepo: (fullName) => set({ analyzingRepo: fullName }),
 
-    // 🆕 v1.3.0 批量 AI 分析
-    isAnalyzing: false,
-    analyzeProgress: null,
-    analyzeAbortController: null,
-    analyzeStats: null,
+    // 🆕 v1.3.0 批量 AI 分析（进度状态在 useProgressStore）
 
     startAutoAnalyze: async () => {
-        const { repositories, token, settings, analyzeAbortController, isAnalyzing } = get();
+        const { repositories, token, settings } = get();
+        const progress = useProgressStore.getState();
 
         // 防止重复分析
-        if (analyzeAbortController || isAnalyzing) return;
+        if (progress.analyzeAbortController || progress.isAnalyzing) return;
         if (!token) return;
+
+        // busy 互斥：同步 / 版本检查进行中时跳过，避免并发写 repos/releases 存储
+        if (progress.isJobBusy('analyze')) {
+            logger.log('[startAutoAnalyze] 同步或版本检查进行中，跳过本次自动分析');
+            return;
+        }
 
         // 🆕 v1.6.2 使用公共函数筛选需要分析的仓库
         const toAnalyze = repositories.filter(r => {
@@ -414,11 +407,10 @@ export const useStore = create<AppState>((set, get) => ({
         }
 
         const controller = new AbortController();
-        set({
-            isAnalyzing: true,
-            analyzeAbortController: controller,
-            analyzeProgress: { current: 0, total: toAnalyze.length, currentRepo: '' }
-        });
+        const startState = useProgressStore.getState();
+        startState.setAnalyzing(true);
+        startState.setAnalyzeAbortController(controller);
+        startState.setAnalyzeProgress({ current: 0, total: toAnalyze.length, currentRepo: '' });
 
         try {
             const concurrency = settings.aiConcurrency || 1;
@@ -427,12 +419,10 @@ export const useStore = create<AppState>((set, get) => ({
                 toAnalyze,
                 token,
                 (current, total, repo) => {
-                    set({
-                        analyzeProgress: {
-                            current,
-                            total,
-                            currentRepo: repo.fullName
-                        }
+                    useProgressStore.getState().setAnalyzeProgress({
+                        current,
+                        total,
+                        currentRepo: repo.fullName,
                     });
                 },
                 language,
@@ -475,13 +465,11 @@ export const useStore = create<AppState>((set, get) => ({
             // 更新统计信息
             const successCount = updated.filter(r => !r.analysisFailed).length;
             const failCount = updated.filter(r => r.analysisFailed).length;
-            set({
-                analyzeStats: {
-                    lastAnalyzeAt: new Date().toISOString(),
-                    totalAnalyzed: updated.length,
-                    successCount,
-                    failCount,
-                }
+            useProgressStore.getState().setAnalyzeStats({
+                lastAnalyzeAt: new Date().toISOString(),
+                totalAnalyzed: updated.length,
+                successCount,
+                failCount,
             });
 
             // 显示完成提示
@@ -498,16 +486,16 @@ export const useStore = create<AppState>((set, get) => ({
                 console.error('Auto analyze failed:', error);
             }
         } finally {
-            set({
-                isAnalyzing: false,
-                analyzeAbortController: null,
-                analyzeProgress: null
-            });
+            const finishState = useProgressStore.getState();
+            finishState.setAnalyzing(false);
+            finishState.setAnalyzeAbortController(null);
+            finishState.setAnalyzeProgress(null);
         }
     },
 
     stopAnalyze: () => {
-        const { analyzeAbortController, settings } = get();
+        const { settings } = get();
+        const { analyzeAbortController } = useProgressStore.getState();
         if (analyzeAbortController) {
             analyzeAbortController.abort();
             window.githubStarsAPI.showNotification(
@@ -639,12 +627,6 @@ export const useStore = create<AppState>((set, get) => ({
 
     // ========== 🆕 v1.4.0 版本追踪 ==========
     releases: [],
-    releaseCheckStatus: {
-        lastCheckedAt: null,
-        checking: false,
-        newCount: 0,
-        error: null,
-    },
     releaseFilter: { ...defaultReleaseFilter },
     subscriptionVersion: 0, // 订阅版本号，用于触发响应式更新
     togglingSubscriptions: new Set<number>(), // 🆕 v1.6.0 正在切换订阅的仓库 ID（防竞态）
@@ -668,7 +650,9 @@ export const useStore = create<AppState>((set, get) => ({
     },
 
     checkReleaseUpdates: async () => {
-        const { token, repositories, releaseCheckStatus, settings } = get();
+        const { token, repositories, settings } = get();
+        const progress = useProgressStore.getState();
+        const { releaseCheckStatus } = progress;
 
         logger.log('[ReleaseCheck] 开始检查版本更新', {
             checking: releaseCheckStatus.checking,
@@ -678,32 +662,28 @@ export const useStore = create<AppState>((set, get) => ({
         if (releaseCheckStatus.checking) return;
         if (!token) return;
 
+        // busy 互斥：同步 / AI 分析进行中时跳过，避免并发写 repos/releases 存储
+        if (progress.isJobBusy('releaseCheck')) {
+            logger.log('[ReleaseCheck] 同步或 AI 分析进行中，跳过本次版本检查');
+            return;
+        }
+
         // 获取订阅的仓库
         const subscribedRepoIds = storageService.getReleaseSubscriptions();
         logger.log('[ReleaseCheck] 订阅的仓库ID列表', Array.from(subscribedRepoIds));
         if (subscribedRepoIds.size === 0) return;
 
-        set({
-            releaseCheckStatus: {
-                ...releaseCheckStatus,
-                checking: true,
-                error: null,
-            }
+        useProgressStore.getState().patchReleaseCheckStatus({
+            checking: true,
+            error: null,
         });
 
         try {
+            // 注：原 onProgress 回调内是 spread 等值的空 set（无实际效果），已删除
             const { updates, errors } = await releaseService.checkSubscribedRepos(
                 Array.from(subscribedRepoIds),
                 token,
-                repositories.map(r => ({ id: r.id, fullName: r.fullName })),
-                (current, total, repoName) => {
-                    set({
-                        releaseCheckStatus: {
-                            ...get().releaseCheckStatus,
-                            // 可用于显示进度
-                        }
-                    });
-                }
+                repositories.map(r => ({ id: r.id, fullName: r.fullName }))
             );
 
             logger.log('[ReleaseCheck] API返回结果', {
@@ -763,14 +743,12 @@ export const useStore = create<AppState>((set, get) => ({
                     isRead: readIds.has(r.id),
                 }));
 
-                set({
-                    releases: releasesWithReadStatus,
-                    releaseCheckStatus: {
-                        lastCheckedAt: new Date().toISOString(),
-                        checking: false,
-                        newCount: realUpdates.length, // 使用 realUpdates 计数
-                        error: null,
-                    }
+                set({ releases: releasesWithReadStatus });
+                useProgressStore.getState().setReleaseCheckStatus({
+                    lastCheckedAt: new Date().toISOString(),
+                    checking: false,
+                    newCount: realUpdates.length, // 使用 realUpdates 计数
+                    error: null,
                 });
 
                 // 🆕 v1.5.1: 只对真正的新版本发送通知
@@ -795,13 +773,11 @@ export const useStore = create<AppState>((set, get) => ({
                     }
                 }
             } else {
-                set({
-                    releaseCheckStatus: {
-                        lastCheckedAt: new Date().toISOString(),
-                        checking: false,
-                        newCount: 0,
-                        error: null,
-                    }
+                useProgressStore.getState().setReleaseCheckStatus({
+                    lastCheckedAt: new Date().toISOString(),
+                    checking: false,
+                    newCount: 0,
+                    error: null,
                 });
             }
 
@@ -812,12 +788,9 @@ export const useStore = create<AppState>((set, get) => ({
 
         } catch (error) {
             console.error('[Release Check] Failed:', error);
-            set({
-                releaseCheckStatus: {
-                    ...get().releaseCheckStatus,
-                    checking: false,
-                    error: (error as Error).message,
-                }
+            useProgressStore.getState().patchReleaseCheckStatus({
+                checking: false,
+                error: (error as Error).message,
             });
         }
     },
@@ -835,10 +808,9 @@ export const useStore = create<AppState>((set, get) => ({
             releases: releases.map(r =>
                 r.id === releaseId ? { ...r, isRead: true } : r
             ),
-            releaseCheckStatus: {
-                ...get().releaseCheckStatus,
-                newCount: Math.max(0, get().releaseCheckStatus.newCount - 1),
-            }
+        });
+        useProgressStore.getState().patchReleaseCheckStatus({
+            newCount: Math.max(0, useProgressStore.getState().releaseCheckStatus.newCount - 1),
         });
     },
 
@@ -852,11 +824,8 @@ export const useStore = create<AppState>((set, get) => ({
 
         set({
             releases: releases.map(r => subscribedRepoIds.has(r.repository.id) ? { ...r, isRead: true } : r),
-            releaseCheckStatus: {
-                ...get().releaseCheckStatus,
-                newCount: 0,
-            }
         });
+        useProgressStore.getState().patchReleaseCheckStatus({ newCount: 0 });
     },
 
     getUnreadCount: () => {

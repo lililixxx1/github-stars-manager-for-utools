@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { useStore } from '../stores/useStore';
+import { useProgressStore } from '../stores/useProgressStore';
 import { RepositoryCard } from '../components/RepositoryCard';
 import { SyncProgress } from '../components/SyncProgress';
 import { t } from '../locales';
@@ -13,16 +14,29 @@ import {
 } from 'lucide-react';
 
 export const HomePage: React.FC = () => {
-    const {
-        repositories, token, settings,
-        syncStatus, syncProgress,
-        syncError, setSyncError,
-        searchFilter, getFilteredRepos,
-        setCurrentPage, setSelectedRepo,
-        currentPageNum, setCurrentPageNum,
-        tags, loadTags, viewMode, setViewMode,
-        noteRepoIds, noteContentByRepoId, hasRepoNote,
-    } = useStore();
+    // 精确订阅（阶段2 性能重构）：每个字段单独 selector，避免全量订阅
+    const repositories = useStore((state) => state.repositories);
+    const token = useStore((state) => state.token);
+    const settings = useStore((state) => state.settings);
+    const searchFilter = useStore((state) => state.searchFilter);
+    const getFilteredRepos = useStore((state) => state.getFilteredRepos);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const setSelectedRepo = useStore((state) => state.setSelectedRepo);
+    const currentPageNum = useStore((state) => state.currentPageNum);
+    const setCurrentPageNum = useStore((state) => state.setCurrentPageNum);
+    const tags = useStore((state) => state.tags);
+    const loadTags = useStore((state) => state.loadTags);
+    const viewMode = useStore((state) => state.viewMode);
+    const setViewMode = useStore((state) => state.setViewMode);
+    const noteRepoIds = useStore((state) => state.noteRepoIds);
+    const noteContentByRepoId = useStore((state) => state.noteContentByRepoId);
+    const hasRepoNote = useStore((state) => state.hasRepoNote);
+
+    // 同步进度来自独立的 progress store（高频 set 不再触发本组件）
+    const syncStatus = useProgressStore((state) => state.syncStatus);
+    const syncProgress = useProgressStore((state) => state.syncProgress);
+    const syncError = useProgressStore((state) => state.syncError);
+    const setSyncError = useProgressStore((state) => state.setSyncError);
 
     const lang = (settings.language || 'zh') as 'zh' | 'en';
     const itemsPerPage = settings.itemsPerPage || 20;

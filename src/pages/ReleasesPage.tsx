@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Box, ArrowLeft } from 'lucide-react';
 import { useStore } from '../stores/useStore';
+import { useProgressStore } from '../stores/useProgressStore';
 import { ReleaseCard } from '../components/ReleaseCard';
 import { ReleaseDetail } from '../components/ReleaseDetail';
 import { PLATFORM_OPTIONS } from '../constants/platforms';
@@ -23,27 +24,28 @@ export const formatStars = (count: number): string => {
 };
 
 export function ReleasesPage() {
-    const {
-        releases,
-        releaseFilter,
-        releaseCheckStatus,
-        settings,
-        token,  // 🆕 v1.6.0 用于翻译功能
-        loadReleases,
-        checkReleaseUpdates,
-        markReleaseRead,
-        markAllReleasesRead,
-        setReleaseFilter,
-        setCurrentPage,
-        toggleSubscription,
-        clearAllSubscriptions,
-        releasesInitialTab,
-        setReleasesInitialTab,
-    } = useStore();
+    // 精确订阅（阶段2 性能重构）
+    const releases = useStore((state) => state.releases);
+    const releaseFilter = useStore((state) => state.releaseFilter);
+    const settings = useStore((state) => state.settings);
+    const token = useStore((state) => state.token);  // 🆕 v1.6.0 用于翻译功能
+    const loadReleases = useStore((state) => state.loadReleases);
+    const checkReleaseUpdates = useStore((state) => state.checkReleaseUpdates);
+    const markReleaseRead = useStore((state) => state.markReleaseRead);
+    const markAllReleasesRead = useStore((state) => state.markAllReleasesRead);
+    const setReleaseFilter = useStore((state) => state.setReleaseFilter);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const toggleSubscription = useStore((state) => state.toggleSubscription);
+    const clearAllSubscriptions = useStore((state) => state.clearAllSubscriptions);
+    const releasesInitialTab = useStore((state) => state.releasesInitialTab);
+    const setReleasesInitialTab = useStore((state) => state.setReleasesInitialTab);
+
+    // 版本检查状态来自独立的 progress store
+    const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
 
     // 订阅 repositories 状态以触发响应式更新
-    const repositories = useStore(state => state.repositories);
-    const subscriptionVersion = useStore(state => state.subscriptionVersion);
+    const repositories = useStore((state) => state.repositories);
+    const subscriptionVersion = useStore((state) => state.subscriptionVersion);
 
     const lang = (settings.language || 'zh') as Language;
     const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
@@ -73,9 +75,7 @@ export function ReleasesPage() {
     // 如果加载后 releases 为空但 newCount > 0，重置 badge 避免误导
     useEffect(() => {
         if (releases.length === 0 && releaseCheckStatus.newCount > 0 && !releaseCheckStatus.checking) {
-            useStore.setState((state) => ({
-                releaseCheckStatus: { ...state.releaseCheckStatus, newCount: 0 },
-            }));
+            useProgressStore.getState().patchReleaseCheckStatus({ newCount: 0 });
         }
     }, [releases.length, releaseCheckStatus.newCount, releaseCheckStatus.checking]);
 

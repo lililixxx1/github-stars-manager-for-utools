@@ -6,7 +6,11 @@ import { useBackShortcut } from '../hooks/useBackShortcut';
 import { ArrowLeft } from 'lucide-react';
 
 export const TagsPage: React.FC = () => {
-    const { settings, loadTags, loadRepositories, setCurrentPage } = useStore();
+    // 精确订阅（阶段2 性能重构）
+    const settings = useStore((state) => state.settings);
+    const loadTags = useStore((state) => state.loadTags);
+    const loadRepositories = useStore((state) => state.loadRepositories);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
     const lang = (settings.language || 'zh') as 'zh' | 'en';
     const handleBack = useCallback(() => {
         setCurrentPage('home');

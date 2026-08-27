@@ -29,12 +29,20 @@ function escapeHtml(text: string): string {
 }
 
 export const DetailPage: React.FC = () => {
-    const {
-        selectedRepo, setSelectedRepo, setCurrentPage,
-        settings, token, repositories, setRepositories, saveRepositories,
-        tags, loadTags, updateRepository, toggleSubscription,
-        currentNote, loadNote, saveNote, deleteNote,
-    } = useStore();
+    // 精确订阅（阶段2 性能重构）：顺带清理了未使用的 repositories/setRepositories/saveRepositories
+    const selectedRepo = useStore((state) => state.selectedRepo);
+    const setSelectedRepo = useStore((state) => state.setSelectedRepo);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const settings = useStore((state) => state.settings);
+    const token = useStore((state) => state.token);
+    const tags = useStore((state) => state.tags);
+    const loadTags = useStore((state) => state.loadTags);
+    const updateRepository = useStore((state) => state.updateRepository);
+    const toggleSubscription = useStore((state) => state.toggleSubscription);
+    const currentNote = useStore((state) => state.currentNote);
+    const loadNote = useStore((state) => state.loadNote);
+    const saveNote = useStore((state) => state.saveNote);
+    const deleteNote = useStore((state) => state.deleteNote);
 
     const [analyzing, setAnalyzing] = useState(false);
     const [editingAlias, setEditingAlias] = useState(false);

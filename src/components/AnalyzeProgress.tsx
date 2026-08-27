@@ -1,8 +1,13 @@
 import React from 'react';
 import { useStore } from '../stores/useStore';
+import { useProgressStore } from '../stores/useProgressStore';
 
 export const AnalyzeProgress: React.FC = () => {
-    const { isAnalyzing, analyzeProgress, stopAnalyze, settings } = useStore();
+    // 进度状态从 useProgressStore 精确订阅（高频 set 只重渲染本组件）；动作从 useStore 取
+    const isAnalyzing = useProgressStore((state) => state.isAnalyzing);
+    const analyzeProgress = useProgressStore((state) => state.analyzeProgress);
+    const stopAnalyze = useStore((state) => state.stopAnalyze);
+    const settings = useStore((state) => state.settings);
     const lang = (settings.language || 'zh') as 'zh' | 'en';
 
     if (!isAnalyzing || !analyzeProgress) return null;

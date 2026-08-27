@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../stores/useStore';
+import { useProgressStore } from '../stores/useProgressStore';
 import { storageService } from '../services/storageService';
 import { githubService } from '../services/githubService';
 import { t } from '../locales';
@@ -13,12 +14,21 @@ import {
 
 export const SettingsPage: React.FC = () => {
     const projectRepositoryUrl = 'https://github.com/lililixxx1/github-stars-manager-for-utools';
-    const {
-        settings, saveSettings, token, setCurrentPage,
-        repositories, setRepositories, saveRepositories,
-        isAnalyzing, startAutoAnalyze, stopAnalyze,
-        releaseCheckStatus, checkReleaseUpdates, setReleasesInitialTab,
-    } = useStore();
+    // 精确订阅（阶段2 性能重构）：进度类状态在 useProgressStore
+    const settings = useStore((state) => state.settings);
+    const saveSettings = useStore((state) => state.saveSettings);
+    const token = useStore((state) => state.token);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const repositories = useStore((state) => state.repositories);
+    const setRepositories = useStore((state) => state.setRepositories);
+    const saveRepositories = useStore((state) => state.saveRepositories);
+    const startAutoAnalyze = useStore((state) => state.startAutoAnalyze);
+    const stopAnalyze = useStore((state) => state.stopAnalyze);
+    const checkReleaseUpdates = useStore((state) => state.checkReleaseUpdates);
+    const setReleasesInitialTab = useStore((state) => state.setReleasesInitialTab);
+
+    const isAnalyzing = useProgressStore((state) => state.isAnalyzing);
+    const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
 
     const lang = (settings.language || 'zh') as 'zh' | 'en';
     const [tokenInput, setTokenInput] = useState(token || '');
@@ -63,7 +73,7 @@ export const SettingsPage: React.FC = () => {
     });
 
     const scheduleAutoSync = () => {
-        const { syncStatus } = useStore.getState();
+        const { syncStatus } = useProgressStore.getState();
 
         logger.log('[AutoSync] Token 验证成功，准备触发自动同步', {
             syncStatus,

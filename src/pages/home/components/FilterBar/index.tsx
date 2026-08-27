@@ -15,6 +15,7 @@ import React, {
     useState
 } from 'react';
 import { useStore } from '@/stores/useStore';
+import { useProgressStore } from '@/stores/useProgressStore';
 import { t, type TranslationKey } from '@/locales';
 import { PLATFORM_OPTIONS, PLATFORM_NONE } from '@/constants/platforms';
 import type { SortBy, SortOrder, Tag as TagType, Repository } from '@/types';
@@ -82,10 +83,19 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     onRequestToolbarArea,
     hasListResults
 }, ref) => {
-    const { searchFilter, setSearchFilter, setCurrentPage } = useStore();
-    const unreadCount = useStore((state) => state.getUnreadCount)();
-    const releaseCheckStatus = useStore((state) => state.releaseCheckStatus);
+    // 精确订阅（阶段2 性能重构）
+    const searchFilter = useStore((state) => state.searchFilter);
+    const setSearchFilter = useStore((state) => state.setSearchFilter);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
     const subscriptionVersion = useStore((state) => state.subscriptionVersion);
+    // 未读数依赖 releases 与订阅数据，订阅二者保持角标响应式（原先靠全量订阅驱动）
+    const releases = useStore((state) => state.releases);
+    const getUnreadCount = useStore((state) => state.getUnreadCount);
+    const unreadCount = useMemo(
+        () => getUnreadCount(),
+        [getUnreadCount, releases, subscriptionVersion]
+    );
+    const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
 
     // UI 状态
     const [showSortMenu, setShowSortMenu] = useState(false);
