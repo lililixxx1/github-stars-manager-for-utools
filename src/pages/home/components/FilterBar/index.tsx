@@ -684,6 +684,7 @@ const SortMenu = memo<{
                     background: activeIndex === index
                         ? 'var(--color-surface-hover)'
                         : sortBy === opt.value ? 'var(--color-surface-secondary)' : 'transparent',
+                    fontWeight: sortBy === opt.value ? 600 : undefined,
                 }}
                 onClick={() => onSortChange(opt.value)}
                 onMouseEnter={() => onHoverItem(index)}

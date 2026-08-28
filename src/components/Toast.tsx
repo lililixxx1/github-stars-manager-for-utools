@@ -106,10 +106,8 @@ export const ToastHost: React.FC = () => {
         };
     }, []);
 
-    if (items.length === 0) {
-        return null;
-    }
-
+    // live region 常驻 DOM（不随首条 toast 动态插入），保证读屏播报初始内容；
+    // .toast-stack 已设 pointer-events: none，空容器无视觉/交互副作用。
     return (
         <div className="toast-stack" role="status" aria-live="polite">
             {items.map((item) => (

@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
-import { HelpCircle, ExternalLink, CheckSquare, Square, ChevronUp } from 'lucide-react';
+import {
+    HelpCircle, ExternalLink, CheckSquare, Square, ChevronUp,
+    Lightbulb, Lock, AlertTriangle, Info,
+} from 'lucide-react';
 import { t } from '../locales';
 
 interface TokenHelpProps {
@@ -87,17 +90,35 @@ export const TokenHelp: React.FC<TokenHelpProps> = ({ lang, expanded, onToggle }
                                     </div>
                                 </div>
 
-                                <p className="permission-note">💡 {t('tokenHelpPermissionNote', lang)}</p>
+                                <p className="permission-note" style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                    <Lightbulb size={13} style={{ color: 'var(--color-accent)', flexShrink: 0, marginTop: 2 }} />
+                                    {t('tokenHelpPermissionNote', lang)}
+                                </p>
                             </div>
                         )}
                         {/* security 内容 */}
                         {activeTab === 'security' && (
                             <div className="help-security">
-                                <p>🔐 {t('tokenHelpSecurityNote', lang)}</p>
-                                <p className="warning">⚠️ {t('tokenHelpSecurityWarning', lang)}</p>
-                                <p className="info">ℹ️ {t('tokenHelpSecurityExpiration', lang)}</p>
-                                <p className="info">ℹ️ {t('tokenHelpSecurityOrgPolicy', lang)}</p>
-                                <p className="info">ℹ️ {t('tokenFineGrainedLimit', lang)}</p>
+                                <p style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                    <Lock size={13} style={{ color: 'var(--color-success)', flexShrink: 0, marginTop: 3 }} />
+                                    {t('tokenHelpSecurityNote', lang)}
+                                </p>
+                                <p className="warning" style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                    <AlertTriangle size={13} style={{ color: 'var(--color-warning)', flexShrink: 0, marginTop: 3 }} />
+                                    {t('tokenHelpSecurityWarning', lang)}
+                                </p>
+                                <p className="info" style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                    <Info size={13} style={{ color: 'var(--color-text-muted)', flexShrink: 0, marginTop: 3 }} />
+                                    {t('tokenHelpSecurityExpiration', lang)}
+                                </p>
+                                <p className="info" style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                    <Info size={13} style={{ color: 'var(--color-text-muted)', flexShrink: 0, marginTop: 3 }} />
+                                    {t('tokenHelpSecurityOrgPolicy', lang)}
+                                </p>
+                                <p className="info" style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                    <Info size={13} style={{ color: 'var(--color-text-muted)', flexShrink: 0, marginTop: 3 }} />
+                                    {t('tokenFineGrainedLimit', lang)}
+                                </p>
                             </div>
                         )}
                     </div>

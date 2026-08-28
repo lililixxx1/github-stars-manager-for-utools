@@ -8,7 +8,7 @@ import { TagsPage } from './pages/TagsPage';
 import { ReleasesPage } from './pages/ReleasesPage';
 import { AnalyzeProgress } from './components/AnalyzeProgress';
 import { ConfirmDialog } from './components/ConfirmDialog';
-import { ToastHost } from './components/Toast';
+import { ToastHost, toast } from './components/Toast';
 import { t } from './locales';
 import { logger } from './utils/logger';
 
@@ -52,6 +52,14 @@ function releaseRepositorySearchSubInput(): void {
     utools.subInputBlur?.();
     utools.removeSubInput();
 }
+
+/**
+ * 入口带词进入标志：onPluginEnter 程序化写入搜索关键词时置位。
+ * 下方 [currentPage] effect 在页面切到 home 时默认会清空关键词（方案B：返回首页清空上次搜索词），
+ * 若不跳过一次，后台驻留 + 上次停留非 home 页时，入口刚写入的关键词会被该 effect 静默吞掉。
+ * 标志在 effect 每次运行时读取并复位，不会残留到后续导航。
+ */
+let enterKeywordApplied = false;
 
 const App: React.FC = () => {
     // 精确订阅（阶段2 性能重构）：根组件只订阅页面路由与设置，进度类状态在 useProgressStore
@@ -151,7 +159,7 @@ const App: React.FC = () => {
                         setPendingAnalyzeCount(toAnalyze.length);
                         setShowAnalyzeConfirm(true);
                     } else {
-                        state.startAutoAnalyze();
+                        state.startAutoAnalyze(true);
                     }
                 }
             }
@@ -183,9 +191,14 @@ const App: React.FC = () => {
         };
 
         // 🆕 v1.6.3 全局监听 trigger-sync 事件（Token 验证成功后触发）
-        const handleTriggerSync = () => {
+        const handleTriggerSync = async () => {
             logger.log('[App] 收到 trigger-sync 事件，触发同步');
-            useStore.getState().syncRepositories();
+            const result = await useStore.getState().syncRepositories();
+            // 被长任务互斥挡住时给出反馈，避免"验证成功却无同步发生"
+            if (result === 'busy') {
+                const lang = (useStore.getState().settings?.language || 'zh') as 'zh' | 'en';
+                toast.show(t('syncSkippedBusy', lang));
+            }
         };
 
         window.addEventListener('navigate', handleNavigate as EventListener);
@@ -228,6 +241,8 @@ const App: React.FC = () => {
                             useStore.getState().setSearchFilter({ keyword: payload });
                             setupRepositorySearchSubInput(true);
                             if (payload) {
+                                // 标记入口带词：阻止 [currentPage] effect 清掉刚写入的关键词
+                                enterKeywordApplied = true;
                                 utools.setSubInputValue(payload);
                             }
                         }
@@ -245,6 +260,11 @@ const App: React.FC = () => {
                                 cancelPendingSubInputKeyword();
                                 useStore.getState().setSearchFilter({ keyword: payload });
                                 setupRepositorySearchSubInput(true);
+                                if (payload) {
+                                    // 与 github-stars-search 分支对齐：过滤词同步进子输入框 + 跳过一次清空
+                                    enterKeywordApplied = true;
+                                    utools.setSubInputValue(payload);
+                                }
                             }
                         }
                         break;
@@ -261,11 +281,17 @@ const App: React.FC = () => {
 
     useEffect(() => {
         // 🆕 v1.6.4 双向管理子输入框：进入 home 时挂载，离开 home 时移除
+        // 入口带词进入时跳过一次清空（onPluginEnter 写入的关键词只在页面切换时会被这里误清）
+        const skipKeywordClear = enterKeywordApplied;
+        enterKeywordApplied = false;
+
         if (currentPage === 'home') {
-            // 返回首页时清空上次搜索词，与空子输入框保持一致（方案B 语义）
-            // 程序化清空：取消挂起的防抖定时器，避免旧关键词复活
-            cancelPendingSubInputKeyword();
-            useStore.getState().setSearchFilter({ keyword: '' });
+            if (!skipKeywordClear) {
+                // 返回首页时清空上次搜索词，与空子输入框保持一致（方案B 语义）
+                // 程序化清空：取消挂起的防抖定时器，避免旧关键词复活
+                cancelPendingSubInputKeyword();
+                useStore.getState().setSearchFilter({ keyword: '' });
+            }
             setupRepositorySearchSubInput(true);
         } else {
             releaseRepositorySearchSubInput();
@@ -276,9 +302,12 @@ const App: React.FC = () => {
     const lang = (settings?.language || 'zh') as 'zh' | 'en';
 
     // 确认弹窗处理函数
-    const handleAnalyzeConfirm = () => {
+    const handleAnalyzeConfirm = async () => {
         setShowAnalyzeConfirm(false);
-        useStore.getState().startAutoAnalyze();
+        const result = await useStore.getState().startAutoAnalyze();
+        if (result === 'busy') {
+            toast.show(t('analyzeDeferredBusy', lang));
+        }
     };
 
     return (

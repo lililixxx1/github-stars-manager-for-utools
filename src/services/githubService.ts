@@ -33,12 +33,26 @@ interface SyncResult {
 }
 
 export const githubService = {
-    async verifyToken(token: string): Promise<boolean> {
+    /**
+     * 验证 Token，返回结构化结果（本方法不抛错）。
+     * 失败原因按 preload reject 的 Error.status 分类：
+     * - 401 → invalid；403/429（preload 限流退避重试后仍失败）→ rateLimited；
+     * - 无 status（网络错误/超时/解析失败）→ network。
+     */
+    async verifyToken(token: string): Promise<{ ok: boolean; reason?: 'invalid' | 'rateLimited' | 'network' }> {
         try {
             await window.githubStarsAPI.verifyToken(token);
-            return true;
-        } catch {
-            return false;
+            return { ok: true };
+        } catch (error) {
+            // TS strict 下 error 为 unknown，安全收窄后读取可选 status
+            const status = (error as { status?: number } | null | undefined)?.status;
+            if (status === 401) {
+                return { ok: false, reason: 'invalid' };
+            }
+            if (status === 403 || status === 429) {
+                return { ok: false, reason: 'rateLimited' };
+            }
+            return { ok: false, reason: 'network' };
         }
     },
 

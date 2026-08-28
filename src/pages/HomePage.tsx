@@ -4,8 +4,10 @@ import { useStore } from '../stores/useStore';
 import { useProgressStore } from '../stores/useProgressStore';
 import { RepositoryCard } from '../components/RepositoryCard';
 import { SyncProgress } from '../components/SyncProgress';
+import { toast } from '../components/Toast';
 import { t } from '../locales';
 import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
+import { getTagTextColor } from '../utils/tagColor';
 import { FilterBar, type FilterBarHandle } from './home/components/FilterBar';
 import { EmptyState } from '../components/EmptyState';
 import {
@@ -142,8 +144,12 @@ export const HomePage: React.FC = () => {
     }, [activeRepo?.id, activeRepoIndex, isShowAllMode, listVirtualizer]);
 
     const handleSync = useCallback(async () => {
-        await useStore.getState().syncRepositories();
-    }, []);
+        const result = await useStore.getState().syncRepositories();
+        // 被长任务互斥挡住时给出反馈，避免点击同步无任何响应
+        if (result === 'busy') {
+            toast.show(t('syncSkippedBusy', lang));
+        }
+    }, [lang]);
 
     const handleRepoClick = useCallback((repo: typeof repositories[0]) => {
         setSelectedRepo(repo);
@@ -263,7 +269,8 @@ export const HomePage: React.FC = () => {
                             style={{
                                 fontSize: 10, padding: '1px 6px', borderRadius: 999,
                                 background: tagBg,
-                                color: tag.color || 'var(--color-primary)',
+                                // 文字色走安全换算（light 深色变体 / dark 原色，未知色回退文字主色），描边保留原色
+                                color: getTagTextColor(tag.color),
                                 border: `1px solid ${tag.color || 'var(--color-primary)'}`,
                             }}
                         >
@@ -287,11 +294,12 @@ export const HomePage: React.FC = () => {
                     background: 'linear-gradient(135deg, var(--color-primary), var(--color-primary-dark))',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     marginBottom: 8,
+                    boxShadow: '0 8px 24px color-mix(in srgb, var(--color-primary) 35%, transparent)',
                 }}>
-                    <Star size={36} color="white" />
+                    <Star size={36} color="white" strokeWidth={1.8} />
                 </div>
-                <h2 style={{ fontSize: 20, fontWeight: 600 }}>GitHub Stars Manager For uTools</h2>
-                <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', textAlign: 'center' }}>
+                <h2 style={{ fontSize: 20, fontWeight: 700, letterSpacing: 0.2 }}>GitHub Stars Manager For uTools</h2>
+                <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', textAlign: 'center', margin: 0 }}>
                     {t('firstUseHint', lang)}
                 </p>
                 <button className="btn btn-primary" onClick={() => setCurrentPage('settings')}>
@@ -337,9 +345,9 @@ export const HomePage: React.FC = () => {
                 language={lang}
             />
 
-            {/* 错误提示 */}
+            {/* 错误提示（role="alert"：读屏即时播报；错误展示单源归此横幅） */}
             {syncError && (
-                <div style={{
+                <div role="alert" style={{
                     padding: '8px 16px', background: 'var(--color-error-strong)',
                     color: 'white', fontSize: 13, display: 'flex',
                     alignItems: 'center', justifyContent: 'space-between',
@@ -373,6 +381,7 @@ export const HomePage: React.FC = () => {
                             ? <Package size={48} strokeWidth={1.5} />
                             : <SearchX size={48} strokeWidth={1.5} />}
                         title={repositories.length === 0 ? t('noRepos', lang) : t('noResults', lang)}
+                        description={repositories.length > 0 ? t('noResultsHint', lang) : undefined}
                         action={repositories.length === 0 ? (
                             <button className="btn btn-primary" onClick={handleSync}>
                                 <RefreshCw size={14} />
@@ -510,6 +519,7 @@ export const HomePage: React.FC = () => {
                         className="btn btn-ghost btn-sm"
                         disabled={currentPageNum <= 1}
                         onClick={() => setCurrentPageNum(currentPageNum - 1)}
+                        aria-label={t('prevPage', lang)}
                     >
                         <ChevronLeft size={14} />
                     </button>
@@ -520,6 +530,7 @@ export const HomePage: React.FC = () => {
                         className="btn btn-ghost btn-sm"
                         disabled={currentPageNum >= totalPages}
                         onClick={() => setCurrentPageNum(currentPageNum + 1)}
+                        aria-label={t('nextPage', lang)}
                     >
                         <ChevronRight size={14} />
                     </button>

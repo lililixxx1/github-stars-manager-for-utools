@@ -1,10 +1,11 @@
 import React from 'react';
 import type { Tag } from '../types';
+import { getTagSolidForeground, getTagTextColor } from '../utils/tagColor';
 
 interface TagChipProps {
     /** 标签数据（color/icon 为用户自定义数据，允许直接作为颜色渲染） */
     tag: Tag;
-    /** 选中态：tag.color（缺省 primary）实底 + 白字 */
+    /** 选中态：tag.color（缺省 primary）实底 + 按亮度公式选白/深前景（tagColor.ts） */
     selected: boolean;
     onClick: (event: React.MouseEvent) => void;
     /** roving tabindex：可聚焦 0 / 非活跃 -1（DetailPage 键盘漫游透传） */
@@ -37,7 +38,8 @@ export const TagChip = React.forwardRef<HTMLButtonElement, TagChipProps>((
             ...style,
             borderColor: tag.color || 'var(--color-border)',
             background: selected ? (tag.color || 'var(--color-primary)') : 'transparent',
-            color: selected ? '#fff' : (tag.color || 'var(--color-text-primary)'),
+            // 未选中文字走安全换算（light 深色变体 / dark 原色，未知色回退文字主色），描边保留原色
+            color: selected ? getTagSolidForeground(tag.color) : getTagTextColor(tag.color),
         }}
         tabIndex={tabIndex}
         onFocus={onFocus}

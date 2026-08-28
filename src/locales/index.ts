@@ -62,6 +62,11 @@ export const i18n = {
         unsubscribe: '取消订阅',
         exportData: '导出数据',
         importData: '导入数据',
+        // 导入确认与反馈（C1）
+        importConfirmTitle: '确认导入数据',
+        importConfirmDesc: '将覆盖当前全部 {count} 个仓库及设置；标签、笔记等本地数据会被替换，建议先导出备份。',
+        importSuccess: '数据导入成功',
+        importFailed: '导入失败：文件格式错误',
 
         // 排序相关
         sortByStars: '按 Star 排序',
@@ -147,6 +152,9 @@ export const i18n = {
         markAllRead: '全部已读',
         showUnreadOnly: '只看未读',
         noUnreadReleases: '没有未读版本',
+        // 版本页空态引导（D5）
+        showAllReleases: '显示全部',
+        noReleasesHint: '订阅仓库后点击“检查更新”获取最新版本',
         checkUpdates: '检查更新',
         checkingUpdates: '检查中...',
         lastChecked: '最后检查',
@@ -157,6 +165,7 @@ export const i18n = {
         releaseNotes: '更新内容',
         assets: '下载资产',
         noAssets: '无资产文件',
+        noReleaseNotes: '此版本无更新说明',
         releaseSubscription: '版本订阅',
         autoCheckUpdates: '启动时自动检测更新',
         checkInterval: '检测间隔',
@@ -260,6 +269,12 @@ export const i18n = {
         // 其他
         about: '关于',
         version: '版本',
+        prevPage: '上一页',
+        nextPage: '下一页',
+        noResultsHint: '试试更换关键词或清除筛选条件',
+        analyzeCurrent: '正在分析：{repo}',
+        syncSkippedBusy: '已有任务进行中，本次同步未执行，请稍后重试',
+        analyzeDeferredBusy: '同步或版本检查进行中，分析将在其结束后自动开始',
     },
     en: {
         // Common
@@ -324,6 +339,11 @@ export const i18n = {
         unsubscribe: 'Unsubscribe',
         exportData: 'Export Data',
         importData: 'Import Data',
+        // Import confirmation & feedback (C1)
+        importConfirmTitle: 'Confirm import',
+        importConfirmDesc: 'This will overwrite all {count} repositories and settings. Local tags and notes will be replaced. Export a backup first.',
+        importSuccess: 'Data imported successfully',
+        importFailed: 'Import failed: invalid file format',
 
         // Sort
         sortByStars: 'Sort by Stars',
@@ -409,6 +429,9 @@ export const i18n = {
         markAllRead: 'Mark all read',
         showUnreadOnly: 'Unread only',
         noUnreadReleases: 'No unread releases',
+        // Releases page empty-state guidance (D5)
+        showAllReleases: 'Show all',
+        noReleasesHint: 'Subscribe to repos and click "Check updates" to fetch the latest releases',
         checkUpdates: 'Check for updates',
         checkingUpdates: 'Checking...',
         lastChecked: 'Last checked',
@@ -419,6 +442,7 @@ export const i18n = {
         releaseNotes: 'Release Notes',
         assets: 'Assets',
         noAssets: 'No assets',
+        noReleaseNotes: 'No release notes',
         releaseSubscription: 'Release Subscription',
         autoCheckUpdates: 'Auto-check updates on startup',
         checkInterval: 'Check interval',
@@ -522,6 +546,12 @@ export const i18n = {
         // Other
         about: 'About',
         version: 'Version',
+        prevPage: 'Previous page',
+        nextPage: 'Next page',
+        noResultsHint: 'Try different keywords or clear the filters',
+        analyzeCurrent: 'Analyzing: {repo}',
+        syncSkippedBusy: 'A task is already running. Sync was skipped — please retry later.',
+        analyzeDeferredBusy: 'Sync or release check in progress. Analysis will start automatically when it finishes.',
     },
 } as const;
 

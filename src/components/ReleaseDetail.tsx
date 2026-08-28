@@ -4,8 +4,9 @@ import { releaseService } from '../services/releaseService';
 import { aiService } from '../services/aiService';
 import { t } from '../locales';
 import type { Language } from '../locales';
-import { X, Languages, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { Languages, Loader2, AlertCircle, RefreshCw, Check } from 'lucide-react';
 import { renderMarkdown } from '../utils/markdown.tsx';
+import { Modal } from './Modal';
 
 interface ReleaseDetailProps {
     release: Release;
@@ -111,121 +112,15 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel }: Releas
     const showTranslateButton = release.body && token && !(lang === 'zh' && isChineseContent);
 
     return (
-        <div
-            style={{
-                position: 'fixed', inset: 0, zIndex: 100,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                backgroundColor: 'rgba(0, 0, 0, 0.6)',
-                backdropFilter: 'blur(2px)'
-            }}
-            onClick={onClose}
-        >
-            <div
-                className="card animate-fade-in"
-                style={{
-                    width: '90%', maxWidth: '720px', maxHeight: '85vh',
-                    display: 'flex', flexDirection: 'column',
-                    padding: 0, overflow: 'hidden',
-                    boxShadow: 'var(--shadow-lg)'
-                }}
-                onClick={(e) => e.stopPropagation()}
-            >
-                {/* 头部 */}
-                <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '24px', borderBottom: '1px solid var(--color-border)',
-                    backgroundColor: 'var(--color-surface)',
-                    borderTopLeftRadius: '12px', borderTopRightRadius: '12px'
-                }}>
-                    <div>
-                        <h2 style={{ fontSize: '20px', fontWeight: 700, color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            {tagName}
-                            {/* 🆕 v1.6.0 翻译状态指示器 (Badge) */}
-                            {translatedContent && (
-                                <span style={{
-                                    fontSize: '11px',
-                                    fontWeight: 600,
-                                    padding: '2px 8px',
-                                    borderRadius: '12px',
-                                    backgroundColor: fromCache ? 'rgba(16, 185, 129, 0.1)' : 'var(--color-surface-hover)',
-                                    color: fromCache ? 'var(--color-success)' : 'var(--color-text-secondary)',
-                                    border: `1px solid ${fromCache ? 'rgba(16, 185, 129, 0.2)' : 'var(--color-border)'}`
-                                }}>
-                                    {showTranslated ? t('translated', lang) : t('original', lang)}
-                                    {fromCache && ' ✓'}
-                                </span>
-                            )}
-                        </h2>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
-                            <p style={{ fontSize: '14px', color: 'var(--color-text-secondary)' }}>
-                                {release.repository.fullName}
-                            </p>
-                            <span style={{ fontSize: '12px', color: 'var(--color-border)' }}>|</span>
-                            <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
-                                {t('publishedAt', lang)}: {releaseService.formatDate(publishedAt || '', lang)}
-                            </span>
-                        </div>
-                    </div>
-                    <button className="btn btn-ghost" style={{ padding: '8px', borderRadius: '50%' }} onClick={onClose} aria-label="Close">
-                        <X size={20} />
-                    </button>
-                </div>
-
-                {/* 内容区域 */}
-                <div style={{
-                    flex: 1, overflowY: 'auto', padding: '24px',
-                    backgroundColor: 'var(--color-surface)',
-                    wordWrap: 'break-word', overflowWrap: 'anywhere'
-                }}>
-
-                    {/* 更新内容 Markdown 渲染 */}
-                    {displayContent && (
-                        <div style={{ paddingBottom: '16px' }}>
-                            <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '16px', letterSpacing: '0.5px' }}>
-                                {t('releaseNotes', lang)}
-                            </h3>
-                            <div style={{ backgroundColor: 'var(--color-surface)', borderRadius: '8px', lineHeight: 1.6 }}>
-                                {renderMarkdown(displayContent)}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* 🆕 v1.6.0 翻译错误提示 */}
-                    {translationState === 'error' && (
-                        <div style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            padding: '12px 16px',
-                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                            borderRadius: 8,
-                            marginBottom: 16,
-                            border: '1px solid rgba(239, 68, 68, 0.3)',
-                        }}>
-                            <AlertCircle size={16} style={{ color: 'var(--color-error)', flexShrink: 0 }} />
-                            <span style={{ flex: 1, fontSize: 14, color: 'var(--color-error)' }}>
-                                {errorMessage}
-                            </span>
-                            <button
-                                className="btn btn-ghost btn-sm"
-                                onClick={handleRetry}
-                                style={{ color: 'var(--color-error)', flexShrink: 0 }}
-                            >
-                                <RefreshCw size={14} />
-                                {t('retry', lang)}
-                            </button>
-                        </div>
-                    )}
-                </div>
-
-                {/* 底部操作区 */}
-                <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '16px 20px', borderTop: '1px solid var(--color-border)',
-                    backgroundColor: 'var(--color-surface-secondary)'
-                }}>
+        <Modal
+            isOpen
+            onClose={onClose}
+            title={tagName}
+            width={720}
+            footer={
+                <>
+                    {/* 🆕 v1.6.0 翻译按钮 + 消耗提示（.modal-footer 为 flex-end，垫片保持「左翻译/右打开」分布） */}
                     <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                        {/* 🆕 v1.6.0 翻译按钮 */}
                         {showTranslateButton && (
                             <button
                                 className="btn btn-secondary"
@@ -250,18 +145,95 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel }: Releas
                                 )}
                             </button>
                         )}
-                        {/* 🆕 v1.6.0 翻译消耗提示 */}
                         {showTranslateButton && translationState !== 'translating' && (
                             <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
                                 ({lang === 'zh' ? '消耗 AI 能量' : 'Uses AI credits'})
                             </span>
                         )}
                     </div>
+                    <div style={{ flex: 1 }} />
                     <button className="btn btn-primary" onClick={handleViewOnGithub}>
                         {t('viewOnGithub', lang)}
                     </button>
-                </div>
+                </>
+            }
+        >
+            {/* 原头部副行：仓库全名 | 发布时间 + 翻译状态 Badge */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <p style={{ fontSize: '14px', color: 'var(--color-text-secondary)', margin: 0 }}>
+                    {release.repository.fullName}
+                </p>
+                <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>|</span>
+                <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
+                    {t('publishedAt', lang)}: {releaseService.formatDate(publishedAt || '', lang)}
+                </span>
+                {/* 🆕 v1.6.0 翻译状态指示器 (Badge)：配色走语义 token（color-mix 调软底），随主题切换 */}
+                {translatedContent && (
+                    <span style={{
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        padding: '2px 8px',
+                        borderRadius: '12px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        backgroundColor: fromCache
+                            ? 'color-mix(in srgb, var(--color-success) 14%, transparent)'
+                            : 'var(--color-surface-hover)',
+                        color: fromCache ? 'var(--color-success-strong)' : 'var(--color-text-secondary)',
+                        border: `1px solid ${fromCache ? 'color-mix(in srgb, var(--color-success) 30%, transparent)' : 'var(--color-border)'}`
+                    }}>
+                        {showTranslated ? t('translated', lang) : t('original', lang)}
+                        {fromCache && <Check size={11} />}
+                    </span>
+                )}
             </div>
-        </div>
+
+            {/* 🆕 v1.6.0 翻译错误提示：error token 软底（color-mix）；文字走 --color-error-text（AA 对比度），图标保留 error 色（3:1 图形标准） */}
+            {translationState === 'error' && (
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '12px 16px',
+                    backgroundColor: 'color-mix(in srgb, var(--color-error) 10%, transparent)',
+                    borderRadius: 'var(--radius-md)',
+                    margin: '12px 0 16px',
+                    border: '1px solid color-mix(in srgb, var(--color-error) 30%, transparent)',
+                }}>
+                    <AlertCircle size={16} style={{ color: 'var(--color-error)', flexShrink: 0 }} />
+                    <span style={{ flex: 1, fontSize: 14, color: 'var(--color-error-text)' }}>
+                        {errorMessage}
+                    </span>
+                    <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={handleRetry}
+                        style={{ color: 'var(--color-error-text)', flexShrink: 0 }}
+                    >
+                        <RefreshCw size={14} />
+                        {t('retry', lang)}
+                    </button>
+                </div>
+            )}
+
+            {/* 更新内容 Markdown 渲染（body 自带 overflow-y:auto + maxHeight 85vh，无需自建滚动容器） */}
+            {displayContent ? (
+                <div
+                    className="animate-fade-in"
+                    style={{ wordWrap: 'break-word', overflowWrap: 'anywhere', paddingBottom: '16px' }}
+                >
+                    <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '16px', marginTop: '16px', letterSpacing: '0.5px' }}>
+                        {t('releaseNotes', lang)}
+                    </h3>
+                    <div style={{ backgroundColor: 'var(--color-surface)', borderRadius: '8px', lineHeight: 1.6 }}>
+                        {renderMarkdown(displayContent)}
+                    </div>
+                </div>
+            ) : (
+                <p style={{ fontSize: 14, color: 'var(--color-text-muted)', margin: '16px 0 0' }}>
+                    {t('noReleaseNotes', lang)}
+                </p>
+            )}
+        </Modal>
     );
 }

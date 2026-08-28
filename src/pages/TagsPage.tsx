@@ -28,9 +28,9 @@ export const TagsPage: React.FC = () => {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* 顶部导航栏 - 遵循 §4.2 */}
+            {/* 顶部导航栏：与 Settings/Releases 页统一（返回 + 标题左对齐） */}
             <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                display: 'flex', alignItems: 'center', gap: 8,
                 padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)',
             }}>
@@ -42,7 +42,6 @@ export const TagsPage: React.FC = () => {
                     {t('back', lang)}
                 </button>
                 <h2 style={{ fontSize: 16, fontWeight: 600 }}>{t('manageTags', lang)}</h2>
-                <div style={{ width: 64 }} /> {/* 占位，与返回按钮对齐 */}
             </div>
 
             {/* 内容区 - 遵循 §4.3 */}

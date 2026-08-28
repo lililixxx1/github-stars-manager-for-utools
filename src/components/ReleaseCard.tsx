@@ -43,10 +43,18 @@ export const ReleaseCard = memo<ReleaseCardProps>(({ release, repository, lang, 
         [repository?.alias, release.repository.name]
     );
 
-    const cardStyle = useMemo(() => ({
+    // button UA 样式重置：background/border/padding 已由 .card 类覆盖，
+    // 此处补齐 button 默认不继承的字体、文字对齐与颜色（UA font 简写会同时重置 family/size）。
+    const cardStyle = useMemo<React.CSSProperties>(() => ({
+        textAlign: 'left',
+        fontFamily: 'inherit',
+        fontSize: 'inherit',
+        width: '100%',
+        color: 'inherit',
+        display: 'block',
         borderColor: isUnread ? 'var(--color-primary)' : undefined,
-        position: 'relative' as const,
-        overflow: 'hidden' as const
+        position: 'relative',
+        overflow: 'hidden',
     }), [isUnread]);
 
     const languageColor = useMemo(() =>
@@ -65,10 +73,13 @@ export const ReleaseCard = memo<ReleaseCardProps>(({ release, repository, lang, 
     );
 
     return (
-        <div
-            className="card card-compact cursor-pointer"
+        <button
+            type="button"
+            className="card card-compact card-interactive"
             onClick={onClick}
             style={cardStyle}
+            aria-label={`${displayName} ${tagName}`}
+            tabIndex={onClick ? undefined : -1}
         >
             {isUnread && (
                 <div style={{ position: 'absolute', top: 0, left: 0, width: 4, height: '100%', backgroundColor: 'var(--color-primary)' }} />
@@ -160,7 +171,7 @@ export const ReleaseCard = memo<ReleaseCardProps>(({ release, repository, lang, 
                     </span>
                 </div>
             </RepoRow>
-        </div>
+        </button>
     );
 });
 

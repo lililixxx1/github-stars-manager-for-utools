@@ -205,7 +205,11 @@ function requestGitHubRaw(path, token, options = {}, attempt = 0) {
                     }
 
                     console.error('[GitHub API] Error:', status, json.message || body.substring(0, 300));
-                    reject(new Error(json.message || `HTTP ${status}`));
+                    // 附带结构化 HTTP 状态码：githubService.verifyToken 依赖 err.status 区分失败原因
+                    // （网络错误/超时路径 reject 的 Error 不带 status，天然归为网络错误）
+                    const err = new Error(json.message || `HTTP ${status}`);
+                    err.status = status;
+                    reject(err);
                 } catch (e) {
                     console.error('[GitHub API] Parse error:', e.message, 'data:', body.substring(0, 300));
                     reject(new Error('Invalid JSON response'));

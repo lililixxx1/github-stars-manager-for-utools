@@ -28,8 +28,15 @@ const FOCUSABLE_SELECTOR = [
 ].join(', ');
 
 /**
+ * 模块级弹窗栈：仅栈顶实例响应键盘（Escape / Tab 焦点圈定）。
+ * 多层弹窗叠加时避免一次 Escape 关多层、多个 handler 抢焦点。
+ */
+const modalStack: symbol[] = [];
+
+/**
  * 受控弹窗基础组件：遮罩淡入、卡片阴影、Escape 关闭、
  * 焦点圈定（Tab 循环）与关闭后焦点还原。
+ * 多层叠加时通过模块级 modalStack 保证仅栈顶实例响应键盘。
  *
  * 焦点管理参照 ConfirmDialog（全项目质量基准）演进。
  *
@@ -57,6 +64,10 @@ export const Modal: React.FC<ModalProps> = ({
     useEffect(() => {
         if (!isOpen) return;
 
+        // 入栈：本实例成为栈顶后才有键盘响应权
+        const id = Symbol('modal');
+        modalStack.push(id);
+
         previousActiveElementRef.current = document.activeElement instanceof HTMLElement
             ? document.activeElement
             : null;
@@ -73,6 +84,9 @@ export const Modal: React.FC<ModalProps> = ({
         });
 
         const handleKeyDown = (event: KeyboardEvent) => {
+            // 仅栈顶弹窗响应键盘：非栈顶直接放行，不 preventDefault、不抢焦点
+            if (modalStack[modalStack.length - 1] !== id) return;
+
             if (event.key === 'Escape') {
                 event.preventDefault();
                 onCloseRef.current();
@@ -107,6 +121,11 @@ export const Modal: React.FC<ModalProps> = ({
 
         document.addEventListener('keydown', handleKeyDown, true);
         return () => {
+            // 按 id 移除（不用 pop，防乱序卸载时误删他层）
+            const index = modalStack.indexOf(id);
+            if (index !== -1) {
+                modalStack.splice(index, 1);
+            }
             document.removeEventListener('keydown', handleKeyDown, true);
             window.requestAnimationFrame(() => previousActiveElementRef.current?.focus());
         };

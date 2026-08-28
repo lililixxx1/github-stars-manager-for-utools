@@ -6,6 +6,7 @@ import { TagBadge } from '../components/TagBadge';
 import { TagChip } from '../components/TagChip';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { toast } from '../components/Toast';
 import { checkAnalysisNeeded, getCooldownHours } from '../utils/analysis';
 import { useBackShortcut } from '../hooks/useBackShortcut';
 import { useRovingControls } from '../hooks/useRovingControls';
@@ -17,16 +18,6 @@ import {
 } from 'lucide-react';
 import { getPlatformIcon } from '../constants/platformIcons';
 import type { RepositoryNote } from '../types';
-
-// XSS 防护：转义 HTML 特殊字符
-function escapeHtml(text: string): string {
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
 
 export const DetailPage: React.FC = () => {
     // 精确订阅（阶段2 性能重构）：顺带清理了未使用的 repositories/setRepositories/saveRepositories
@@ -166,7 +157,13 @@ export const DetailPage: React.FC = () => {
     }, [repo?.htmlUrl, lang]);
 
     const handleAIAnalyze = async () => {
-        if (!repo || !token || analyzing) return;
+        // 拆分守卫：无仓库/分析中静默返回；无 token 单独提示（避免分析中点击误弹 Token 提示）
+        if (!repo) return;
+        if (!token) {
+            toast.show(t('tokenRequired', lang), { type: 'error' });
+            return;
+        }
+        if (analyzing) return;
 
         // 🆕 v1.6.2 使用公共函数检查分析状态
         const { needsAnalyze, reason } = checkAnalysisNeeded(repo);
@@ -218,6 +215,16 @@ export const DetailPage: React.FC = () => {
             }
         } catch (error) {
             console.error('AI analyze failed:', error);
+            // 失败反馈：toast 报错 + analysisFailed 回写（与 aiService 24h 冷却策略一致）
+            toast.show(
+                error instanceof Error ? error.message : t('analysisFailed', lang),
+                { type: 'error', duration: 5000 }
+            );
+            // 仅当用户仍停留在该仓库详情时才替换选中引用（异步失败期间可能已切换到其他仓库）
+            if (useStore.getState().selectedRepo?.id === repo.id) {
+                setSelectedRepo({ ...repo, analysisFailed: true });
+            }
+            updateRepository(repo.id, { analysisFailed: true });
         } finally {
             setAnalyzing(false);
         }
@@ -599,14 +606,7 @@ export const DetailPage: React.FC = () => {
                             <Tag size={14} />
                             {t('tags', lang)}
                             {hasTags && (
-                                <span style={{
-                                    marginLeft: 4,
-                                    padding: '0 6px',
-                                    fontSize: 11,
-                                    borderRadius: 10,
-                                    background: showTagsSection ? 'rgba(255,255,255,0.3)' : 'var(--color-primary)',
-                                    color: showTagsSection ? '#fff' : 'var(--color-primary)',
-                                }}>
+                                <span className={`count-pill ${showTagsSection ? 'count-pill-on-solid' : 'count-pill-soft'}`}>
                                     {(repo.customTags?.length ?? 0)}
                                 </span>
                             )}
@@ -624,14 +624,7 @@ export const DetailPage: React.FC = () => {
                             <FileText size={14} />
                             {t('notes', lang)}
                             {hasNotes && (
-                                <span style={{
-                                    marginLeft: 4,
-                                    padding: '0 6px',
-                                    fontSize: 11,
-                                    borderRadius: 10,
-                                    background: showNotesSection ? 'rgba(255,255,255,0.3)' : 'var(--color-primary)',
-                                    color: showNotesSection ? '#fff' : 'var(--color-primary)',
-                                }}>
+                                <span className={`count-pill ${showNotesSection ? 'count-pill-on-solid' : 'count-pill-soft'}`}>
                                     {currentNote ? 1 : 0}
                                 </span>
                             )}
@@ -649,16 +642,18 @@ export const DetailPage: React.FC = () => {
                     </p>
                 </div>
 
-                {/* 🆕 v1.6.1 标签分组（展开/折叠动画） */}
+                {/* 🆕 v1.6.1 标签分组（展开/折叠动画：grid 行高过渡，无高度硬截断） */}
                 <div
                     style={{
-                        maxHeight: showTagsSection ? '500px' : '0',
+                        display: 'grid',
+                        gridTemplateRows: showTagsSection ? '1fr' : '0fr',
                         opacity: showTagsSection ? 1 : 0,
                         overflow: 'hidden',
-                        transition: 'all 0.3s ease',
+                        transition: 'grid-template-rows 0.3s ease, opacity 0.3s ease, margin-bottom 0.3s ease',
                         marginBottom: showTagsSection ? 12 : 0,
                     }}
                 >
+                    <div style={{ minHeight: 0, overflow: 'hidden' }}>
                     <div className="card">
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                             <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -741,6 +736,7 @@ export const DetailPage: React.FC = () => {
                             </div>
                         )}
                     </div>
+                    </div>
                 </div>
 
                 {/* AI 分析 */}
@@ -819,16 +815,18 @@ export const DetailPage: React.FC = () => {
                     )}
                 </div>
 
-                {/* 🆕 v1.6.1 笔记（展开/折叠动画） */}
+                {/* 🆕 v1.6.1 笔记（展开/折叠动画：grid 行高过渡，无高度硬截断） */}
                 <div
                     style={{
-                        maxHeight: showNotesSection ? '500px' : '0',
+                        display: 'grid',
+                        gridTemplateRows: showNotesSection ? '1fr' : '0fr',
                         opacity: showNotesSection ? 1 : 0,
                         overflow: 'hidden',
-                        transition: 'all 0.3s ease',
+                        transition: 'grid-template-rows 0.3s ease, opacity 0.3s ease, margin-bottom 0.3s ease',
                         marginBottom: showNotesSection ? 12 : 0,
                     }}
                 >
+                    <div style={{ minHeight: 0, overflow: 'hidden' }}>
                     <div className="card">
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                             <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -856,15 +854,11 @@ export const DetailPage: React.FC = () => {
                                     value={noteValue}
                                     onChange={(e) => setNoteValue(e.target.value)}
                                     placeholder={t('notePlaceholder', lang)}
+                                    className="input"
                                     style={{
                                         width: '100%',
                                         minHeight: 120,
                                         padding: 12,
-                                        borderRadius: 8,
-                                        border: '1px solid var(--color-border)',
-                                        background: 'var(--color-background)',
-                                        color: 'var(--color-text-primary)',
-                                        fontSize: 14,
                                         lineHeight: 1.6,
                                         resize: 'vertical',
                                     }}
@@ -874,7 +868,7 @@ export const DetailPage: React.FC = () => {
                                         <button
                                             ref={bindControlRef('note-delete')}
                                             className="btn btn-ghost btn-sm"
-                                            style={getControlStyle('note-delete', { color: 'var(--color-error)' })}
+                                            style={getControlStyle('note-delete', { color: 'var(--color-error-text)' })}
                                             tabIndex={roving.getTabIndex('note-delete')}
                                             onFocus={() => roving.setActiveId('note-delete')}
                                             onClick={handleDeleteNote}
@@ -910,7 +904,7 @@ export const DetailPage: React.FC = () => {
                         ) : currentNote ? (
                             <div>
                                 <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-                                    {escapeHtml(currentNote.content)}
+                                    {currentNote.content}
                                 </p>
                                 <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 8 }}>
                                     {t('noteUpdatedAt', lang, { date: new Date(currentNote.updatedAt).toLocaleString() })}
@@ -922,6 +916,7 @@ export const DetailPage: React.FC = () => {
                                 {t('noNotesYet', lang)}
                             </div>
                         )}
+                    </div>
                     </div>
                 </div>
 
@@ -947,13 +942,14 @@ export const DetailPage: React.FC = () => {
                         </h3>
                         <button
                             ref={bindControlRef('homepage')}
-                            className="btn btn-ghost btn-sm"
+                            className="link"
                             style={getControlStyle('homepage', {
                                 fontSize: 14,
-                                color: 'var(--color-primary)',
-                                textDecoration: 'none',
                                 padding: 0,
+                                border: 'none',
+                                background: 'none',
                                 height: 'auto',
+                                textAlign: 'left',
                             })}
                             tabIndex={roving.getTabIndex('homepage')}
                             onFocus={() => roving.setActiveId('homepage')}

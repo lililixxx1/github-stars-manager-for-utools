@@ -81,13 +81,12 @@ const SortableTagItem: React.FC<SortableTagItemProps> = ({
     return (
         <div
             ref={setNodeRef}
-            className="card"
+            className="card card-compact"
             style={{
                 ...style,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                padding: '12px 16px',
                 opacity: isDragging ? 0.5 : 1,
             }}
         >

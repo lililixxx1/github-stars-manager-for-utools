@@ -11,6 +11,78 @@ import { useProgressStore } from './useProgressStore';
 import { logger } from '../utils/logger';
 import { Benchmark } from '../utils/benchmark';
 
+/**
+ * syncRepositories / startAutoAnalyze 的触发结果：
+ * - 'ok'：已受理并执行（含"已在进行中，无需重复动作"——进度 UI 已在展示）
+ * - 'busy'：被长任务互斥挡住（同步为显式动作不重试，调用方负责提示；自动分析已排队重试）
+ * - 'no-token'：缺 Token，未执行
+ */
+export type JobTriggerResult = 'ok' | 'busy' | 'no-token';
+
+// ==================== 自动分析互斥重试 ====================
+// 启动自动分析可能撞上同步/版本检查的 isJobBusy 互斥（典型：启动时版本检查未跑完，3s 后的自动分析被挡）。
+// 自动任务是"迟早要跑"而非"用户当下要结果"，静默丢弃会让 autoAnalyzeOnOpen 时灵时不灵，
+// 故用单例定时器延时重试直到互斥释放；真正开始分析时清除，重试次数设上限防呆。
+
+let autoAnalyzeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let autoAnalyzeRetryCount = 0;
+const AUTO_ANALYZE_RETRY_MS = 15_000;
+const AUTO_ANALYZE_RETRY_MAX = 20;
+
+function clearAutoAnalyzeRetry(): void {
+    if (autoAnalyzeRetryTimer !== null) {
+        clearTimeout(autoAnalyzeRetryTimer);
+        autoAnalyzeRetryTimer = null;
+    }
+    autoAnalyzeRetryCount = 0;
+}
+
+function scheduleAutoAnalyzeRetry(isAutoTriggered: boolean): void {
+    if (autoAnalyzeRetryTimer !== null) return; // 已有挂起重试
+    if (autoAnalyzeRetryCount >= AUTO_ANALYZE_RETRY_MAX) {
+        logger.log('[startAutoAnalyze] 互斥等待超时，放弃本次自动分析');
+        return;
+    }
+    autoAnalyzeRetryCount++;
+    autoAnalyzeRetryTimer = setTimeout(() => {
+        autoAnalyzeRetryTimer = null;
+        // 自动触发的重试需复核开关仍开启（等待期间用户可能关闭了 autoAnalyzeOnOpen）
+        if (isAutoTriggered && !useStore.getState().settings?.autoAnalyzeOnOpen) {
+            autoAnalyzeRetryCount = 0;
+            return;
+        }
+        useStore.getState().startAutoAnalyze(isAutoTriggered).then((result) => {
+            // Token 已被清除等早退场景：复位熔断预算，避免后续触发被无意义消耗
+            if (result === 'no-token') {
+                autoAnalyzeRetryCount = 0;
+            }
+        });
+    }, AUTO_ANALYZE_RETRY_MS);
+}
+
+// ==================== 同步状态回 idle 定时器 ====================
+// completed(3s)/error(5s) 限时收敛回 idle 的模块级单例 timer。
+// 集中管理防竞态：error 态不拦二次同步（isJobBusy 只看 'syncing'），
+// 若旧 timer 挂起时用户立刻再同步，到期的旧 timer 会把进行中的 syncStatus 误置 idle，
+// 故 setSyncStatus('syncing') 前必须先清挂起值（顺带消除 completed 3s timer 的同型竞态）。
+
+let syncResetTimer: number | null = null;
+
+function clearPendingSyncIdle(): void {
+    if (syncResetTimer !== null) {
+        window.clearTimeout(syncResetTimer);
+        syncResetTimer = null;
+    }
+}
+
+function scheduleSyncIdle(delay: number): void {
+    clearPendingSyncIdle();
+    syncResetTimer = window.setTimeout(() => {
+        syncResetTimer = null;
+        useProgressStore.getState().setSyncStatus('idle');
+    }, delay);
+}
+
 interface AppState {
     // 页面导航
     currentPage: PageName;
@@ -33,7 +105,7 @@ interface AppState {
     setSortPreference: (updates: { sortBy?: SortBy; sortOrder?: SortOrder }) => void;
 
     // 同步（进度状态 syncStatus/syncProgress/syncError 已迁至 useProgressStore，避免双源）
-    syncRepositories: () => Promise<void>; // 🆕 v1.6.3 同步方法移至 store（支持全局调用）
+    syncRepositories: () => Promise<JobTriggerResult>; // 🆕 v1.6.3 同步方法移至 store（支持全局调用）
 
     // 设置
     settings: Partial<Settings>;
@@ -47,7 +119,8 @@ interface AppState {
     setAnalyzingRepo: (fullName: string | null) => void;
 
     // 🆕 v1.3.0 批量 AI 分析（进度状态 isAnalyzing/analyzeProgress/analyzeStats/abortController 已迁至 useProgressStore）
-    startAutoAnalyze: () => Promise<void>;
+    // isAutoTriggered：定时器自动触发传 true（互斥重试时复核 autoAnalyzeOnOpen 仍开启），用户手动触发省略
+    startAutoAnalyze: (isAutoTriggered?: boolean) => Promise<JobTriggerResult>;
     stopAnalyze: () => void;
     getAvailablePlatforms: () => string[];
 
@@ -304,15 +377,19 @@ export const useStore = create<AppState>((set, get) => ({
             syncStatus: progress.syncStatus,
         });
 
-        if (!token || progress.syncStatus === 'syncing') return;
+        if (!token) return 'no-token';
+        if (progress.syncStatus === 'syncing') return 'busy';
 
-        // busy 互斥：AI 分析 / 版本检查进行中时跳过，避免并发写 repos/releases 存储
+        // busy 互斥：AI 分析 / 版本检查进行中时跳过，避免并发写 repos/releases 存储。
+        // 同步是显式动作，不自动重试：返回 'busy' 交由调用方给出反馈
         if (progress.isJobBusy('sync')) {
             logger.log('[syncRepositories] AI 分析或版本检查进行中，跳过本次同步');
-            return;
+            return 'busy';
         }
 
         await Benchmark.timeOnceAsync('sync:syncRepositories', async () => {
+            // 清上一轮 completed/error 残留的回 idle 挂起 timer，防其到期打断本轮同步
+            clearPendingSyncIdle();
             useProgressStore.getState().setSyncStatus('syncing');
             useProgressStore.getState().setSyncProgress({ current: 0, total: 0 });
 
@@ -357,13 +434,17 @@ export const useStore = create<AppState>((set, get) => ({
                 });
                 get().saveRepositories();
 
-                setTimeout(() => useProgressStore.getState().setSyncStatus('idle'), 3000);
+                scheduleSyncIdle(3000);
             } catch (error: any) {
                 console.error('Sync failed:', error);
                 useProgressStore.getState().setSyncError(error?.message || String(error));
                 useProgressStore.getState().setSyncStatus('error');
+                // error 态不可永驻：5s 后自动收敛回 idle（错误展示单源归 HomePage 可关闭横幅）
+                scheduleSyncIdle(5000);
             }
         });
+
+        return 'ok';
     },
 
     // 设置
@@ -398,19 +479,22 @@ export const useStore = create<AppState>((set, get) => ({
 
     // 🆕 v1.3.0 批量 AI 分析（进度状态在 useProgressStore）
 
-    startAutoAnalyze: async () => {
+    startAutoAnalyze: async (isAutoTriggered = false) => {
         const { repositories, token, settings } = get();
         const progress = useProgressStore.getState();
 
         // 防止重复分析
-        if (progress.analyzeAbortController || progress.isAnalyzing) return;
-        if (!token) return;
+        if (progress.analyzeAbortController || progress.isAnalyzing) return 'ok';
+        if (!token) return 'no-token';
 
-        // busy 互斥：同步 / 版本检查进行中时跳过，避免并发写 repos/releases 存储
+        // busy 互斥：同步 / 版本检查进行中时不硬闯（避免并发写 repos/releases 存储）。
+        // 自动分析"迟早要跑"：排队延时重试而非静默丢弃，互斥释放后自动补跑
         if (progress.isJobBusy('analyze')) {
-            logger.log('[startAutoAnalyze] 同步或版本检查进行中，跳过本次自动分析');
-            return;
+            logger.log('[startAutoAnalyze] 同步或版本检查进行中，已排队稍后重试');
+            scheduleAutoAnalyzeRetry(isAutoTriggered);
+            return 'busy';
         }
+        clearAutoAnalyzeRetry(); // 真正开始分析，取消挂起的互斥重试
 
         // 🆕 v1.6.2 使用公共函数筛选需要分析的仓库
         const toAnalyze = repositories.filter(r => {
@@ -422,7 +506,7 @@ export const useStore = create<AppState>((set, get) => ({
             window.githubStarsAPI.showNotification(
                 settings.language === 'zh' ? '没有需要分析的仓库' : 'No repos to analyze'
             );
-            return;
+            return 'ok';
         }
 
         const controller = new AbortController();
@@ -513,6 +597,8 @@ export const useStore = create<AppState>((set, get) => ({
             finishState.setAnalyzeAbortController(null);
             finishState.setAnalyzeProgress(null);
         }
+
+        return 'ok';
     },
 
     stopAnalyze: () => {

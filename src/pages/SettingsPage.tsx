@@ -6,14 +6,23 @@ import { githubService } from '../services/githubService';
 import { t } from '../locales';
 import { TokenHelp, TokenHelpHeaderButton } from '../components/TokenHelp';
 import { Toggle } from '../components/Toggle';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { toast } from '../components/Toast';
 import { logger } from '../utils/logger';
 import { useBackShortcut } from '../hooks/useBackShortcut';
+import type { Repository, Settings } from '../types';
 import {
     ArrowLeft, Key, Check, X, Loader2, Download, Upload,
     Sun, Moon, Monitor, Globe, Sparkles, Play, StopCircle, Zap, Bell,
     AlertTriangle, Link2, BrainCircuit, Rss, Palette, Database
 } from 'lucide-react';
 import pkg from '../../package.json';
+
+/** 通过形状校验、等待用户确认导入的备份数据（运行时已校验，静态类型按目标形状标注） */
+interface PendingImportData {
+    repositories?: Repository[];
+    settings?: Partial<Settings>;
+}
 
 export const SettingsPage: React.FC = () => {
     const projectRepositoryUrl = 'https://github.com/lililixxx1/github-stars-manager-for-utools';
@@ -37,9 +46,11 @@ export const SettingsPage: React.FC = () => {
     const [tokenInput, setTokenInput] = useState(token || '');
     const [verifying, setVerifying] = useState(false);
     const [verifyResult, setVerifyResult] = useState<'success' | 'error' | null>(null);
+    const [verifyErrorReason, setVerifyErrorReason] = useState<'invalid' | 'rateLimited' | 'network' | null>(null);
     const [aiModels, setAiModels] = useState<any[]>([]);
     const [loadingModels, setLoadingModels] = useState(false);
     const [tokenHelpExpanded, setTokenHelpExpanded] = useState(false);
+    const [pendingImport, setPendingImport] = useState<PendingImportData | null>(null);
     const autoSyncTimerRef = useRef<number | null>(null);
 
     useEffect(() => {
@@ -103,20 +114,36 @@ export const SettingsPage: React.FC = () => {
         if (!tokenInput.trim()) return;
         setVerifying(true);
         setVerifyResult(null);
+        setVerifyErrorReason(null);
         try {
-            const valid = await githubService.verifyToken(tokenInput.trim());
-            if (valid) {
+            const result = await githubService.verifyToken(tokenInput.trim());
+            if (result.ok) {
                 storageService.setToken(tokenInput.trim());
                 useStore.setState({ token: tokenInput.trim() });
                 setVerifyResult('success');
                 scheduleAutoSync();
             } else {
+                setVerifyErrorReason(result.reason ?? 'network');
                 setVerifyResult('error');
             }
         } catch {
+            // verifyToken 契约上不抛错；此处仅为 setToken 等意外异常兜底，防止 verifying 卡死
+            setVerifyErrorReason('network');
             setVerifyResult('error');
         } finally {
             setVerifying(false);
+        }
+    };
+
+    // 开始/停止批量分析：被长任务互斥挡住时提示已排队（store 内自动重试），而非静默无响应
+    const handleAnalyzeToggle = async () => {
+        if (isAnalyzing) {
+            stopAnalyze();
+            return;
+        }
+        const result = await startAutoAnalyze();
+        if (result === 'busy') {
+            toast.show(t('analyzeDeferredBusy', lang));
         }
     };
 
@@ -148,25 +175,50 @@ export const SettingsPage: React.FC = () => {
             reader.onload = (ev) => {
                 try {
                     const data = JSON.parse(ev.target?.result as string);
-                    if (data.repositories) {
-                        setRepositories(data.repositories);
-                        saveRepositories();
+
+                    // 形状深度校验：乱值不落盘、不弹确认（元素缺 id/owner 会让搜索索引与详情页崩溃）。
+                    // every 全量扫描：仅查首元素时，后续 null/坏元素仍会在筛选管道 repo.id 处 TypeError
+                    const repos = data?.repositories;
+                    const reposValid = Array.isArray(repos)
+                        && repos.every((el: any) => typeof el?.id === 'number'
+                            && typeof el?.fullName === 'string'
+                            && typeof el?.owner?.login === 'string');
+                    const settingsValue = data?.settings;
+                    const settingsValid = settingsValue == null
+                        || (typeof settingsValue === 'object' && !Array.isArray(settingsValue));
+                    if (!reposValid || !settingsValid) {
+                        toast.show(t('importFailed', lang), { type: 'error' });
+                        return;
                     }
-                    if (data.settings) {
-                        saveSettings(data.settings);
-                    }
-                    window.githubStarsAPI.showNotification(
-                        lang === 'zh' ? '数据导入成功' : 'Data imported successfully'
-                    );
+
+                    // 校验通过先挂起，由 ConfirmDialog 二次确认后才落盘（覆盖导入不可逆）
+                    setPendingImport(data);
                 } catch {
-                    window.githubStarsAPI.showNotification(
-                        lang === 'zh' ? '导入失败：文件格式错误' : 'Import failed: invalid file format'
-                    );
+                    toast.show(t('importFailed', lang), { type: 'error' });
                 }
             };
             reader.readAsText(file);
         };
         input.click();
+    };
+
+    // 确认导入：落盘路径套 try/catch，失败不误报成功
+    const confirmImport = () => {
+        if (!pendingImport) return;
+        try {
+            if (pendingImport.repositories) {
+                setRepositories(pendingImport.repositories);
+                saveRepositories();
+            }
+            if (pendingImport.settings) {
+                saveSettings(pendingImport.settings);
+            }
+            setPendingImport(null);
+            toast.show(t('importSuccess', lang), { type: 'success' });
+        } catch {
+            setPendingImport(null);
+            toast.show(t('importFailed', lang), { type: 'error' });
+        }
     };
 
     const themeOptions = [
@@ -238,8 +290,14 @@ export const SettingsPage: React.FC = () => {
                         </button>
                     </div>
                     {verifyResult && (
-                        <p style={{ fontSize: 13, marginTop: 6, color: verifyResult === 'success' ? 'var(--color-success)' : 'var(--color-error)' }}>
-                            {verifyResult === 'success' ? t('tokenVerified', lang) : t('tokenInvalid', lang)}
+                        <p style={{ fontSize: 13, marginTop: 6, color: verifyResult === 'success' ? 'var(--color-success)' : 'var(--color-error-text)' }}>
+                            {verifyResult === 'success'
+                                ? t('tokenVerified', lang)
+                                : verifyErrorReason === 'rateLimited'
+                                    ? t('errorRateLimited', lang)
+                                    : verifyErrorReason === 'network'
+                                        ? t('errorNetwork', lang)
+                                        : t('errorTokenInvalid', lang)}
                         </p>
                     )}
 
@@ -322,12 +380,12 @@ export const SettingsPage: React.FC = () => {
                         <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>{t('concurrencyHint', lang)}</div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <button className="btn btn-primary btn-sm" onClick={() => isAnalyzing ? stopAnalyze() : startAutoAnalyze()} disabled={!token || repositories.length === 0} style={{ flex: 1 }} title={!token ? (lang === 'zh' ? '请先配置 GitHub Token' : 'Please configure GitHub Token first') : repositories.length === 0 ? (lang === 'zh' ? '请先同步仓库' : 'Please sync repositories first') : undefined}>
+                        <button className="btn btn-primary btn-sm" onClick={handleAnalyzeToggle} disabled={!token || repositories.length === 0} style={{ flex: 1 }} title={!token ? (lang === 'zh' ? '请先配置 GitHub Token' : 'Please configure GitHub Token first') : repositories.length === 0 ? (lang === 'zh' ? '请先同步仓库' : 'Please sync repositories first') : undefined}>
                             {isAnalyzing ? <><StopCircle size={14} />{t('stopAnalysis', lang)}</> : <><Play size={14} />{t('analyzeNow', lang)}</>}
                         </button>
                     </div>
                     {!token && (
-                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-warning-strong)', display: 'flex', alignItems: 'center', gap: 4 }}>
                             <AlertTriangle size={12} />
                             {lang === 'zh' ? '请先配置 GitHub Token 以使用 AI 分析功能' : 'Please configure GitHub Token to use AI analysis'}
                         </div>
@@ -336,7 +394,7 @@ export const SettingsPage: React.FC = () => {
                         <div style={{ marginTop: 12 }}>
                             <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 6 }}>
                                 {t('analyzedCount', lang, { count: analyzedStats.analyzed, total: repositories.length })}
-                                {analyzedStats.failed > 0 && <span style={{ color: 'var(--color-error)', marginLeft: 8 }}>({lang === 'zh' ? '失败' : 'Failed'}: {analyzedStats.failed})</span>}
+                                {analyzedStats.failed > 0 && <span style={{ color: 'var(--color-error-text)', marginLeft: 8 }}>({lang === 'zh' ? '失败' : 'Failed'}: {analyzedStats.failed})</span>}
                             </div>
                             <div className="progress-bar">
                                 <div className="progress-bar-fill" style={{ width: `${analyzedStats.pct}%` }} />
@@ -383,7 +441,7 @@ export const SettingsPage: React.FC = () => {
                     </div>
                     {releaseCheckStatus.lastCheckedAt && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-text-muted)' }}>{t('lastChecked', lang)}: {new Date(releaseCheckStatus.lastCheckedAt).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US')}</div>}
                     {releaseCheckStatus.error && (
-                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-error)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-error-text)', display: 'flex', alignItems: 'center', gap: 4 }}>
                             <AlertTriangle size={12} />
                             {releaseCheckStatus.error}
                         </div>
@@ -457,12 +515,25 @@ export const SettingsPage: React.FC = () => {
                     <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', lineHeight: 1.6 }}>
                         GitHub Stars Manager For uTools<br />
                         {t('version', lang)}: {pkg.version}<br />
-                        <a href="#" onClick={(e) => { e.preventDefault(); window.githubStarsAPI.openExternal(projectRepositoryUrl); }} style={{ color: 'var(--color-primary)', textDecoration: 'none' }}>
+                        <a href="#" onClick={(e) => { e.preventDefault(); window.githubStarsAPI.openExternal(projectRepositoryUrl); }} className="link">
                             {lang === 'zh' ? '项目地址' : 'Project Repository'}
                         </a>
                     </p>
                 </div>
             </div>
+
+            {/* C1：导入二次确认（覆盖导入不可逆，危险场景聚焦取消按钮防误触） */}
+            <ConfirmDialog
+                variant="danger"
+                autoFocusButton="cancel"
+                isOpen={!!pendingImport}
+                title={t('importConfirmTitle', lang)}
+                message={t('importConfirmDesc', lang, { count: pendingImport?.repositories?.length ?? 0 })}
+                confirmText={t('importData', lang)}
+                cancelText={t('cancel', lang)}
+                onConfirm={confirmImport}
+                onCancel={() => setPendingImport(null)}
+            />
         </div>
     );
 };

@@ -59,7 +59,7 @@ export const RepositoryCard = memo<RepositoryCardProps>(({ repo, onClick, langua
 
     return (
         <div
-            className="card card-compact cursor-pointer"
+            className="card card-compact card-interactive"
             onClick={handleClick}
             style={isActive ? {
                 borderColor: 'var(--color-primary)',

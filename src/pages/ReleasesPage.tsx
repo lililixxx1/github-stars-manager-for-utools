@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Box, ArrowLeft, Loader2, RefreshCw, Inbox, Bell } from 'lucide-react';
+import { Box, ArrowLeft, Loader2, RefreshCw, Inbox, Bell, Star } from 'lucide-react';
 import { useStore } from '../stores/useStore';
 import { useProgressStore } from '../stores/useProgressStore';
 import { ReleaseCard } from '../components/ReleaseCard';
 import { ReleaseDetail } from '../components/ReleaseDetail';
 import { EmptyState } from '../components/EmptyState';
+import { Badge } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { toast } from '../components/Toast';
 import { PLATFORM_OPTIONS } from '../constants/platforms';
@@ -140,7 +141,14 @@ export function ReleasesPage() {
     }, [repositories, subscribedRepoIds]);
 
     const handleCheckUpdates = async () => {
+        // 先清上次残留错误：checkReleaseUpdates 在 guard 早退路径（checking/!token/无订阅）不触碰 error，
+        // 若上次失败残留，本次早退会读到旧值误报 toast
+        useProgressStore.getState().patchReleaseCheckStatus({ error: null });
         await checkReleaseUpdates();
+        const { error } = useProgressStore.getState().releaseCheckStatus;
+        if (error) {
+            toast.show(error, { type: 'error', duration: 5000 });
+        }
     };
 
     const handleMarkAllRead = () => {
@@ -218,81 +226,92 @@ export function ReleasesPage() {
                 </h2>
                 <div style={{ flex: 1 }} />
                 {releaseCheckStatus.newCount > 0 && activeTab === 'updates' && (
-                    <span style={{
-                        padding: '2px 8px', fontSize: 13, fontWeight: 500,
-                        color: 'white', background: 'var(--color-primary)', borderRadius: 12
-                    }}>
+                    <Badge variant="default">
                         {releaseCheckStatus.newCount} {t('newReleases', lang)}
-                    </span>
+                    </Badge>
                 )}
             </div>
 
-            {/* 独立 Tab 栏 */}
+            {/* 独立 Tab 栏：分段控件（与设置页 segmented 统一） */}
             <div style={{
-                display: 'flex', gap: 8,
                 padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
-                background: 'var(--color-surface-secondary)',
+                background: 'var(--color-surface)',
             }}>
-                <button
-                    className={`tag ${activeTab === 'updates' ? 'tag-active' : ''}`}
-                    onClick={() => handleTabChange('updates')}
-                >
-                    {t('versionUpdates', lang)}
-                </button>
-                <button
-                    className={`tag ${activeTab === 'subscriptions' ? 'tag-active' : ''}`}
-                    onClick={() => handleTabChange('subscriptions')}
-                >
-                    {t('subscriptionManage', lang)}
-                    {subscribedRepos.length > 0 && (
-                        <span style={{ marginLeft: 4, opacity: 0.8 }}>({subscribedRepos.length})</span>
-                    )}
-                </button>
+                <div className="segmented" style={{ width: 'fit-content' }}>
+                    <button
+                        type="button"
+                        className={`segmented-item${activeTab === 'updates' ? ' active' : ''}`}
+                        style={{ padding: '4px 16px' }}
+                        onClick={() => handleTabChange('updates')}
+                        aria-pressed={activeTab === 'updates'}
+                    >
+                        {t('versionUpdates', lang)}
+                    </button>
+                    <button
+                        type="button"
+                        className={`segmented-item${activeTab === 'subscriptions' ? ' active' : ''}`}
+                        style={{ padding: '4px 16px' }}
+                        onClick={() => handleTabChange('subscriptions')}
+                        aria-pressed={activeTab === 'subscriptions'}
+                    >
+                        {t('subscriptionManage', lang)}
+                        {subscribedRepos.length > 0 && (
+                            <span style={{ marginLeft: 4, opacity: 0.7 }}>{subscribedRepos.length}</span>
+                        )}
+                    </button>
+                </div>
             </div>
 
             {/* 包含过滤器、统计信息以及主列表的滚动内容区 */}
             <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
                 {activeTab === 'updates' ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%' }}>
-                        {/* 筛选栏 (仅在有版本数据时显示) */}
+                        {/* 筛选栏（恒显——含「检查更新」唯一页内入口，空态不再是死胡同；仅检查中让位 spinner） */}
                         {releaseCheckStatus.checking ? (
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-primary)' }}>
                                 <Loader2 size={14} className="animate-spin" />
                                 <span style={{ fontSize: 13 }}>{t('checkingUpdates', lang)}</span>
                             </div>
                         ) : (
-                            releases.length > 0 && (
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <div style={{ display: 'flex', gap: 8 }}>
-                                        <button className="btn btn-secondary btn-sm" onClick={handleCheckUpdates}>
-                                            <RefreshCw size={14} />
-                                            {t('checkUpdates', lang)}
-                                        </button>
-                                        <button className="btn btn-secondary btn-sm" onClick={handleMarkAllRead}>
-                                            {t('markAllRead', lang)}
-                                        </button>
-                                    </div>
-                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, color: 'var(--color-text-secondary)', cursor: 'pointer' }}>
-                                            <input type="checkbox" checked={releaseFilter.showUnreadOnly} onChange={(e) => setReleaseFilter({ showUnreadOnly: e.target.checked })} style={{ accentColor: 'var(--color-primary)' }} />
-                                            {t('showUnreadOnly', lang)}
-                                        </label>
-                                        <select
-                                            className="input"
-                                            style={{ padding: '4px 8px', fontSize: 13, width: 'auto' }}
-                                            value={releaseFilter.platform || ''}
-                                            onChange={(e) => setReleaseFilter({ platform: e.target.value || null })}
-                                        >
-                                            <option value="">{t('allPlatforms', lang)}</option>
-                                            {PLATFORM_OPTIONS.map((platform) => (
-                                                <option key={platform.id} value={platform.id}>
-                                                    {platform.icon} {platform.label}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={handleCheckUpdates}
+                                        disabled={!token || subscribedRepos.length === 0}
+                                        title={!token ? (lang === 'zh' ? '请先配置 GitHub Token' : 'Please configure GitHub Token first') : subscribedRepos.length === 0 ? (lang === 'zh' ? '请先订阅仓库' : 'Please subscribe to repos first') : undefined}
+                                    >
+                                        <RefreshCw size={14} />
+                                        {t('checkUpdates', lang)}
+                                    </button>
+                                    <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={handleMarkAllRead}
+                                        disabled={sortedReleases.length === 0}
+                                    >
+                                        {t('markAllRead', lang)}
+                                    </button>
                                 </div>
-                            )
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, color: 'var(--color-text-secondary)', cursor: 'pointer' }}>
+                                        <input type="checkbox" checked={releaseFilter.showUnreadOnly} onChange={(e) => setReleaseFilter({ showUnreadOnly: e.target.checked })} style={{ accentColor: 'var(--color-primary)' }} />
+                                        {t('showUnreadOnly', lang)}
+                                    </label>
+                                    <select
+                                        className="input"
+                                        style={{ padding: '4px 8px', fontSize: 13, width: 'auto' }}
+                                        value={releaseFilter.platform || ''}
+                                        onChange={(e) => setReleaseFilter({ platform: e.target.value || null })}
+                                    >
+                                        <option value="">{t('allPlatforms', lang)}</option>
+                                        {PLATFORM_OPTIONS.map((platform) => (
+                                            <option key={platform.id} value={platform.id}>
+                                                {platform.icon} {platform.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
                         )}
                         {/* 版本更新列表 */}
                         {sortedReleases.length === 0 ? (
@@ -300,6 +319,25 @@ export function ReleasesPage() {
                                 <EmptyState
                                     icon={<Inbox size={48} strokeWidth={1.5} />}
                                     title={releaseFilter.showUnreadOnly ? t('noUnreadReleases', lang) : t('noReleases', lang)}
+                                    description={t('noReleasesHint', lang)}
+                                    action={
+                                        // action 按优先级：只看未读筛选空 → 一键恢复全部；
+                                        // 未订阅 → 去浏览仓库（复用订阅 Tab 空态模式）；已订阅未检查 → 引导检查更新
+                                        releaseFilter.showUnreadOnly ? (
+                                            <button className="btn btn-primary" onClick={() => setReleaseFilter({ showUnreadOnly: false })}>
+                                                {t('showAllReleases', lang)}
+                                            </button>
+                                        ) : subscribedRepos.length === 0 ? (
+                                            <button className="btn btn-primary" onClick={() => setCurrentPage('home')}>
+                                                {t('browseRepos', lang)}
+                                            </button>
+                                        ) : (
+                                            <button className="btn btn-primary" onClick={handleCheckUpdates} disabled={!token}>
+                                                <RefreshCw size={14} />
+                                                {t('checkUpdates', lang)}
+                                            </button>
+                                        )
+                                    }
                                 />
                             </div>
                         ) : (
@@ -325,11 +363,9 @@ export function ReleasesPage() {
                             </span>
                             {subscribedRepos.length > 0 && (
                                 <button
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ color: 'var(--color-error-text)' }}
                                     onClick={handleClearAll}
-                                    style={{
-                                        fontSize: 13, fontWeight: 500, color: 'var(--color-error)',
-                                        background: 'transparent', border: 'none', cursor: 'pointer'
-                                    }}
                                 >
                                     {t('unsubscribeAll', lang)}
                                 </button>
@@ -353,7 +389,7 @@ export function ReleasesPage() {
                         ) : (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                                 {subscribedRepos.map((repo) => (
-                                    <div key={repo.id} className="card" style={{ display: 'flex', alignItems: 'center', padding: 12 }}>
+                                    <div key={repo.id} className="card card-compact" style={{ display: 'flex', alignItems: 'center' }}>
                                         <img src={repo.owner.avatarUrl} alt={repo.owner.login} style={{ width: 32, height: 32, borderRadius: 16, marginRight: 12 }} />
                                         <div style={{ flex: 1, minWidth: 0 }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -367,12 +403,15 @@ export function ReleasesPage() {
                                             </div>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
                                                 {repo.language && <span className="tag" style={{ padding: '0 6px', fontSize: 11 }}>{repo.language}</span>}
-                                                <span>★ {formatStars(repo.stargazersCount)}</span>
+                                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                                    <Star size={12} style={{ color: 'var(--color-accent)' }} />
+                                                    {formatStars(repo.stargazersCount)}
+                                                </span>
                                                 <span>·</span>
                                                 <span>{t('lastUpdated', lang)}: {formatRelativeTime(repo.pushedAt)}</span>
                                             </div>
                                         </div>
-                                        <button className="btn btn-secondary btn-sm" style={{ color: 'var(--color-error)' }} onClick={() => handleUnsubscribe(repo)}>
+                                        <button className="btn btn-secondary btn-sm" style={{ color: 'var(--color-error-text)' }} onClick={() => handleUnsubscribe(repo)}>
                                             {t('unsubscribe', lang)}
                                         </button>
                                     </div>
