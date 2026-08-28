@@ -5,6 +5,7 @@ import { t } from '../locales';
 import type { Language } from '../locales';
 import { RepoRow } from './RepoRow';
 import { getLanguageColor } from '../constants/languages';
+import { getPlatformIcon } from '../constants/platformIcons';
 
 interface ReleaseCardProps {
     release: Release;
@@ -130,14 +131,17 @@ export const ReleaseCard = memo<ReleaseCardProps>(({ release, repository, lang, 
                     </span>
 
                     {/* 平台资产标签 */}
-                    {platformEntries.map(([platform, assets]) => (
-                        <span key={platform} className="tag" style={{ padding: '0 6px', fontSize: 11 }}>
-                            <span style={{ marginRight: 2, display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                                {releaseService.getPlatformIcon(platform)}
+                    {platformEntries.map(([platform, assets]) => {
+                        const PlatformIcon = getPlatformIcon(platform);
+                        return (
+                            <span key={platform} className="tag" style={{ padding: '0 6px', fontSize: 11 }}>
+                                <span style={{ marginRight: 2, display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                                    <PlatformIcon size={11} />
+                                </span>
+                                {assets.length}
                             </span>
-                            {assets.length}
-                        </span>
-                    ))}
+                        );
+                    })}
                     {platformGroups.size > 4 && (
                         <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
                             +{platformGroups.size - 4}

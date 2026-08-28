@@ -204,14 +204,6 @@ export const releaseService = {
     },
 
     /**
-     * 获取平台图标
-     */
-    getPlatformIcon(platform: string): string {
-        const found = PLATFORM_OPTIONS.find(p => p.id === platform);
-        return found?.icon || '📦';
-    },
-
-    /**
      * 获取平台标签
      */
     getPlatformLabel(platform: string): string {

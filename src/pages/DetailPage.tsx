@@ -13,11 +13,9 @@ import type { RovingControl } from '../hooks/useRovingControls';
 import {
     ArrowLeft, ExternalLink, Star, GitFork, Sparkles,
     Bell, BellOff, Loader2, CheckCircle2, XCircle,
-    Edit2, Save, X, Plus, FileText, Tag, Copy,
-    Monitor, Laptop, Terminal, SquareTerminal, Tablet,
-    Smartphone, Container, Globe, Package, Box
+    Edit2, Save, X, Plus, FileText, Tag, Copy
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import { getPlatformIcon } from '../constants/platformIcons';
 import type { RepositoryNote } from '../types';
 
 // XSS 防护：转义 HTML 特殊字符
@@ -463,14 +461,9 @@ export const DetailPage: React.FC = () => {
         return null;
     }
 
-    // 平台 → lucide 图标映射（对齐 constants/platforms.ts 的 8 个平台，其余归 Box/Package）
-    const platformIconMap: Record<string, LucideIcon> = {
-        mac: Laptop, windows: Monitor, linux: Terminal, ios: Tablet,
-        android: Smartphone, docker: Container, web: Globe, cli: SquareTerminal,
-    };
-
+    // 平台图标走 constants/platformIcons.ts 全站统一映射
     const renderPlatformIcon = (platformId: string): React.ReactNode => {
-        const Icon = platformIconMap[platformId] ?? (/^(lib|library|sdk)$/i.test(platformId) ? Package : Box);
+        const Icon = getPlatformIcon(platformId);
         return <Icon size={14} />;
     };
 

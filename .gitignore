@@ -39,3 +39,6 @@ npm-debug.log*
 
 # ZCode session state
 .zcode/
+
+# Mimosa scan state
+.mimosa/

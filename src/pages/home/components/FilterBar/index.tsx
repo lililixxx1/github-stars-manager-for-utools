@@ -18,6 +18,7 @@ import { useStore } from '@/stores/useStore';
 import { useProgressStore } from '@/stores/useProgressStore';
 import { t, type TranslationKey } from '@/locales';
 import { PLATFORM_OPTIONS, PLATFORM_NONE } from '@/constants/platforms';
+import { getPlatformIcon } from '@/constants/platformIcons';
 import type { SortBy, SortOrder, Tag as TagType, Repository } from '@/types';
 import { shouldIgnoreGlobalKeydown } from '@/utils/keyboard';
 import {
@@ -847,6 +848,7 @@ const PlatformFilterBar = memo<{
             {PLATFORM_OPTIONS.map((platform) => {
                 const count = platformCounts.get(platform.id) || 0;
                 const isSelected = selectedPlatforms.includes(platform.id);
+                const PlatformIcon = getPlatformIcon(platform.id);
                 return (
                     <button
                         key={platform.id}
@@ -862,7 +864,7 @@ const PlatformFilterBar = memo<{
                         disabled={count === 0}
                         aria-pressed={isSelected}
                     >
-                        {platform.icon} {platform.label}
+                        <PlatformIcon size={12} /> {platform.label}
                         {count > 0 && <span style={{ marginLeft: 4, opacity: 0.7 }}>({count})</span>}
                     </button>
                 );
