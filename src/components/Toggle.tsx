@@ -1,4 +1,5 @@
 import React from 'react';
+import { Check, X } from 'lucide-react';
 
 interface ToggleProps {
     /** 受控开关状态 */
@@ -41,7 +42,12 @@ export const Toggle: React.FC<ToggleProps> = ({
             aria-label={ariaLabel ?? label}
             disabled={disabled}
             onClick={() => onChange(!checked)}
-        />
+        >
+            <span className="toggle-knob">
+                {/* 状态图形化（颜色之外的冗余编码）：开=勾、关=叉 */}
+                {checked ? <Check size={10} strokeWidth={3} /> : <X size={10} strokeWidth={3} />}
+            </span>
+        </button>
     );
 
     if (!label) {

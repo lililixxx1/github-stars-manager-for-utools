@@ -626,6 +626,19 @@ button.tag:hover {
     box-shadow: var(--shadow-sm);
     transform: translateY(-50%);
     transition: transform 0.15s ease;
+    /* 状态图标居中（开=勾/关=叉，颜色之外的冗余编码） */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* 图标色：白圆点两主题恒为白底，用固定中性灰保证 ≥3:1（图形标准）；开启态用主题 primary */
+.toggle-knob svg {
+    color: #64748b;
+}
+
+.toggle[data-checked='true'] .toggle-knob svg {
+    color: var(--color-primary);
 }
 
 .toggle[data-checked='true'] .toggle-knob {
