@@ -574,13 +574,15 @@ window.githubStarsAPI = {
     setToken: (token) => utools.dbCryptoStorage.setItem('gh:token', token),
     getRepos: () => {
         const cached = readCachedRepos();
-        // 元素级拷贝：防止渲染层突变污染 preload 内存缓存
-        return cached.repos.map(repo => ({
-            ...repo,
-            customTags: [...(repo.customTags || [])],
-            topics: [...(repo.topics || [])],
-            aiTags: [...(repo.aiTags || [])],
-        }));
+        // 元素级拷贝：防止渲染层突变污染 preload 内存缓存。
+        // 仅拷贝实际存在的数组字段，保持数据形状不变（不给未分析仓库凭空加 aiTags: []）
+        return cached.repos.map(repo => {
+            const copy = { ...repo };
+            if (Array.isArray(repo.customTags)) copy.customTags = [...repo.customTags];
+            if (Array.isArray(repo.topics)) copy.topics = [...repo.topics];
+            if (Array.isArray(repo.aiTags)) copy.aiTags = [...repo.aiTags];
+            return copy;
+        });
     },
     setRepos: (repos) => writeRepos(repos),
     // 🆕 v2 单仓库增量写：只重写目标仓库所在分片（详情页 AI 回写、别名/标签修改等）
