@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Repository, PageName, SearchFilter, Settings, Tag, RepositoryNote, ViewMode, SortBy, SortOrder, AnalyzeProgress, AnalyzeStats, Release, ReleaseCheckStatus, ReleaseFilter } from '../types';
+import type { Repository, PageName, SearchFilter, Settings, Tag, RepositoryNote, ViewMode, SortBy, SortOrder, Release, ReleaseFilter } from '../types';
 import { storageService } from '../services/storageService';
 import { githubService } from '../services/githubService';
 import { aiService } from '../services/aiService';
@@ -7,7 +7,98 @@ import { releaseService } from '../services/releaseService';
 import { PLATFORM_NONE } from '../constants/platforms';
 import { checkAnalysisNeeded } from '../utils/analysis';
 import { createFilteredReposPipeline } from './selectors';
+import { useProgressStore } from './useProgressStore';
 import { logger } from '../utils/logger';
+import { Benchmark } from '../utils/benchmark';
+
+/**
+ * syncRepositories / startAutoAnalyze 的触发结果：
+ * - 'ok'：已受理并执行（含"已在进行中，无需重复动作"——进度 UI 已在展示）
+ * - 'busy'：被长任务互斥挡住（同步为显式动作不重试，调用方负责提示；自动分析已排队重试）
+ * - 'no-token'：缺 Token，未执行
+ */
+export type JobTriggerResult = 'ok' | 'busy' | 'no-token';
+
+// ==================== 自动分析互斥重试 ====================
+// 启动自动分析可能撞上同步/版本检查的 isJobBusy 互斥（典型：启动时版本检查未跑完，3s 后的自动分析被挡）。
+// 自动任务是"迟早要跑"而非"用户当下要结果"，静默丢弃会让 autoAnalyzeOnOpen 时灵时不灵，
+// 故用单例定时器延时重试直到互斥释放；真正开始分析时清除，重试次数设上限防呆。
+
+let autoAnalyzeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let autoAnalyzeRetryCount = 0;
+const AUTO_ANALYZE_RETRY_MS = 15_000;
+const AUTO_ANALYZE_RETRY_MAX = 20;
+
+function clearAutoAnalyzeRetry(): void {
+    if (autoAnalyzeRetryTimer !== null) {
+        clearTimeout(autoAnalyzeRetryTimer);
+        autoAnalyzeRetryTimer = null;
+    }
+    autoAnalyzeRetryCount = 0;
+}
+
+function scheduleAutoAnalyzeRetry(isAutoTriggered: boolean): void {
+    if (autoAnalyzeRetryTimer !== null) return; // 已有挂起重试
+    if (autoAnalyzeRetryCount >= AUTO_ANALYZE_RETRY_MAX) {
+        logger.log('[startAutoAnalyze] 互斥等待超时，放弃本次自动分析');
+        return;
+    }
+    autoAnalyzeRetryCount++;
+    autoAnalyzeRetryTimer = setTimeout(() => {
+        autoAnalyzeRetryTimer = null;
+        // 自动触发的重试需复核开关仍开启（等待期间用户可能关闭了 autoAnalyzeOnOpen）
+        if (isAutoTriggered && !useStore.getState().settings?.autoAnalyzeOnOpen) {
+            autoAnalyzeRetryCount = 0;
+            return;
+        }
+        useStore.getState().startAutoAnalyze(isAutoTriggered).then((result) => {
+            // Token 已被清除等早退场景：复位熔断预算，避免后续触发被无意义消耗
+            if (result === 'no-token') {
+                autoAnalyzeRetryCount = 0;
+            }
+        });
+    }, AUTO_ANALYZE_RETRY_MS);
+}
+
+// ==================== 同步状态回 idle 定时器 ====================
+// completed(3s)/error(5s) 限时收敛回 idle 的模块级单例 timer。
+// 集中管理防竞态：error 态不拦二次同步（isJobBusy 只看 'syncing'），
+// 若旧 timer 挂起时用户立刻再同步，到期的旧 timer 会把进行中的 syncStatus 误置 idle，
+// 故 setSyncStatus('syncing') 前必须先清挂起值（顺带消除 completed 3s timer 的同型竞态）。
+
+let syncResetTimer: number | null = null;
+
+function clearPendingSyncIdle(): void {
+    if (syncResetTimer !== null) {
+        window.clearTimeout(syncResetTimer);
+        syncResetTimer = null;
+    }
+}
+
+function scheduleSyncIdle(delay: number): void {
+    clearPendingSyncIdle();
+    syncResetTimer = window.setTimeout(() => {
+        syncResetTimer = null;
+        useProgressStore.getState().setSyncStatus('idle');
+    }, delay);
+}
+
+// ==================== 批量分析增量落盘缓冲（R7/C4） ====================
+// 跨 onProgress 窗口累积 AI 字段 patch，≥20s 以 patchReposBatch 冲刷一次（崩溃最多丢最近
+// 20s 的结果，避免整批期间零落盘——已消耗的能量对应的分析结果不能因崩溃丢失）。
+// 模块级：stopAnalyze 与 startAutoAnalyze 都要能冲刷（H1：官方不保证 abort 后 promise
+// 会 settle，中止落盘不能依赖批次的 finally）；批次正常收尾同样冲刷剩余缓冲。
+
+const AI_PERSIST_INTERVAL_MS = 20_000;
+const pendingAiPatches = new Map<number, Partial<Repository>>();
+let lastAiPersistAt = 0;
+
+function flushAiPatches(): void {
+    if (pendingAiPatches.size === 0) return;
+    const updates = [...pendingAiPatches.entries()].map(([id, patch]) => ({ id, patch }));
+    pendingAiPatches.clear();
+    storageService.patchReposBatch(updates);
+}
 
 interface AppState {
     // 页面导航
@@ -27,15 +118,11 @@ interface AppState {
     // 搜索过滤
     searchFilter: SearchFilter;
     setSearchFilter: (filter: Partial<SearchFilter>) => void;
+    // 🆕 阶段3 排序偏好唯一写入口：原子地持久化 settings + 更新 searchFilter
+    setSortPreference: (updates: { sortBy?: SortBy; sortOrder?: SortOrder }) => void;
 
-    // 同步状态
-    syncStatus: 'idle' | 'syncing' | 'completed' | 'error';
-    syncProgress: { current: number; total: number };
-    syncError: string | null;
-    setSyncStatus: (status: 'idle' | 'syncing' | 'completed' | 'error') => void;
-    setSyncProgress: (progress: { current: number; total: number }) => void;
-    setSyncError: (error: string | null) => void;
-    syncRepositories: () => Promise<void>; // 🆕 v1.6.3 同步方法移至 store（支持全局调用）
+    // 同步（进度状态 syncStatus/syncProgress/syncError 已迁至 useProgressStore，避免双源）
+    syncRepositories: () => Promise<JobTriggerResult>; // 🆕 v1.6.3 同步方法移至 store（支持全局调用）
 
     // 设置
     settings: Partial<Settings>;
@@ -48,12 +135,9 @@ interface AppState {
     analyzingRepo: string | null;
     setAnalyzingRepo: (fullName: string | null) => void;
 
-    // 🆕 v1.3.0 批量 AI 分析
-    isAnalyzing: boolean;
-    analyzeProgress: AnalyzeProgress | null;
-    analyzeAbortController: AbortController | null;
-    analyzeStats: AnalyzeStats | null;
-    startAutoAnalyze: () => Promise<void>;
+    // 🆕 v1.3.0 批量 AI 分析（进度状态 isAnalyzing/analyzeProgress/analyzeStats/abortController 已迁至 useProgressStore）
+    // isAutoTriggered：定时器自动触发传 true（互斥重试时复核 autoAnalyzeOnOpen 仍开启），用户手动触发省略
+    startAutoAnalyze: (isAutoTriggered?: boolean) => Promise<JobTriggerResult>;
     stopAnalyze: () => void;
     getAvailablePlatforms: () => string[];
 
@@ -92,8 +176,7 @@ interface AppState {
 
     // ========== 🆕 v1.4.0 版本追踪 ==========
     releases: Release[];
-    releaseCheckStatus: ReleaseCheckStatus;
-    releaseFilter: ReleaseFilter;
+    releaseFilter: ReleaseFilter; // releaseCheckStatus 已迁至 useProgressStore
     loadReleases: () => void;
     saveReleases: () => void;
     checkReleaseUpdates: () => Promise<void>;
@@ -103,10 +186,10 @@ interface AppState {
     setReleaseFilter: (filter: Partial<ReleaseFilter>) => void;
 
     // ========== 🆕 v1.5.0 订阅管理 ==========
+    subscribedRepoIds: Set<number>;                 // 🆕 阶段3 订阅单源（内存态，来源 gh:releaseSubscriptions）
     getSubscribedRepos: () => Repository[];           // 获取已订阅仓库（派生）
     toggleSubscription: (repoId: number) => void;     // 切换订阅状态（v1.6.0 乐观更新）
     clearAllSubscriptions: () => void;                // 清空所有订阅
-    subscriptionVersion: number;                       // 订阅版本号（用于触发响应式更新）
     togglingSubscriptions: Set<number>;               // 🆕 v1.6.0 正在切换订阅的仓库 ID（防竞态）
     releasesInitialTab?: 'updates' | 'subscriptions'; // 🆕 v1.5.0 设置页跳转到版本页时的初始 Tab
     setReleasesInitialTab: (tab?: 'updates' | 'subscriptions') => void;
@@ -167,8 +250,6 @@ function mergeRepoWithExistingData(
         analysisFailed: existing.analysisFailed,
         alias: existing.alias,
         customTags: existing.customTags || [],
-        customCategory: existing.customCategory,
-        userNotes: existing.userNotes,
         customDescription: existing.customDescription,
         isSubscribed,
     };
@@ -220,7 +301,7 @@ function buildNoteIndex(repositories: Repository[]): {
     const noteRepoIds = new Set<number>();
     const noteContentByRepoId = new Map<number, string>();
 
-    for (const note of window.githubStarsAPI.getAllNotes()) {
+    for (const note of storageService.getAllNotes()) {
         if (!validRepoIds.has(note.repoId)) continue;
 
         noteRepoIds.add(note.repoId);
@@ -241,19 +322,21 @@ export const useStore = create<AppState>((set, get) => ({
     repositories: [],
     setRepositories: (repos) => set({ repositories: repos, ...buildNoteIndex(repos) }),
     loadRepositories: () => {
-        const repos = storageService.getRepositories();
-        // 订阅状态同步机制说明:
-        // - 主数据源: gh:releaseSubscriptions (独立数组存储)
-        // - 派生数据: Repository.isSubscribed (便于 UI 快速访问)
-        // - 此处从 dbStorage 同步订阅状态到 Repository 对象
-        // - 详见: docs/design/design-release-tracking.md §4.1 数据模型
-        const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
-        const migrated = repos.map(r => ({
-            ...r,
-            customTags: r.customTags || [],
-            isSubscribed: subscriptionIds.includes(r.id),
-        }));
-        set({ repositories: migrated, ...buildNoteIndex(migrated) });
+        Benchmark.timeOnce('startup:loadRepositories', () => {
+            const repos = storageService.getRepositories();
+            // 订阅状态同步机制说明:
+            // - 主数据源: gh:releaseSubscriptions (独立数组存储)
+            // - 内存单源: subscribedRepoIds (Set，阶段3 起组件一律从这里派生，渲染期不直读存储)
+            // - 派生数据: Repository.isSubscribed (便于 UI 快速访问，由本处及订阅 actions 维护)
+            // - 详见: docs/design/design-release-tracking.md §4.1 数据模型
+            const subscriptionIds = storageService.getReleaseSubscriptions();
+            const migrated = repos.map(r => ({
+                ...r,
+                customTags: r.customTags || [],
+                isSubscribed: subscriptionIds.has(r.id),
+            }));
+            set({ repositories: migrated, subscribedRepoIds: subscriptionIds, ...buildNoteIndex(migrated) });
+        });
     },
     saveRepositories: () => {
         storageService.setRepositories(get().repositories);
@@ -271,97 +354,127 @@ export const useStore = create<AppState>((set, get) => ({
             currentPageNum: 1,
         }));
 
-        // 🆕 v1.6.2 持久化排序设置到 settings
-        if (filter.sortBy !== undefined || filter.sortOrder !== undefined) {
-            const currentSettings = get().settings;
-            const newSettings = {
-                ...currentSettings,
-                defaultSortBy: filter.sortBy ?? currentSettings.defaultSortBy,
-                defaultSortOrder: filter.sortOrder ?? currentSettings.defaultSortOrder,
-            };
-            storageService.setSettings(newSettings);
-            set({ settings: newSettings });
-        }
+        // 阶段3 排序收敛：setSearchFilter 不再持久化排序偏好。
+        // 排序的唯一写入口是 setSortPreference（UI 操作），
+        // 唯一回填读路径是 loadSettings（settings.defaultSortBy/Order → searchFilter）。
     },
 
-    // 同步状态
-    syncStatus: 'idle',
-    syncProgress: { current: 0, total: 0 },
-    syncError: null,
-    setSyncStatus: (status) => set({ syncStatus: status }),
-    setSyncProgress: (progress) => set({ syncProgress: progress }),
-    setSyncError: (error) => set({ syncError: error }),
+    /**
+     * 🆕 阶段3 排序偏好唯一写入口（替代 v1.6.2 在 setSearchFilter 内的持久化分支）
+     *
+     * 数据流向：UI 改排序 → 本 action 原子地
+     *   1. 写 settings.defaultSortBy/defaultSortOrder（持久化）
+     *   2. 写 searchFilter.sortBy/sortOrder（本次会话生效）
+     * → 重启后 loadSettings 把 settings 回填 searchFilter。
+     */
+    setSortPreference: (updates) => {
+        const state = get();
+        const nextSortBy = updates.sortBy ?? state.searchFilter.sortBy;
+        const nextSortOrder = updates.sortOrder ?? state.searchFilter.sortOrder;
+        const nextSettings = {
+            ...state.settings,
+            defaultSortBy: nextSortBy,
+            defaultSortOrder: nextSortOrder,
+        };
+        storageService.setSettings(nextSettings);
+        set({
+            settings: nextSettings,
+            searchFilter: { ...state.searchFilter, sortBy: nextSortBy, sortOrder: nextSortOrder },
+            currentPageNum: 1,
+        });
+    },
 
     // 🆕 v1.6.3 同步方法移至 store（支持从任意页面触发）
     syncRepositories: async () => {
-        const { token, syncStatus, repositories } = get();
+        const { token, settings, repositories } = get();
+        const progress = useProgressStore.getState();
 
         logger.log('[syncRepositories] 开始同步检查', {
             hasToken: !!token,
-            syncStatus,
+            syncStatus: progress.syncStatus,
         });
 
-        if (!token || syncStatus === 'syncing') return;
+        if (!token) return 'no-token';
+        if (progress.syncStatus === 'syncing') return 'busy';
 
-        set({ syncStatus: 'syncing', syncProgress: { current: 0, total: 0 } });
+        // busy 互斥：AI 分析 / 版本检查进行中时跳过，避免并发写 repos/releases 存储。
+        // 同步是显式动作，不自动重试：返回 'busy' 交由调用方给出反馈
+        if (progress.isJobBusy('sync')) {
+            logger.log('[syncRepositories] AI 分析或版本检查进行中，跳过本次同步');
+            return 'busy';
+        }
 
-        try {
-            const syncState = storageService.getSyncState();
-            const result = await githubService.syncRepos(token, repositories, syncState, (current, total) => {
-                set({ syncProgress: { current, total } });
-            });
+        await Benchmark.timeOnceAsync('sync:syncRepositories', async () => {
+            // 清上一轮 completed/error 残留的回 idle 挂起 timer，防其到期打断本轮同步
+            clearPendingSyncIdle();
+            useProgressStore.getState().setSyncStatus('syncing');
+            useProgressStore.getState().setSyncProgress({ current: 0, total: 0 });
 
-            logger.log('[Sync] 完成同步', {
-                mode: result.mode,
-                fetchedRepos: result.repos.length,
-                processedCount: result.processedCount,
-            });
+            try {
+                const syncState = storageService.getSyncState();
+                const result = await githubService.syncRepos(token, repositories, syncState, (current, total) => {
+                    useProgressStore.getState().setSyncProgress({ current, total });
+                });
 
-            const subscriptionIds = window.githubStarsAPI.getReleaseSubscriptions();
+                logger.log('[Sync] 完成同步', {
+                    mode: result.mode,
+                    fetchedRepos: result.repos.length,
+                    processedCount: result.processedCount,
+                });
 
-            // 取最新 state 作为合并基座（R4）：同步是长任务，期间批量分析/标签编辑可能已写入 store，
-            // 用函数开头的闭包快照会用旧数据覆盖中途写入，导致 analyzedAt 丢失、触发重复分析
-            const currentRepos = get().repositories;
+                // 取最新 state 作为合并基座（R4）：同步是长任务，期间批量分析/标签编辑可能已写入 store，
+                // 用函数开头的闭包快照会用旧数据覆盖中途写入，导致 analyzedAt 丢失、触发重复分析
+                const currentRepos = get().repositories;
 
-            // 空结果守卫（R3）：全量同步"返回空列表但本地有数据"属异常（API 故障/限流误报），
-            // 拦截以保护本地数据——否则所有仓库及 AI 分析状态会被整表清空
-            if (result.mode === 'full' && result.repos.length === 0 && currentRepos.length > 0) {
-                throw new Error('同步返回空仓库列表，已中止以保护本地数据');
-            }
+                // 空结果守卫（R3）：全量同步"返回空列表但本地有数据"属异常（API 故障/限流误报），
+                // 拦截以保护本地数据——否则所有仓库及 AI 分析状态会被整表清空。
+                // 分支并发全量路径 syncAllRepos 首页为空时同样落入此守卫（该路径本体无守卫）
+                if (result.mode === 'full' && result.repos.length === 0 && currentRepos.length > 0) {
+                    throw new Error('同步返回空仓库列表，已中止以保护本地数据');
+                }
 
-            const mergedRepos = result.mode === 'full'
-                ? mergeFullSyncedRepositories(result.repos, currentRepos, subscriptionIds)
-                : mergeIncrementalRepositories(result.repos, currentRepos, subscriptionIds);
+                // 订阅单源：合并时从内存 subscribedRepoIds 取（loadRepositories/toggle 已与存储同步）
+                const subscriptionIdList = Array.from(get().subscribedRepoIds);
 
-            const nextSyncState = githubService.buildSyncState(mergedRepos, syncState, result.mode);
-            // F6：合并基座取最新 settings——同步是长任务，用开始时的闭包快照会
-            // 静默回滚用户同步期间修改的语言/主题等设置（与 R4 同思想）
-            const nextSettings = {
-                ...get().settings,
-                lastSyncTime: Date.now(),
-            };
+                const mergedRepos = result.mode === 'full'
+                    ? mergeFullSyncedRepositories(result.repos, currentRepos, subscriptionIdList)
+                    : mergeIncrementalRepositories(result.repos, currentRepos, subscriptionIdList);
 
-            storageService.setSettings(nextSettings);
-            storageService.setSyncState(nextSyncState);
+                const nextSyncState = githubService.buildSyncState(mergedRepos, syncState, result.mode);
+                // F6：合并基座取最新 settings——同步是长任务，用开始时的闭包快照会
+                // 静默回滚用户同步期间修改的语言/主题等设置（与 R4 同思想）
+                const nextSettings = {
+                    ...get().settings,
+                    lastSyncTime: Date.now(),
+                };
 
-            set({
-                repositories: mergedRepos,
-                ...buildNoteIndex(mergedRepos),
-                settings: nextSettings,
-                syncError: null,
-                syncStatus: 'completed',
-                syncProgress: {
+                storageService.setSettings(nextSettings);
+                storageService.setSyncState(nextSyncState);
+
+                set({
+                    repositories: mergedRepos,
+                    ...buildNoteIndex(mergedRepos),
+                    settings: nextSettings,
+                });
+                useProgressStore.getState().setSyncError(null);
+                useProgressStore.getState().setSyncStatus('completed');
+                useProgressStore.getState().setSyncProgress({
                     current: result.processedCount || mergedRepos.length,
                     total: result.processedCount || mergedRepos.length,
-                },
-            });
-            get().saveRepositories();
+                });
+                get().saveRepositories();
 
-            setTimeout(() => set({ syncStatus: 'idle' }), 3000);
-        } catch (error: any) {
-            console.error('Sync failed:', error);
-            set({ syncError: error?.message || String(error), syncStatus: 'error' });
-        }
+                scheduleSyncIdle(3000);
+            } catch (error: any) {
+                console.error('Sync failed:', error);
+                useProgressStore.getState().setSyncError(error?.message || String(error));
+                useProgressStore.getState().setSyncStatus('error');
+                // error 态不可永驻：5s 后自动收敛回 idle（错误展示单源归 HomePage 可关闭横幅）
+                scheduleSyncIdle(5000);
+            }
+        });
+
+        return 'ok';
     },
 
     // 设置
@@ -394,18 +507,24 @@ export const useStore = create<AppState>((set, get) => ({
     analyzingRepo: null,
     setAnalyzingRepo: (fullName) => set({ analyzingRepo: fullName }),
 
-    // 🆕 v1.3.0 批量 AI 分析
-    isAnalyzing: false,
-    analyzeProgress: null,
-    analyzeAbortController: null,
-    analyzeStats: null,
+    // 🆕 v1.3.0 批量 AI 分析（进度状态在 useProgressStore）
 
-    startAutoAnalyze: async () => {
-        const { repositories, token, settings, analyzeAbortController, isAnalyzing } = get();
+    startAutoAnalyze: async (isAutoTriggered = false) => {
+        const { repositories, token, settings } = get();
+        const progress = useProgressStore.getState();
 
         // 防止重复分析
-        if (analyzeAbortController || isAnalyzing) return;
-        if (!token) return;
+        if (progress.analyzeAbortController || progress.isAnalyzing) return 'ok';
+        if (!token) return 'no-token';
+
+        // busy 互斥：同步 / 版本检查进行中时不硬闯（避免并发写 repos/releases 存储）。
+        // 自动分析"迟早要跑"：排队延时重试而非静默丢弃，互斥释放后自动补跑
+        if (progress.isJobBusy('analyze')) {
+            logger.log('[startAutoAnalyze] 同步或版本检查进行中，已排队稍后重试');
+            scheduleAutoAnalyzeRetry(isAutoTriggered);
+            return 'busy';
+        }
+        clearAutoAnalyzeRetry(); // 真正开始分析，取消挂起的互斥重试
 
         // 🆕 v1.6.2 使用公共函数筛选需要分析的仓库
         const toAnalyze = repositories.filter(r => {
@@ -417,56 +536,53 @@ export const useStore = create<AppState>((set, get) => ({
             window.githubStarsAPI.showNotification(
                 settings.language === 'zh' ? '没有需要分析的仓库' : 'No repos to analyze'
             );
-            return;
+            return 'ok';
         }
 
         const controller = new AbortController();
-        set({
-            isAnalyzing: true,
-            analyzeAbortController: controller,
-            analyzeProgress: { current: 0, total: toAnalyze.length, currentRepo: '' }
-        });
+        const startState = useProgressStore.getState();
+        startState.setAnalyzing(true);
+        startState.setAnalyzeAbortController(controller);
+        startState.setAnalyzeProgress({ current: 0, total: toAnalyze.length, currentRepo: '' });
 
         try {
             const concurrency = settings.aiConcurrency || 1;
             const language = (settings.language || 'zh') as 'zh' | 'en';
-            // 周期落盘节流（三审修正）：全量落盘有 stringify/分片写开销，
-            // 限频至少间隔 20s，崩溃最多丢失最近 20s 的结果，避免约百倍写放大
-            let lastPersistAt = 0;
+            lastAiPersistAt = Date.now(); // 本批次计时起点
             const updated = await aiService.batchAnalyze(
                 toAnalyze,
                 token,
                 (current, total, repo) => {
-                    set({
-                        analyzeProgress: {
-                            current,
-                            total,
-                            currentRepo: repo.fullName
-                        }
+                    useProgressStore.getState().setAnalyzeProgress({
+                        current,
+                        total,
+                        currentRepo: repo.fullName,
                     });
 
-                    // 增量刷新：每个仓库分析完立即以新对象引用写入 store，
-                    // 让卡片实时显示摘要（否则整批结束前界面毫无产出，能量却在逐个消耗）
+                    // R5 增量刷新：每个仓库分析完立即以新对象引用写入 store，
+                    // 让卡片实时显示摘要（否则整批结束前界面毫无产出，能量却在逐个消耗）。
+                    // 回调的 repo 是 batchAnalyze 构造的产出对象（含 AI 结果/失败标记）
+                    const aiPatch = {
+                        aiSummary: repo.aiSummary,
+                        aiTags: repo.aiTags,
+                        aiPlatforms: repo.aiPlatforms,
+                        analyzedAt: repo.analyzedAt,
+                        analysisFailed: repo.analysisFailed,
+                    };
                     const repos = get().repositories;
                     const idx = repos.findIndex(r => r.id === repo.id);
                     if (idx !== -1) {
                         const next = [...repos];
-                        next[idx] = {
-                            ...repos[idx],
-                            aiSummary: repo.aiSummary,
-                            aiTags: repo.aiTags,
-                            aiPlatforms: repo.aiPlatforms,
-                            analyzedAt: repo.analyzedAt,
-                            analysisFailed: repo.analysisFailed,
-                        };
+                        next[idx] = { ...repos[idx], ...aiPatch };
                         set({ repositories: next });
                     }
 
-                    // 周期性落盘（20s 节流）：崩溃/被杀时不丢已消耗能量的结果
+                    // C4 累积缓冲：跨窗口收集 patch，≥20s 冲刷一次
+                    pendingAiPatches.set(repo.id, aiPatch);
                     const now = Date.now();
-                    if (now - lastPersistAt > 20000) {
-                        lastPersistAt = now;
-                        storageService.setRepositories(get().repositories);
+                    if (now - lastAiPersistAt > AI_PERSIST_INTERVAL_MS) {
+                        lastAiPersistAt = now;
+                        flushAiPatches();
                     }
                 },
                 language,
@@ -475,12 +591,15 @@ export const useStore = create<AppState>((set, get) => ({
                 controller.signal
             );
 
-            // 被中止的批次跳过收尾（二审修正）：stopAnalyze 已同步复位并落盘部分结果；
+            // 被中止的批次跳过收尾（R1）：stopAnalyze 已同步复位并冲刷部分结果；
             // 若 abort 后 promise 延迟 settle，此处无条件执行会用旧批次的 updated 覆盖
             // 新批次/已完成批次写入的状态与落盘数据（含误标 analysisFailed）
             if (!controller.signal.aborted) {
-                // 不可变更新仓库数据，确保 Zustand 订阅和 memo 组件稳定刷新
-                // 使用最新 state 而非任务开始时的快照，避免长时间批处理覆盖期间的其他修改（同步、标签等）
+                // 合并 AI 分析结果到仓库数据。
+                // 阶段3 起 batchAnalyze 返回新对象（不再原地突变传入的 repo），
+                // 此处逐字段 spread 合并生成新的 repositories 数组/对象，
+                // Zustand 订阅与 memo 组件按引用稳定刷新，搜索索引 WeakMap 同步失效。
+                // R4：合并基座取最新 state（长任务期间同步/标签编辑可能已写入）
                 const updatedById = new Map(updated.map(repo => [repo.id, repo]));
                 const nextRepositories = get().repositories.map(repo => {
                     const updatedRepo = updatedById.get(repo.id);
@@ -497,21 +616,33 @@ export const useStore = create<AppState>((set, get) => ({
                 });
 
                 set({ repositories: nextRepositories });
-                storageService.setRepositories(nextRepositories);
+                // v2 批量增量落盘：只重写 AI 字段所在的受影响分片（替代全量 setRepositories）。
+                // 批次收尾一并冲刷 C4 缓冲中尚未落盘的窗口
+                storageService.patchReposBatch(
+                    updated.map(repo => ({
+                        id: repo.id,
+                        patch: {
+                            aiSummary: repo.aiSummary,
+                            aiTags: repo.aiTags,
+                            aiPlatforms: repo.aiPlatforms,
+                            analyzedAt: repo.analyzedAt,
+                            analysisFailed: repo.analysisFailed,
+                        },
+                    }))
+                );
+                flushAiPatches();
 
                 // 更新统计信息
                 const successCount = updated.filter(r => !r.analysisFailed).length;
                 const failCount = updated.filter(r => r.analysisFailed).length;
-                set({
-                    analyzeStats: {
-                        lastAnalyzeAt: new Date().toISOString(),
-                        totalAnalyzed: updated.length,
-                        successCount,
-                        failCount,
-                    }
+                useProgressStore.getState().setAnalyzeStats({
+                    lastAnalyzeAt: new Date().toISOString(),
+                    totalAnalyzed: updated.length,
+                    successCount,
+                    failCount,
                 });
 
-                // 显示完成提示
+                // 显示完成提示（quotaHint：连续失败熔断时提示疑似额度耗尽）
                 const quotaHint = failCount >= 5
                     ? (settings.language === 'zh' ? '（连续失败已自动停止，疑似 AI 额度耗尽）' : ' (auto-stopped after repeated failures, AI quota may be exhausted)')
                     : '';
@@ -527,30 +658,34 @@ export const useStore = create<AppState>((set, get) => ({
                 console.error('Auto analyze failed:', error);
             }
         } finally {
-            // token 守卫（H1）：仅当 store 中的 controller 仍是本次批次时才复位，
+            // H1 token 守卫：仅当进度 store 中的 controller 仍是本次批次时才复位，
             // 避免被中止批次的收尾逻辑覆盖用户新启动批次的状态
-            if (get().analyzeAbortController === controller) {
-                set({
-                    isAnalyzing: false,
-                    analyzeAbortController: null,
-                    analyzeProgress: null
-                });
+            if (useProgressStore.getState().analyzeAbortController === controller) {
+                const finishState = useProgressStore.getState();
+                finishState.setAnalyzing(false);
+                finishState.setAnalyzeAbortController(null);
+                finishState.setAnalyzeProgress(null);
             }
         }
+
+        return 'ok';
     },
 
     stopAnalyze: () => {
-        const { analyzeAbortController, settings } = get();
+        const { settings } = get();
+        const { analyzeAbortController } = useProgressStore.getState();
         if (!analyzeAbortController) return;
 
-        // 1. 先中止批次循环：此后被中止的 AI 调用 reject 时 signal.aborted 已为 true，不会误标 analysisFailed
+        // 1. 先中止批次循环（R1/H1）：此后被中止的 AI 调用 reject 时 signal.aborted 已为 true，不会误标 analysisFailed
         analyzeAbortController.abort();
         // 2. 中止进行中的 utools.ai 调用（官方 PromiseLike.abort()，最多并发 5 个）
         window.githubStarsAPI.abortAiCall?.();
         // 3. 同步复位状态（H1：官方未保证 abort 后 promise 会 settle，不能依赖 startAutoAnalyze 的 finally）
-        set({ isAnalyzing: false, analyzeAbortController: null, analyzeProgress: null });
-        // 4. 落盘已完成的就地修改（部分分析结果）
-        get().saveRepositories();
+        useProgressStore.getState().setAnalyzing(false);
+        useProgressStore.getState().setAnalyzeAbortController(null);
+        useProgressStore.getState().setAnalyzeProgress(null);
+        // 4. 落盘已分析的部分结果（R5/C4：中止时冲刷累积缓冲——已消耗能量的结果不能丢）
+        flushAiPatches();
         window.githubStarsAPI.showNotification(
             settings.language === 'zh' ? '分析已中止' : 'Analysis stopped'
         );
@@ -572,20 +707,20 @@ export const useStore = create<AppState>((set, get) => ({
     // ========== 🆕 v1.1.0 标签管理 ==========
     tags: [],
     loadTags: () => {
-        const tags = window.githubStarsAPI.getTags();
+        const tags = storageService.getTags();
         set({ tags });
     },
     setTags: (tags) => {
-        window.githubStarsAPI.setTags(tags);
+        storageService.setTags(tags);
         set({ tags });
     },
     addTag: (tagData) => {
-        const newTag = window.githubStarsAPI.addTag(tagData);
+        const newTag = storageService.addTag(tagData);
         set((state) => ({ tags: [...state.tags, newTag] }));
         return newTag;
     },
     updateTag: (id, updates) => {
-        const updated = window.githubStarsAPI.updateTag(id, updates);
+        const updated = storageService.updateTag(id, updates);
         if (updated) {
             set((state) => ({
                 tags: state.tags.map((t) => (t.id === id ? updated : t)),
@@ -594,7 +729,10 @@ export const useStore = create<AppState>((set, get) => ({
         return updated;
     },
     deleteTag: (id) => {
-        window.githubStarsAPI.deleteTag(id);
+        // v2 preload 为 async（单次读 + 一次原子写入）；失败不吞，记录错误
+        storageService.deleteTag(id).catch((error) => {
+            console.error('[deleteTag] 删除标签失败:', error);
+        });
         set((state) => ({
             tags: state.tags.filter((t) => t.id !== id),
             // 直接更新仓库中的 customTags，避免重新加载导致页面闪烁
@@ -605,7 +743,7 @@ export const useStore = create<AppState>((set, get) => ({
         }));
     },
     reorderTags: (tagIds) => {
-        window.githubStarsAPI.reorderTags(tagIds);
+        storageService.reorderTags(tagIds);
         get().loadTags();
     },
 
@@ -619,11 +757,11 @@ export const useStore = create<AppState>((set, get) => ({
     },
     hasRepoNote: (repoId) => get().noteRepoIds.has(repoId),
     loadNote: (repoId) => {
-        const note = window.githubStarsAPI.getNote(repoId);
+        const note = storageService.getNote(repoId);
         set({ currentNote: note });
     },
     saveNote: (repoId, content) => {
-        const note = window.githubStarsAPI.setNote(repoId, content);
+        const note = storageService.setNote(repoId, content);
         set((state) => {
             const noteRepoIds = new Set(state.noteRepoIds);
             const noteContentByRepoId = new Map(state.noteContentByRepoId);
@@ -634,7 +772,7 @@ export const useStore = create<AppState>((set, get) => ({
         return note;
     },
     deleteNote: (repoId) => {
-        window.githubStarsAPI.deleteNote(repoId);
+        storageService.deleteNote(repoId);
         set((state) => {
             const noteRepoIds = new Set(state.noteRepoIds);
             const noteContentByRepoId = new Map(state.noteContentByRepoId);
@@ -658,34 +796,31 @@ export const useStore = create<AppState>((set, get) => ({
                 r.id === id ? { ...r, ...updates } : r
             ),
         }));
-        get().saveRepositories();
+        // v2 单仓库增量落盘：只重写该仓库所在分片（替代全量 saveRepositories）
+        storageService.patchRepo(id, updates);
     },
 
     // 过滤后的仓库（使用优化后的筛选管道 v1.7.0）
     getFilteredRepos: () => {
         const { repositories, searchFilter, noteRepoIds, noteContentByRepoId } = get();
-        const pipeline = createFilteredReposPipeline(searchFilter, {
-            hasNote: (repoId) => noteRepoIds.has(repoId),
-            getNoteContent: (repoId) => noteContentByRepoId.get(repoId) || '',
+        return Benchmark.timeOnce('render:getFilteredRepos', () => {
+            const pipeline = createFilteredReposPipeline(searchFilter, {
+                hasNote: (repoId) => noteRepoIds.has(repoId),
+                getNoteContent: (repoId) => noteContentByRepoId.get(repoId) || '',
+            });
+            return pipeline(repositories);
         });
-        return pipeline(repositories);
     },
 
     // ========== 🆕 v1.4.0 版本追踪 ==========
     releases: [],
-    releaseCheckStatus: {
-        lastCheckedAt: null,
-        checking: false,
-        newCount: 0,
-        error: null,
-    },
     releaseFilter: { ...defaultReleaseFilter },
-    subscriptionVersion: 0, // 订阅版本号，用于触发响应式更新
+    subscribedRepoIds: new Set<number>(), // 🆕 阶段3 订阅单源（loadRepositories 时装载）
     togglingSubscriptions: new Set<number>(), // 🆕 v1.6.0 正在切换订阅的仓库 ID（防竞态）
 
     loadReleases: () => {
-        const stored = window.githubStarsAPI.getStoredReleases();
-        const readIds = new Set(window.githubStarsAPI.getReadReleaseIds());
+        const stored = storageService.getReleases();
+        const readIds = storageService.getReadReleaseIds();
         // 计算已读状态
         const releasesWithReadStatus = stored.map(r => ({
             ...r,
@@ -698,11 +833,13 @@ export const useStore = create<AppState>((set, get) => ({
         const { releases } = get();
         // 清理过期缓存
         const cleaned = releaseService.cleanupCache(releases);
-        window.githubStarsAPI.setStoredReleases(cleaned);
+        storageService.setReleases(cleaned);
     },
 
     checkReleaseUpdates: async () => {
-        const { token, repositories, releaseCheckStatus, settings } = get();
+        const { token, repositories, settings } = get();
+        const progress = useProgressStore.getState();
+        const { releaseCheckStatus } = progress;
 
         logger.log('[ReleaseCheck] 开始检查版本更新', {
             checking: releaseCheckStatus.checking,
@@ -712,32 +849,28 @@ export const useStore = create<AppState>((set, get) => ({
         if (releaseCheckStatus.checking) return;
         if (!token) return;
 
-        // 获取订阅的仓库
-        const subscribedRepoIds = window.githubStarsAPI.getReleaseSubscriptions();
-        logger.log('[ReleaseCheck] 订阅的仓库ID列表', subscribedRepoIds);
-        if (subscribedRepoIds.length === 0) return;
+        // busy 互斥：同步 / AI 分析进行中时跳过，避免并发写 repos/releases 存储
+        if (progress.isJobBusy('releaseCheck')) {
+            logger.log('[ReleaseCheck] 同步或 AI 分析进行中，跳过本次版本检查');
+            return;
+        }
 
-        set({
-            releaseCheckStatus: {
-                ...releaseCheckStatus,
-                checking: true,
-                error: null,
-            }
+        // 获取订阅的仓库（订阅单源：内存 subscribedRepoIds）
+        const subscribedRepoIds = get().subscribedRepoIds;
+        logger.log('[ReleaseCheck] 订阅的仓库ID列表', Array.from(subscribedRepoIds));
+        if (subscribedRepoIds.size === 0) return;
+
+        useProgressStore.getState().patchReleaseCheckStatus({
+            checking: true,
+            error: null,
         });
 
         try {
+            // 注：原 onProgress 回调内是 spread 等值的空 set（无实际效果），已删除
             const { updates, errors } = await releaseService.checkSubscribedRepos(
-                subscribedRepoIds,
+                Array.from(subscribedRepoIds),
                 token,
-                repositories.map(r => ({ id: r.id, fullName: r.fullName })),
-                (current, total, repoName) => {
-                    set({
-                        releaseCheckStatus: {
-                            ...get().releaseCheckStatus,
-                            // 可用于显示进度
-                        }
-                    });
-                }
+                repositories.map(r => ({ id: r.id, fullName: r.fullName }))
             );
 
             logger.log('[ReleaseCheck] API返回结果', {
@@ -753,7 +886,7 @@ export const useStore = create<AppState>((set, get) => ({
 
             if (updates.length > 0) {
                 // 🆕 v1.5.1 方案3: 构建本地已知仓库 ID 集合，区分"首次获取"和"真正更新"
-                const storedReleases = window.githubStarsAPI.getStoredReleases();
+                const storedReleases = storageService.getReleases();
                 const knownRepoIds = new Set(storedReleases.map(r => r.repository.id));
 
                 logger.log('[ReleaseCheck] 本地已缓存的版本数据', {
@@ -788,23 +921,21 @@ export const useStore = create<AppState>((set, get) => ({
                 const cleaned = releaseService.cleanupCache(allReleases);
 
                 // 保存到存储
-                window.githubStarsAPI.setStoredReleases(cleaned);
+                storageService.setReleases(cleaned);
 
                 // 更新状态
-                const readIds = new Set(window.githubStarsAPI.getReadReleaseIds());
+                const readIds = storageService.getReadReleaseIds();
                 const releasesWithReadStatus = cleaned.map(r => ({
                     ...r,
                     isRead: readIds.has(r.id),
                 }));
 
-                set({
-                    releases: releasesWithReadStatus,
-                    releaseCheckStatus: {
-                        lastCheckedAt: new Date().toISOString(),
-                        checking: false,
-                        newCount: realUpdates.length, // 使用 realUpdates 计数
-                        error: null,
-                    }
+                set({ releases: releasesWithReadStatus });
+                useProgressStore.getState().setReleaseCheckStatus({
+                    lastCheckedAt: new Date().toISOString(),
+                    checking: false,
+                    newCount: realUpdates.length, // 使用 realUpdates 计数
+                    error: null,
                 });
 
                 // 🆕 v1.5.1: 只对真正的新版本发送通知
@@ -829,13 +960,11 @@ export const useStore = create<AppState>((set, get) => ({
                     }
                 }
             } else {
-                set({
-                    releaseCheckStatus: {
-                        lastCheckedAt: new Date().toISOString(),
-                        checking: false,
-                        newCount: 0,
-                        error: null,
-                    }
+                useProgressStore.getState().setReleaseCheckStatus({
+                    lastCheckedAt: new Date().toISOString(),
+                    checking: false,
+                    newCount: 0,
+                    error: null,
                 });
             }
 
@@ -846,58 +975,51 @@ export const useStore = create<AppState>((set, get) => ({
 
         } catch (error) {
             console.error('[Release Check] Failed:', error);
-            set({
-                releaseCheckStatus: {
-                    ...get().releaseCheckStatus,
-                    checking: false,
-                    error: (error as Error).message,
-                }
+            useProgressStore.getState().patchReleaseCheckStatus({
+                checking: false,
+                error: (error as Error).message,
             });
         }
     },
 
     markReleaseRead: (releaseId: number) => {
         const { releases } = get();
-        const readIds = window.githubStarsAPI.getReadReleaseIds();
+        const readIds = storageService.getReadReleaseIds();
 
-        if (!readIds.includes(releaseId)) {
-            readIds.push(releaseId);
-            window.githubStarsAPI.setReadReleaseIds(readIds);
+        if (!readIds.has(releaseId)) {
+            readIds.add(releaseId);
+            storageService.setReadReleaseIds(readIds);
         }
 
         set({
             releases: releases.map(r =>
                 r.id === releaseId ? { ...r, isRead: true } : r
             ),
-            releaseCheckStatus: {
-                ...get().releaseCheckStatus,
-                newCount: Math.max(0, get().releaseCheckStatus.newCount - 1),
-            }
+        });
+        useProgressStore.getState().patchReleaseCheckStatus({
+            newCount: Math.max(0, useProgressStore.getState().releaseCheckStatus.newCount - 1),
         });
     },
 
     markAllReleasesRead: () => {
         const { releases } = get();
-        // 🆕 v1.6.2 只将已订阅仓库的 Release 标记为已读
-        const subscribedRepoIds = window.githubStarsAPI.getReleaseSubscriptions();
-        const subscribedReleases = releases.filter(r => subscribedRepoIds.includes(r.repository.id));
+        // 🆕 v1.6.2 只将已订阅仓库的 Release 标记为已读（订阅单源：内存 Set）
+        const subscribedRepoIds = get().subscribedRepoIds;
+        const subscribedReleases = releases.filter(r => subscribedRepoIds.has(r.repository.id));
         const allIds = subscribedReleases.map(r => r.id);
-        window.githubStarsAPI.setReadReleaseIds(allIds);
+        storageService.setReadReleaseIds(new Set(allIds));
 
         set({
-            releases: releases.map(r => subscribedRepoIds.includes(r.repository.id) ? { ...r, isRead: true } : r),
-            releaseCheckStatus: {
-                ...get().releaseCheckStatus,
-                newCount: 0,
-            }
+            releases: releases.map(r => subscribedRepoIds.has(r.repository.id) ? { ...r, isRead: true } : r),
         });
+        useProgressStore.getState().patchReleaseCheckStatus({ newCount: 0 });
     },
 
     getUnreadCount: () => {
-        const { releases } = get();
+        const { releases, subscribedRepoIds } = get();
         // 🆕 v1.6.2 仅统计已订阅仓库的未读更新，避免退订后仍有未读角标
-        const subscribedRepoIds = window.githubStarsAPI.getReleaseSubscriptions();
-        return releases.filter(r => !r.isRead && subscribedRepoIds.includes(r.repository.id)).length;
+        // 阶段3 起纯派生：releases + 内存订阅 Set，不读存储
+        return releases.filter(r => !r.isRead && subscribedRepoIds.has(r.repository.id)).length;
     },
 
     setReleaseFilter: (filter: Partial<ReleaseFilter>) => {
@@ -908,32 +1030,36 @@ export const useStore = create<AppState>((set, get) => ({
 
     // ========== 🆕 v1.5.0 订阅管理 ==========
     getSubscribedRepos: () => {
-        const { repositories } = get();
-        const ids = window.githubStarsAPI.getReleaseSubscriptions();
+        const { repositories, subscribedRepoIds } = get();
         // 过滤出存在的仓库（清理无效订阅）
-        const validIds = ids.filter(id => repositories.some(r => r.id === id));
-        // 如果有无效订阅，自动清理
-        if (validIds.length !== ids.length) {
-            window.githubStarsAPI.setReleaseSubscriptions(validIds);
+        const validIds = Array.from(subscribedRepoIds).filter(id => repositories.some(r => r.id === id));
+        // 如果有无效订阅，自动清理（存储 + 内存单源同步更新）
+        if (validIds.length !== subscribedRepoIds.size) {
+            const cleaned = new Set(validIds);
+            storageService.setReleaseSubscriptions(cleaned);
+            set({ subscribedRepoIds: cleaned });
+            return repositories.filter(r => cleaned.has(r.id));
         }
-        return repositories.filter(r => validIds.includes(r.id));
+        return repositories.filter(r => subscribedRepoIds.has(r.id));
     },
 
     // 🆕 v1.6.0: 乐观更新 + 后台异步获取基准版本（解决订阅按钮延迟问题）
     // 🔧 v1.6.2: 修复取消订阅被锁阻止的问题，将锁检查移至新订阅分支内部
+    // 🔧 阶段3: 订阅单源化——同步维护内存 subscribedRepoIds 与 repositories[].isSubscribed
+    //          （不可变更新），组件不再需要渲染期直读存储表或 subscriptionVersion
     toggleSubscription: (repoId: number) => {
         logger.log('[toggleSubscription] 开始', { repoId });
 
-        const ids = window.githubStarsAPI.getReleaseSubscriptions();
-        const index = ids.indexOf(repoId);
+        const currentIds = get().subscribedRepoIds;
+        const isSubscribed = currentIds.has(repoId);
 
         logger.log('[toggleSubscription] 当前订阅状态', {
-            当前订阅列表: ids,
-            是否已订阅: index !== -1,
-            操作: index === -1 ? '添加订阅' : '取消订阅',
+            当前订阅列表: Array.from(currentIds),
+            是否已订阅: isSubscribed,
+            操作: isSubscribed ? '取消订阅' : '添加订阅',
         });
 
-        if (index === -1) {
+        if (!isSubscribed) {
             // ========== 新订阅：乐观更新 ==========
 
             // 🔧 只对新订阅检查锁（取消订阅是同步操作，不需要锁保护）
@@ -943,15 +1069,20 @@ export const useStore = create<AppState>((set, get) => ({
                 return;
             }
 
-            // 1️⃣ 立即更新订阅状态（乐观更新）
-            ids.push(repoId);
-            window.githubStarsAPI.setReleaseSubscriptions(ids);
-            logger.log('[toggleSubscription] 订阅列表已更新（乐观）', { 新订阅列表: ids });
+            // 1️⃣ 立即更新订阅状态（乐观更新：存储 + 内存单源 + 仓库派生字段）
+            const nextIds = new Set(currentIds);
+            nextIds.add(repoId);
+            storageService.setReleaseSubscriptions(nextIds);
+            logger.log('[toggleSubscription] 订阅列表已更新（乐观）', { 新订阅列表: Array.from(nextIds) });
 
-            // 2️⃣ 触发响应式更新
-            set((state) => ({ subscriptionVersion: state.subscriptionVersion + 1 }));
+            set((state) => ({
+                subscribedRepoIds: nextIds,
+                repositories: state.repositories.map(r =>
+                    r.id === repoId ? { ...r, isSubscribed: true } : r
+                ),
+            }));
 
-            // 3️⃣ 后台异步获取基准版本（不阻塞 UI）
+            // 2️⃣ 后台异步获取基准版本（不阻塞 UI）
             const repo = get().repositories.find(r => r.id === repoId);
             const token = get().token;
 
@@ -987,7 +1118,7 @@ export const useStore = create<AppState>((set, get) => ({
                                 updatedReleases = [newRelease, ...currentReleases];
                             }
 
-                            window.githubStarsAPI.setStoredReleases(updatedReleases);
+                            storageService.setReleases(updatedReleases);
                             set({ releases: updatedReleases });
                         }
                     })
@@ -1006,18 +1137,25 @@ export const useStore = create<AppState>((set, get) => ({
             }
         } else {
             // ========== 取消订阅：立即生效（无锁检查）==========
-            ids.splice(index, 1);
-            window.githubStarsAPI.setReleaseSubscriptions(ids);
-            logger.log('[toggleSubscription] 取消订阅成功', { 新订阅列表: ids });
-            set((state) => ({ subscriptionVersion: state.subscriptionVersion + 1 }));
+            const nextIds = new Set(currentIds);
+            nextIds.delete(repoId);
+            storageService.setReleaseSubscriptions(nextIds);
+            logger.log('[toggleSubscription] 取消订阅成功', { 新订阅列表: Array.from(nextIds) });
+
+            set((state) => ({
+                subscribedRepoIds: nextIds,
+                repositories: state.repositories.map(r =>
+                    r.id === repoId ? { ...r, isSubscribed: false } : r
+                ),
+            }));
         }
     },
 
     clearAllSubscriptions: () => {
-        window.githubStarsAPI.setReleaseSubscriptions([]);
-        // 同步清理 Repository 对象上的 isSubscribed 并触发响应式更新
+        storageService.setReleaseSubscriptions(new Set<number>());
+        // 同步清理内存单源与 Repository 对象上的 isSubscribed（不可变更新触发响应）
         set((state) => ({
-            subscriptionVersion: state.subscriptionVersion + 1,
+            subscribedRepoIds: new Set<number>(),
             repositories: state.repositories.map(r => ({
                 ...r,
                 isSubscribed: false,

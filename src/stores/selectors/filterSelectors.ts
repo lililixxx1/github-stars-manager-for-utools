@@ -21,6 +21,64 @@ export const emptyFilterContext: FilterContext = {
     getNoteContent: () => '',
 };
 
+// ==================== 搜索索引缓存（阶段3 性能重构） ====================
+
+/**
+ * 仓库搜索索引：预计算的小写字段与数值时间戳
+ *
+ * 失效契约（本模块位于 filterSelectors 以保证 selectors 内依赖无环：
+ * searchSelectors / sortSelectors 均单向依赖本文件）：
+ * - 缓存以 Repository 对象引用为键（WeakMap）。store 层对仓库的任何更新
+ *   （updateRepository / 批量 AI 分析合并 / 同步 merge）都必须是不可变更新
+ *   （返回新对象），引用一换 WeakMap 自动失效——这正是选 WeakMap 的原因。
+ * - AI 字段（aiTags/aiSummary/aiPlatforms）历史上被 batchAnalyze 原地突变过
+ *   （阶段3 已修复为不可变，但保守起见），**不进缓存**，每轮搜索/筛选现算。
+ */
+export interface RepoSearchIndex {
+    /** 小写的原始/用户字段 */
+    name: string;
+    fullName: string;
+    alias: string;
+    description: string;
+    language: string;
+    ownerLogin: string;
+    topics: string[];        // 小写后的 topics
+    customTags: string[];    // 小写后的自定义标签（存的是标签 ID）
+    /** 排序用的数值时间戳（Date.parse 预计算；无 starredAt 为 0，非法为 NaN） */
+    createdAt: number;
+    updatedAt: number;
+    pushedAt: number;
+    starredAt: number;
+}
+
+const searchIndexCache = new WeakMap<Repository, RepoSearchIndex>();
+
+/**
+ * 获取（或懒构建）仓库的搜索索引
+ * 同一仓库对象引用只在首次访问时计算一次小写/时间戳
+ */
+export function getSearchIndex(repo: Repository): RepoSearchIndex {
+    let index = searchIndexCache.get(repo);
+    if (!index) {
+        index = {
+            name: repo.name.toLowerCase(),
+            fullName: repo.fullName.toLowerCase(),
+            alias: (repo.alias || '').toLowerCase(),
+            description: (repo.description || '').toLowerCase(),
+            language: (repo.language || '').toLowerCase(),
+            ownerLogin: repo.owner.login.toLowerCase(),
+            topics: (repo.topics || []).map(t => t.toLowerCase()),
+            customTags: (repo.customTags || []).map(t => t.toLowerCase()),
+            createdAt: Date.parse(repo.createdAt),
+            updatedAt: Date.parse(repo.updatedAt),
+            pushedAt: Date.parse(repo.pushedAt),
+            starredAt: repo.starredAt ? Date.parse(repo.starredAt) : 0,
+        };
+        searchIndexCache.set(repo, index);
+    }
+    return index;
+}
+
 // ==================== 常量 ====================
 
 /** 未分析/无平台标识 */
@@ -184,21 +242,23 @@ export const applyPrefixFilters = (
 
     return prefixFilters.reduce((filtered, pf) => {
         return filtered.filter(repo => {
+            // 小写字段从 WeakMap 缓存索引取；AI 标签（aiTags）每轮现算不缓存
+            const index = getSearchIndex(repo);
             switch (pf.type) {
                 case 'owner':
-                    return repo.owner.login.toLowerCase().includes(pf.value);
+                    return index.ownerLogin.includes(pf.value);
                 case 'lang':
                 case 'language':
-                    return (repo.language || '').toLowerCase().includes(pf.value);
+                    return index.language.includes(pf.value);
                 case 'topic':
-                    return (repo.topics || []).some(t => t.toLowerCase().includes(pf.value));
+                    return index.topics.some(t => t.includes(pf.value));
                 case 'tag':
-                    return (repo.aiTags || []).concat(repo.customTags || [])
-                        .some(t => t.toLowerCase().includes(pf.value));
+                    return (repo.aiTags || []).some(t => t.toLowerCase().includes(pf.value))
+                        || index.customTags.some(t => t.includes(pf.value));
                 case 'note':
                     return context.getNoteContent(repo.id).toLowerCase().includes(pf.value);
                 case 'alias':
-                    return (repo.alias || '').toLowerCase().includes(pf.value);
+                    return index.alias.includes(pf.value);
                 default:
                     return true;
             }

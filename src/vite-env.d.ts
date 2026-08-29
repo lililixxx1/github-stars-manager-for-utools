@@ -1,5 +1,12 @@
 /// <reference types="vite/client" />
 
+// tsconfig 未开启 resolveJsonModule；Vite 原生支持 JSON 导入，
+// 用通配声明提供类型（About 区引用 package.json version，阶段8）
+declare module '*.json' {
+    const value: { version: string } & Record<string, unknown>;
+    export default value;
+}
+
 declare const utools: {
     onPluginEnter: (callback: (action: { code: string; type: string; payload: any }) => void) => void;
     onPluginOut: (callback: (isKill: boolean) => void) => void;

@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useMemo } from 'react';
 import type { Tag } from '../types';
+import { getTagTextColor } from '../utils/tagColor';
 
 interface TagBadgeProps {
     tag: Tag;
@@ -30,10 +31,10 @@ export const TagBadge = memo<TagBadgeProps>(({
 }) => {
     const sizeClasses = size === 'sm' ? 'text-xs px-2 py-0.5' : 'text-sm px-3 py-1';
 
-    // 缓存样式计算
+    // 缓存样式计算（文字色走安全换算：light 深色变体 / dark 原色，未知色回退文字主色；描边保留原色）
     const badgeStyle = useMemo(() => ({
         backgroundColor: tag.color ? `${tag.color}20` : 'var(--color-surface-hover)',
-        color: tag.color || 'var(--color-text-primary)',
+        color: getTagTextColor(tag.color),
         border: `1px solid ${tag.color || 'var(--color-border)'}`,
     }), [tag.color]);
 
@@ -59,11 +60,13 @@ export const TagBadge = memo<TagBadgeProps>(({
             {showRemove && onRemove && (
                 <button
                     ref={removeButtonRef}
-                    className="ml-1 hover:opacity-70"
+                    type="button"
+                    className="tag-remove"
                     style={removeButtonStyle}
                     tabIndex={removeButtonTabIndex}
                     onFocus={onRemoveFocus}
                     onClick={handleRemove}
+                    aria-label={`× ${tag.name}`}
                 >
                     ×
                 </button>

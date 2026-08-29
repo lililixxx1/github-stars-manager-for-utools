@@ -1,8 +1,13 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Box, ArrowLeft } from 'lucide-react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { Box, ArrowLeft, Loader2, RefreshCw, Inbox, Bell, Star } from 'lucide-react';
 import { useStore } from '../stores/useStore';
+import { useProgressStore } from '../stores/useProgressStore';
 import { ReleaseCard } from '../components/ReleaseCard';
 import { ReleaseDetail } from '../components/ReleaseDetail';
+import { EmptyState } from '../components/EmptyState';
+import { Badge } from '../components/Badge';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { toast } from '../components/Toast';
 import { PLATFORM_OPTIONS } from '../constants/platforms';
 import { releaseService } from '../services/releaseService';
 import { t } from '../locales';
@@ -12,9 +17,6 @@ import { useBackShortcut } from '../hooks/useBackShortcut';
 
 type TabType = 'updates' | 'subscriptions';
 
-// 常量
-const UNDO_TIMEOUT_MS = 5000; // 撤销取消订阅的超时时间
-
 // 格式化 Star 数
 export const formatStars = (count: number): string => {
     if (count >= 10000) return `${(count / 10000).toFixed(1)}k`; // 也可以选择 w
@@ -23,32 +25,37 @@ export const formatStars = (count: number): string => {
 };
 
 export function ReleasesPage() {
-    const {
-        releases,
-        releaseFilter,
-        releaseCheckStatus,
-        settings,
-        token,  // 🆕 v1.6.0 用于翻译功能
-        loadReleases,
-        checkReleaseUpdates,
-        markReleaseRead,
-        markAllReleasesRead,
-        setReleaseFilter,
-        setCurrentPage,
-        toggleSubscription,
-        clearAllSubscriptions,
-        releasesInitialTab,
-        setReleasesInitialTab,
-    } = useStore();
+    // 精确订阅（阶段2 性能重构）
+    const releases = useStore((state) => state.releases);
+    const releaseFilter = useStore((state) => state.releaseFilter);
+    const settings = useStore((state) => state.settings);
+    const token = useStore((state) => state.token);  // 🆕 v1.6.0 用于翻译功能
+    const loadReleases = useStore((state) => state.loadReleases);
+    const checkReleaseUpdates = useStore((state) => state.checkReleaseUpdates);
+    const markReleaseRead = useStore((state) => state.markReleaseRead);
+    const markAllReleasesRead = useStore((state) => state.markAllReleasesRead);
+    const setReleaseFilter = useStore((state) => state.setReleaseFilter);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const toggleSubscription = useStore((state) => state.toggleSubscription);
+    const clearAllSubscriptions = useStore((state) => state.clearAllSubscriptions);
+    const releasesInitialTab = useStore((state) => state.releasesInitialTab);
+    const setReleasesInitialTab = useStore((state) => state.setReleasesInitialTab);
+    // 阶段3：Tab 持久化迁移到 settings（走既有 saveSettings 路径，删除 localStorage 用法）
+    const saveSettings = useStore((state) => state.saveSettings);
+
+    // 版本检查状态来自独立的 progress store
+    const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
 
     // 订阅 repositories 状态以触发响应式更新
-    const repositories = useStore(state => state.repositories);
-    const subscriptionVersion = useStore(state => state.subscriptionVersion);
+    const repositories = useStore((state) => state.repositories);
+    // 订阅单源：内存 subscribedRepoIds（阶段3 起不渲染期直读存储表）
+    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
 
     const lang = (settings.language || 'zh') as Language;
     const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
     const [activeTab, setActiveTab] = useState<TabType>(() => {
-        return releasesInitialTab || (localStorage.getItem('releasesTab') as TabType) || 'updates';
+        // 初始 Tab 优先级：跳转指定 > 上次停留（settings.lastReleasesTab）> 默认 updates
+        return releasesInitialTab || useStore.getState().settings.lastReleasesTab || 'updates';
     });
     const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 
@@ -58,10 +65,6 @@ export function ReleasesPage() {
         }
     }, [releasesInitialTab, setReleasesInitialTab]);
 
-    // 撤销功能状态
-    const [toast, setToast] = useState<{ message: string; showUndo: boolean } | null>(null);
-    const undoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const pendingUnsubscribeRef = useRef<{ repoId: number; repoName: string } | null>(null);
     const handleBack = useCallback(() => {
         setCurrentPage('home');
     }, [setCurrentPage]);
@@ -73,16 +76,14 @@ export function ReleasesPage() {
     // 如果加载后 releases 为空但 newCount > 0，重置 badge 避免误导
     useEffect(() => {
         if (releases.length === 0 && releaseCheckStatus.newCount > 0 && !releaseCheckStatus.checking) {
-            useStore.setState((state) => ({
-                releaseCheckStatus: { ...state.releaseCheckStatus, newCount: 0 },
-            }));
+            useProgressStore.getState().patchReleaseCheckStatus({ newCount: 0 });
         }
     }, [releases.length, releaseCheckStatus.newCount, releaseCheckStatus.checking]);
 
-    // 保存 Tab 状态
+    // 保存 Tab 状态（阶段3：走 settings 持久化）
     const handleTabChange = (tab: TabType) => {
         setActiveTab(tab);
-        localStorage.setItem('releasesTab', tab);
+        saveSettings({ lastReleasesTab: tab });
     };
 
     useBackShortcut({
@@ -103,11 +104,10 @@ export function ReleasesPage() {
         deps: [handleBack, selectedRelease, showConfirmDialog],
     });
 
-    // 筛选版本
-    const subscribedRepoIds = window.githubStarsAPI.getReleaseSubscriptions();
-    const filteredReleases = releases.filter((release) => {
+    // 筛选版本（阶段3：useMemo 化 + 订阅单源，去除渲染期存储读）
+    const filteredReleases = useMemo(() => releases.filter((release) => {
         // 🆕 v1.6.0: 只显示仍处于订阅状态仓库的 Release（隐藏取消订阅后的"幽灵"卡片）
-        if (!subscribedRepoIds.includes(release.repository.id)) {
+        if (!subscribedRepoIds.has(release.repository.id)) {
             return false;
         }
 
@@ -121,11 +121,12 @@ export function ReleasesPage() {
             if (!hasAsset) return false;
         }
         return true;
-    });
+    }), [releases, releaseFilter, subscribedRepoIds]);
 
-    const sortedReleases = [...filteredReleases].sort(
+    // 排序也 memo 化：发布时间比较只在这份数据变化时执行
+    const sortedReleases = useMemo(() => [...filteredReleases].sort(
         (a, b) => new Date(b.publishedAt || b.published_at || '').getTime() - new Date(a.publishedAt || a.published_at || '').getTime()
-    );
+    ), [filteredReleases]);
 
     // 使用 useMemo 构建仓库 Map，避免重复查找
     const repositoryMap = useMemo(() => {
@@ -134,14 +135,20 @@ export function ReleasesPage() {
         return map;
     }, [repositories]);
 
-    // 使用 useMemo 计算已订阅仓库（响应式更新）
+    // 使用 useMemo 计算已订阅仓库（订阅单源派生，响应式更新）
     const subscribedRepos = useMemo(() => {
-        const ids = window.githubStarsAPI.getReleaseSubscriptions();
-        return repositories.filter(r => ids.includes(r.id));
-    }, [repositories, subscriptionVersion]);
+        return repositories.filter(r => subscribedRepoIds.has(r.id));
+    }, [repositories, subscribedRepoIds]);
 
     const handleCheckUpdates = async () => {
+        // 先清上次残留错误：checkReleaseUpdates 在 guard 早退路径（checking/!token/无订阅）不触碰 error，
+        // 若上次失败残留，本次早退会读到旧值误报 toast
+        useProgressStore.getState().patchReleaseCheckStatus({ error: null });
         await checkReleaseUpdates();
+        const { error } = useProgressStore.getState().releaseCheckStatus;
+        if (error) {
+            toast.show(error, { type: 'error', duration: 5000 });
+        }
     };
 
     const handleMarkAllRead = () => {
@@ -155,44 +162,18 @@ export function ReleasesPage() {
         }
     };
 
-    // 取消订阅（带撤销功能）
+    // 取消订阅（v2：全局 toast + 5 秒撤销）
     const handleUnsubscribe = (repo: Repository) => {
-        // 清除之前的撤销计时器
-        if (undoTimeoutRef.current) {
-            clearTimeout(undoTimeoutRef.current);
-            // 如果有待撤销的操作，确认执行（pending 已经在上次 toggle 时从 dbStorage 移除了，无需再次操作）
-            pendingUnsubscribeRef.current = null;
-        }
-
-        // 存储待撤销数据
-        pendingUnsubscribeRef.current = { repoId: repo.id, repoName: repo.fullName };
-
-        // 立即更新 UI（通过 store 统一操作 dbStorage + subscriptionVersion）
+        // 立即更新 UI（store 统一维护 dbStorage + 内存订阅单源 + repositories.isSubscribed）
         toggleSubscription(repo.id);
-
-        // 显示 Toast
-        setToast({ message: t('unsubscribed', lang), showUndo: true });
-
-        // 5 秒后清除
-        undoTimeoutRef.current = setTimeout(() => {
-            pendingUnsubscribeRef.current = null;
-            setToast(null);
-        }, UNDO_TIMEOUT_MS);
-    };
-
-    // 撤销取消订阅
-    const handleUndo = () => {
-        if (undoTimeoutRef.current) {
-            clearTimeout(undoTimeoutRef.current);
-            undoTimeoutRef.current = null;
-        }
-        if (pendingUnsubscribeRef.current) {
-            // 重新添加订阅（上次 toggle 已移除，再次 toggle 会添加回来）
-            toggleSubscription(pendingUnsubscribeRef.current.repoId);
-            pendingUnsubscribeRef.current = null;
-        }
-        setToast({ message: t('subscriptionRestored', lang), showUndo: false });
-        setTimeout(() => setToast(null), 2000);
+        toast.show(t('unsubscribed', lang), {
+            type: 'info',
+            duration: 5000,
+            action: {
+                label: t('undo', lang),
+                onClick: () => toggleSubscription(repo.id),
+            },
+        });
     };
 
     // 全部取消订阅
@@ -245,96 +226,119 @@ export function ReleasesPage() {
                 </h2>
                 <div style={{ flex: 1 }} />
                 {releaseCheckStatus.newCount > 0 && activeTab === 'updates' && (
-                    <span style={{
-                        padding: '2px 8px', fontSize: 13, fontWeight: 500,
-                        color: 'var(--color-primary)', background: 'var(--color-primary-light)', opacity: 0.9, borderRadius: 12
-                    }}>
+                    <Badge variant="default">
                         {releaseCheckStatus.newCount} {t('newReleases', lang)}
-                    </span>
+                    </Badge>
                 )}
             </div>
 
-            {/* 独立 Tab 栏 */}
+            {/* 独立 Tab 栏：分段控件（与设置页 segmented 统一） */}
             <div style={{
-                display: 'flex', gap: 8,
                 padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
-                background: 'var(--color-surface-secondary)',
+                background: 'var(--color-surface)',
             }}>
-                <button
-                    className={`tag ${activeTab === 'updates' ? 'tag-active' : ''}`}
-                    onClick={() => handleTabChange('updates')}
-                >
-                    {t('versionUpdates', lang)}
-                </button>
-                <button
-                    className={`tag ${activeTab === 'subscriptions' ? 'tag-active' : ''}`}
-                    onClick={() => handleTabChange('subscriptions')}
-                >
-                    {t('subscriptionManage', lang)}
-                    {subscribedRepos.length > 0 && (
-                        <span style={{ marginLeft: 4, opacity: 0.8 }}>({subscribedRepos.length})</span>
-                    )}
-                </button>
+                <div className="segmented" style={{ width: 'fit-content' }}>
+                    <button
+                        type="button"
+                        className={`segmented-item${activeTab === 'updates' ? ' active' : ''}`}
+                        style={{ padding: '4px 16px' }}
+                        onClick={() => handleTabChange('updates')}
+                        aria-pressed={activeTab === 'updates'}
+                    >
+                        {t('versionUpdates', lang)}
+                    </button>
+                    <button
+                        type="button"
+                        className={`segmented-item${activeTab === 'subscriptions' ? ' active' : ''}`}
+                        style={{ padding: '4px 16px' }}
+                        onClick={() => handleTabChange('subscriptions')}
+                        aria-pressed={activeTab === 'subscriptions'}
+                    >
+                        {t('subscriptionManage', lang)}
+                        {subscribedRepos.length > 0 && (
+                            <span style={{ marginLeft: 4, opacity: 0.7 }}>{subscribedRepos.length}</span>
+                        )}
+                    </button>
+                </div>
             </div>
 
             {/* 包含过滤器、统计信息以及主列表的滚动内容区 */}
             <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
                 {activeTab === 'updates' ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%' }}>
-                        {/* 筛选栏 (仅在有版本数据时显示) */}
+                        {/* 筛选栏（恒显——含「检查更新」唯一页内入口，空态不再是死胡同；仅检查中让位 spinner） */}
                         {releaseCheckStatus.checking ? (
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-primary)' }}>
-                                <svg className="animate-spin" width="14" height="14" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                                </svg>
+                                <Loader2 size={14} className="animate-spin" />
                                 <span style={{ fontSize: 13 }}>{t('checkingUpdates', lang)}</span>
                             </div>
                         ) : (
-                            releases.length > 0 && (
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <div style={{ display: 'flex', gap: 8 }}>
-                                        <button className="btn btn-secondary btn-sm" onClick={handleCheckUpdates}>
-                                            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                                            </svg>
-                                            {t('checkUpdates', lang)}
-                                        </button>
-                                        <button className="btn btn-secondary btn-sm" onClick={handleMarkAllRead}>
-                                            {t('markAllRead', lang)}
-                                        </button>
-                                    </div>
-                                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, color: 'var(--color-text-secondary)', cursor: 'pointer' }}>
-                                            <input type="checkbox" checked={releaseFilter.showUnreadOnly} onChange={(e) => setReleaseFilter({ showUnreadOnly: e.target.checked })} style={{ accentColor: 'var(--color-primary)' }} />
-                                            {t('showUnreadOnly', lang)}
-                                        </label>
-                                        <select
-                                            className="input"
-                                            style={{ padding: '4px 8px', fontSize: 13, width: 'auto' }}
-                                            value={releaseFilter.platform || ''}
-                                            onChange={(e) => setReleaseFilter({ platform: e.target.value || null })}
-                                        >
-                                            <option value="">{t('allPlatforms', lang)}</option>
-                                            {PLATFORM_OPTIONS.map((platform) => (
-                                                <option key={platform.id} value={platform.id}>
-                                                    {platform.icon} {platform.label}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={handleCheckUpdates}
+                                        disabled={!token || subscribedRepos.length === 0}
+                                        title={!token ? (lang === 'zh' ? '请先配置 GitHub Token' : 'Please configure GitHub Token first') : subscribedRepos.length === 0 ? (lang === 'zh' ? '请先订阅仓库' : 'Please subscribe to repos first') : undefined}
+                                    >
+                                        <RefreshCw size={14} />
+                                        {t('checkUpdates', lang)}
+                                    </button>
+                                    <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={handleMarkAllRead}
+                                        disabled={sortedReleases.length === 0}
+                                    >
+                                        {t('markAllRead', lang)}
+                                    </button>
                                 </div>
-                            )
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, color: 'var(--color-text-secondary)', cursor: 'pointer' }}>
+                                        <input type="checkbox" checked={releaseFilter.showUnreadOnly} onChange={(e) => setReleaseFilter({ showUnreadOnly: e.target.checked })} style={{ accentColor: 'var(--color-primary)' }} />
+                                        {t('showUnreadOnly', lang)}
+                                    </label>
+                                    <select
+                                        className="input"
+                                        style={{ padding: '4px 8px', fontSize: 13, width: 'auto' }}
+                                        value={releaseFilter.platform || ''}
+                                        onChange={(e) => setReleaseFilter({ platform: e.target.value || null })}
+                                    >
+                                        <option value="">{t('allPlatforms', lang)}</option>
+                                        {PLATFORM_OPTIONS.map((platform) => (
+                                            <option key={platform.id} value={platform.id}>
+                                                {platform.icon} {platform.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
                         )}
                         {/* 版本更新列表 */}
                         {sortedReleases.length === 0 ? (
-                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--color-text-muted)' }}>
-                                <svg width="48" height="48" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ marginBottom: 16, opacity: 0.5 }}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-                                </svg>
-                                <p style={{ fontSize: 16, fontWeight: 500 }}>
-                                    {releaseFilter.showUnreadOnly ? t('noUnreadReleases', lang) : t('noReleases', lang)}
-                                </p>
+                            <div style={{ flex: 1 }}>
+                                <EmptyState
+                                    icon={<Inbox size={48} strokeWidth={1.5} />}
+                                    title={releaseFilter.showUnreadOnly ? t('noUnreadReleases', lang) : t('noReleases', lang)}
+                                    description={t('noReleasesHint', lang)}
+                                    action={
+                                        // action 按优先级：只看未读筛选空 → 一键恢复全部；
+                                        // 未订阅 → 去浏览仓库（复用订阅 Tab 空态模式）；已订阅未检查 → 引导检查更新
+                                        releaseFilter.showUnreadOnly ? (
+                                            <button className="btn btn-primary" onClick={() => setReleaseFilter({ showUnreadOnly: false })}>
+                                                {t('showAllReleases', lang)}
+                                            </button>
+                                        ) : subscribedRepos.length === 0 ? (
+                                            <button className="btn btn-primary" onClick={() => setCurrentPage('home')}>
+                                                {t('browseRepos', lang)}
+                                            </button>
+                                        ) : (
+                                            <button className="btn btn-primary" onClick={handleCheckUpdates} disabled={!token}>
+                                                <RefreshCw size={14} />
+                                                {t('checkUpdates', lang)}
+                                            </button>
+                                        )
+                                    }
+                                />
                             </div>
                         ) : (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -359,11 +363,9 @@ export function ReleasesPage() {
                             </span>
                             {subscribedRepos.length > 0 && (
                                 <button
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ color: 'var(--color-error-text)' }}
                                     onClick={handleClearAll}
-                                    style={{
-                                        fontSize: 13, fontWeight: 500, color: 'var(--color-error)',
-                                        background: 'transparent', border: 'none', cursor: 'pointer'
-                                    }}
                                 >
                                     {t('unsubscribeAll', lang)}
                                 </button>
@@ -372,20 +374,22 @@ export function ReleasesPage() {
 
                         {/* 订阅管理列表 */}
                         {subscribedRepos.length === 0 ? (
-                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--color-text-muted)' }}>
-                                <svg width="48" height="48" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ marginBottom: 16, opacity: 0.5 }}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                                </svg>
-                                <p style={{ fontSize: 16, fontWeight: 500, color: 'var(--color-text-primary)' }}>{t('noSubscriptions', lang)}</p>
-                                <p style={{ fontSize: 13, marginTop: 8 }}>{t('noSubscriptionsHint', lang)}</p>
-                                <button className="btn btn-primary" style={{ marginTop: 24 }} onClick={() => setCurrentPage('home')}>
-                                    {t('browseRepos', lang)}
-                                </button>
+                            <div style={{ flex: 1 }}>
+                                <EmptyState
+                                    icon={<Bell size={48} strokeWidth={1.5} />}
+                                    title={t('noSubscriptions', lang)}
+                                    description={t('noSubscriptionsHint', lang)}
+                                    action={
+                                        <button className="btn btn-primary" onClick={() => setCurrentPage('home')}>
+                                            {t('browseRepos', lang)}
+                                        </button>
+                                    }
+                                />
                             </div>
                         ) : (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                                 {subscribedRepos.map((repo) => (
-                                    <div key={repo.id} className="card" style={{ display: 'flex', alignItems: 'center', padding: 12 }}>
+                                    <div key={repo.id} className="card card-compact" style={{ display: 'flex', alignItems: 'center' }}>
                                         <img src={repo.owner.avatarUrl} alt={repo.owner.login} style={{ width: 32, height: 32, borderRadius: 16, marginRight: 12 }} />
                                         <div style={{ flex: 1, minWidth: 0 }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -399,12 +403,15 @@ export function ReleasesPage() {
                                             </div>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
                                                 {repo.language && <span className="tag" style={{ padding: '0 6px', fontSize: 11 }}>{repo.language}</span>}
-                                                <span>★ {formatStars(repo.stargazersCount)}</span>
+                                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                                    <Star size={12} style={{ color: 'var(--color-accent)' }} />
+                                                    {formatStars(repo.stargazersCount)}
+                                                </span>
                                                 <span>·</span>
                                                 <span>{t('lastUpdated', lang)}: {formatRelativeTime(repo.pushedAt)}</span>
                                             </div>
                                         </div>
-                                        <button className="btn btn-secondary btn-sm" style={{ color: 'var(--color-error)' }} onClick={() => handleUnsubscribe(repo)}>
+                                        <button className="btn btn-secondary btn-sm" style={{ color: 'var(--color-error-text)' }} onClick={() => handleUnsubscribe(repo)}>
                                             {t('unsubscribe', lang)}
                                         </button>
                                     </div>
@@ -426,43 +433,17 @@ export function ReleasesPage() {
                 />
             )}
 
-            {/* 确认弹窗 */}
-            {
-                showConfirmDialog && (
-                    <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
-                        <div className="card" style={{ padding: 24, maxWidth: 360, width: '100%', margin: '0 16px' }}>
-                            <h3 style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 8 }}>
-                                {t('unsubscribeConfirm', lang)}
-                            </h3>
-                            <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: 24 }}>
-                                {t('unsubscribeConfirmDesc', lang, { count: subscribedRepos.length })}
-                            </p>
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
-                                <button className="btn btn-secondary" onClick={() => setShowConfirmDialog(false)}>
-                                    {t('cancel', lang)}
-                                </button>
-                                <button className="btn" style={{ background: 'var(--color-error)', color: 'white' }} onClick={confirmClearAll}>
-                                    {t('confirm', lang)}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )
-            }
-
-            {/* Toast 提示 */}
-            {
-                toast && (
-                    <div style={{ position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)', background: 'var(--color-text-primary)', color: 'var(--color-surface)', padding: '10px 16px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 12, zIndex: 50, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
-                        <span style={{ fontSize: 13 }}>{toast.message}</span>
-                        {toast.showUndo && (
-                            <button style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-primary-light)', background: 'transparent', border: 'none', cursor: 'pointer' }} onClick={handleUndo}>
-                                {t('undo', lang)}
-                            </button>
-                        )}
-                    </div>
-                )
-            }
-        </div >
+            {/* 确认弹窗（ConfirmDialog：danger 实底 + 统一遮罩/焦点圈定） */}
+            <ConfirmDialog
+                isOpen={showConfirmDialog}
+                title={t('unsubscribeConfirm', lang)}
+                message={t('unsubscribeConfirmDesc', lang, { count: subscribedRepos.length })}
+                confirmText={t('confirm', lang)}
+                cancelText={t('cancel', lang)}
+                variant="danger"
+                onConfirm={confirmClearAll}
+                onCancel={() => setShowConfirmDialog(false)}
+            />
+        </div>
     );
 }

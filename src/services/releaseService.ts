@@ -89,24 +89,33 @@ export const releaseService = {
             订阅仓库IDs: repoIds,
         });
 
-        // 构建仓库 ID -> 最新 Release ID 的映射（只保留每个仓库最新的一条）
-        const repoLatestReleaseId = new Map<number, number>();
+        // 阶段3 O(n²) 修复：单次遍历构建"仓库 ID -> 最新 Release"映射，
+        // 替代原先循环内两次 storedReleases.find 的逐条线性查找。
+        // 语义与原实现一致：首个条目直接记录；后续仅当发布时间严格更晚才替换
+        //（NaN/相等时间戳保持先记录者，支持 publishedAt 与 published_at 两种字段名）
+        const repoLatest = new Map<number, { id: number; publishedTs: number }>();
         for (const release of storedReleases) {
             const repoId = release.repository.id;
-            const existingId = repoLatestReleaseId.get(repoId);
-            const existingRelease = storedReleases.find(r => r.repository.id === repoId && r.id === existingId);
-            // 支持标准化字段名和 GitHub API 原始字段名
-            const releasePublishedAt = release.publishedAt || release.published_at || '';
-            const existingPublishedAt = existingRelease ? (existingRelease.publishedAt || existingRelease.published_at || '') : '';
-            if (!existingId || !existingRelease || new Date(releasePublishedAt).getTime() > new Date(existingPublishedAt).getTime()) {
-                repoLatestReleaseId.set(repoId, release.id);
+            const publishedTs = new Date(release.publishedAt || release.published_at || '').getTime();
+            const existing = repoLatest.get(repoId);
+            if (!existing || publishedTs > existing.publishedTs) {
+                repoLatest.set(repoId, { id: release.id, publishedTs });
             }
         }
+        const repoLatestReleaseId = new Map<number, number>();
+        for (const [repoId, latest] of repoLatest) {
+            repoLatestReleaseId.set(repoId, latest.id);
+        }
+
+        // 日志用的 release 查找索引（替代逐条 find）
+        const releaseByKey = new Map(storedReleases.map(r => [`${r.repository.id}:${r.id}`, r]));
+        // 仓库 ID -> {id, fullName} 索引（替代批次循环内 repositories.find）
+        const repositoryById = new Map(repositories.map(r => [r.id, r]));
 
         logger.log('[ReleaseService] 本地已知版本映射', {
             映射条目数: repoLatestReleaseId.size,
             映射内容: Array.from(repoLatestReleaseId.entries()).map(([repoId, releaseId]) => {
-                const release = storedReleases.find(r => r.repository.id === repoId && r.id === releaseId);
+                const release = releaseByKey.get(`${repoId}:${releaseId}`);
                 return { repoId, releaseId, tagName: release?.tagName || release?.tag_name, repoName: release?.repository?.fullName };
             }),
         });
@@ -118,7 +127,7 @@ export const releaseService = {
 
             const results = await Promise.allSettled(
                 batch.map(async (repoId) => {
-                    const repo = repositories.find(r => r.id === repoId);
+                    const repo = repositoryById.get(repoId);
                     if (!repo) return null;
 
                     const [owner, repoName] = repo.fullName.split('/');
@@ -192,14 +201,6 @@ export const releaseService = {
         }
 
         return 'other';
-    },
-
-    /**
-     * 获取平台图标
-     */
-    getPlatformIcon(platform: string): string {
-        const found = PLATFORM_OPTIONS.find(p => p.id === platform);
-        return found?.icon || '📦';
     },
 
     /**

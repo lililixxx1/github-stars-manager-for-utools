@@ -1,14 +1,16 @@
 /**
- * 备份导出/导入校验工具（F3）
+ * 备份导出/导入校验工具（F3，v1.7 合并改造：六类数据——categories 功能已随 v1.7-refactor 删除）
  * @module utils/backup
  *
  * 导出 schema（schemaVersion 2，加法式演进）：
  * 刻意不含 syncState——导入流程显式清除本机 syncState（preload.clearSyncState），
  * 下次同步必然全量重建，杜绝导入数据与旧增量状态错配。
+ * 读取端宽容额外字段：master（v1.6.x）产出的含 categories 字段的旧备份仍可导入，
+ * categories 被容忍并忽略（功能已不存在）。
  */
 
 import { useStore } from '../stores/useStore';
-import type { Category, Repository, RepositoryNote, Settings, Tag } from '../types';
+import type { Repository, RepositoryNote, Settings, Tag } from '../types';
 
 /** 导出文件格式 */
 export interface BackupData {
@@ -20,7 +22,6 @@ export interface BackupData {
     notes: RepositoryNote[];
     releaseSubscriptions: number[];
     readReleaseIds: number[];
-    categories: Category[];
 }
 
 /**
@@ -34,14 +35,13 @@ export interface ValidatedBackup {
     notes?: RepositoryNote[];
     releaseSubscriptions?: number[];
     readReleaseIds?: number[];
-    categories?: Category[];
 }
 
 export interface ValidateBackupError {
     ok: false;
     /** 稳定错误码，由调用方映射为用户语言文案 */
     error: 'invalid_file' | 'repositories_invalid' | 'tags_invalid' | 'notes_invalid'
-    | 'release_subscriptions_invalid' | 'read_release_ids_invalid' | 'categories_invalid';
+    | 'release_subscriptions_invalid' | 'read_release_ids_invalid';
 }
 
 export interface ValidateBackupOk {
@@ -84,9 +84,9 @@ function normalizeRepository(item: unknown): Repository | null {
 }
 
 /**
- * 构建完整备份（七类数据）。
+ * 构建完整备份（六类数据）。
  * repositories 取 store 内存态：R8 批量分析落盘有 20s 节流窗口，
- * 直接读存储可能丢失最近的分析结果；其余六类无内存态，从 preload 层读取。
+ * 直接读存储可能丢失最近的分析结果；其余五类无内存态，从 preload 层读取。
  */
 export function buildBackup(): BackupData {
     const { repositories, settings } = useStore.getState();
@@ -101,7 +101,6 @@ export function buildBackup(): BackupData {
         notes: api.getAllNotes(),
         releaseSubscriptions: api.getReleaseSubscriptions(),
         readReleaseIds: api.getReadReleaseIds(),
-        categories: api.getCategories(),
     };
 }
 
@@ -188,14 +187,7 @@ export function validateBackup(raw: unknown): ValidateBackupResult {
             .filter((id): id is number => typeof id === 'number');
     }
 
-    if (raw.categories !== undefined) {
-        if (!Array.isArray(raw.categories)) return { ok: false, error: 'categories_invalid' };
-        data.categories = raw.categories.filter(
-            (item): item is Category => isPlainObject(item)
-                && typeof item.id === 'string'
-                && typeof item.name === 'string'
-        );
-    }
+    // 遗留 categories 字段（master v1.6.x 备份）：功能已删除，容忍并忽略，不校验不写入
 
     if (isPlainObject(raw.settings)) {
         data.settings = raw.settings as Partial<Settings>;

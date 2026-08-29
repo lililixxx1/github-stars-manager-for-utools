@@ -3,7 +3,10 @@ import { useStore } from '../stores/useStore';
 import { aiService } from '../services/aiService';
 import { t } from '../locales';
 import { TagBadge } from '../components/TagBadge';
+import { TagChip } from '../components/TagChip';
+import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { toast } from '../components/Toast';
 import { checkAnalysisNeeded, getCooldownHours } from '../utils/analysis';
 import { useBackShortcut } from '../hooks/useBackShortcut';
 import { useRovingControls } from '../hooks/useRovingControls';
@@ -13,22 +16,29 @@ import {
     Bell, BellOff, Loader2, CheckCircle2, XCircle,
     Edit2, Save, X, Plus, FileText, Tag, Copy
 } from 'lucide-react';
+import { getPlatformIcon } from '../constants/platformIcons';
 import type { RepositoryNote } from '../types';
 
 export const DetailPage: React.FC = () => {
-    const {
-        setSelectedRepoId, setCurrentPage,
-        settings, token, repositories, setRepositories, saveRepositories,
-        tags, loadTags, updateRepository, toggleSubscription,
-        currentNote, loadNote, saveNote, deleteNote,
-    } = useStore();
-
+    // 精确订阅（阶段2 性能重构）：顺带清理了未使用的 repositories/setRepositories/saveRepositories
     // F1：仓库对象由 store 派生（单一数据源）。旧 selectedRepo 快照会让 checkAnalysisNeeded
     // 读到过期的 analyzedAt/analysisFailed，分析失败后可立即重发 AI 调用，绕过 R1 的 24h 失败冷却
-    const selectedRepoId = useStore(s => s.selectedRepoId);
-    const repo = useStore(s =>
+    const selectedRepoId = useStore((s) => s.selectedRepoId);
+    const setSelectedRepoId = useStore((s) => s.setSelectedRepoId);
+    const repo = useStore((s) =>
         s.selectedRepoId == null ? null : (s.repositories.find(r => r.id === s.selectedRepoId) ?? null)
     );
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const settings = useStore((state) => state.settings);
+    const token = useStore((state) => state.token);
+    const tags = useStore((state) => state.tags);
+    const loadTags = useStore((state) => state.loadTags);
+    const updateRepository = useStore((state) => state.updateRepository);
+    const toggleSubscription = useStore((state) => state.toggleSubscription);
+    const currentNote = useStore((state) => state.currentNote);
+    const loadNote = useStore((state) => state.loadNote);
+    const saveNote = useStore((state) => state.saveNote);
+    const deleteNote = useStore((state) => state.deleteNote);
 
     const [analyzing, setAnalyzing] = useState(false);
     const [editingAlias, setEditingAlias] = useState(false);
@@ -60,8 +70,8 @@ export const DetailPage: React.FC = () => {
         controlRefs.current[id] = element;
     }, []);
 
-    // 订阅状态从 dbStorage 派生（单一数据源）
-    const subscriptionVersion = useStore(state => state.subscriptionVersion);
+    // 订阅状态从 store 内存单源派生（阶段3：不渲染期直读存储表）
+    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
 
     useEffect(() => {
         loadTags();
@@ -94,10 +104,11 @@ export const DetailPage: React.FC = () => {
 
     const isSubscribed = useMemo(() => {
         if (!repo) return false;
+        return subscribedRepoIds.has(repo.id);
+    }, [repo?.id, subscribedRepoIds]);
 
-        const ids = window.githubStarsAPI.getReleaseSubscriptions();
-        return ids.includes(repo.id);
-    }, [repo?.id, subscriptionVersion]);
+    // F1 三态显示：成功 / 曾成功但最近失败（保留旧摘要 + 失败冷却横幅）/ 未分析（含首次失败）
+    const failedCooldownHours = repo?.analysisFailed ? getCooldownHours(repo) : 0;
 
     // F1 兜底：选中仓库已不在列表（如被同步移除）时复位并返回首页，不显示幽灵详情页
     useEffect(() => {
@@ -107,7 +118,6 @@ export const DetailPage: React.FC = () => {
         }
         if (!repo) {
             setSelectedRepoId(null);
-            setCurrentPage('home');
         }
     }, [selectedRepoId, repo, setCurrentPage, setSelectedRepoId]);
 
@@ -157,7 +167,13 @@ export const DetailPage: React.FC = () => {
     }, [repo?.htmlUrl, lang]);
 
     const handleAIAnalyze = async () => {
-        if (!repo || !token || analyzing) return;
+        // 拆分守卫：无仓库/分析中静默返回；无 token 单独提示（避免分析中点击误弹 Token 提示）
+        if (!repo) return;
+        if (!token) {
+            toast.show(t('tokenRequired', lang), { type: 'error' });
+            return;
+        }
+        if (analyzing) return;
 
         // 🆕 v1.6.2 使用公共函数检查分析状态
         const { needsAnalyze, reason } = checkAnalysisNeeded(repo);
@@ -187,23 +203,19 @@ export const DetailPage: React.FC = () => {
         if (!repo || !token || analyzing) return;
         setAnalyzing(true);
 
+        // 失败标记（P-15）：记录失败时间进入 24 小时冷却，避免反复重试消耗额度
         const markFailure = () => {
-            // 记录失败时间，进入 24 小时冷却，避免反复重试消耗额度
             updateRepository(repo.id, {
                 analysisFailed: true,
                 analyzedAt: new Date().toISOString(),
             });
-            window.githubStarsAPI.showNotification?.(
-                lang === 'zh'
-                    ? 'AI 分析失败（可能额度不足或网络异常），24 小时后可重试'
-                    : 'AI analysis failed (quota or network issue); retry in 24h'
-            );
         };
 
         try {
             const result = await aiService.analyzeRepository(repo, token, lang, settings.aiModel || undefined);
             if (result) {
-                // F1：只写 store，页面读派生值自动刷新
+                // F1：只写 store（updateRepository 内部不可变更新 + patchRepo 增量落盘），
+                // 页面读派生值自动刷新
                 updateRepository(repo.id, {
                     aiSummary: result.summary,
                     aiTags: result.tags,
@@ -212,10 +224,16 @@ export const DetailPage: React.FC = () => {
                     analysisFailed: false,
                 });
             } else {
+                // P-04/P-05 下 analyzeRepository 抛错上抛，null 仅剩理论路径；按失败处理进冷却
                 markFailure();
             }
         } catch (error) {
             console.error('AI analyze failed:', error);
+            // 失败反馈：toast 报错 + analysisFailed 回写（与 aiService 24h 冷却策略一致）
+            toast.show(
+                error instanceof Error ? error.message : t('analysisFailed', lang),
+                { type: 'error', duration: 5000 }
+            );
             markFailure();
         } finally {
             setAnalyzing(false);
@@ -237,6 +255,7 @@ export const DetailPage: React.FC = () => {
     const handleSaveAlias = () => {
         if (!repo) return;
         const trimmed = aliasValue.trim();
+        // F1：只写 store（updateRepository 不可变更新），页面读派生值刷新
         updateRepository(repo.id, { alias: trimmed || undefined });
         setEditingAlias(false);
     };
@@ -285,6 +304,7 @@ export const DetailPage: React.FC = () => {
         const newTags = currentTags.includes(tagId)
             ? currentTags.filter(id => id !== tagId)
             : [...currentTags, tagId];
+        // F1：只写 store，页面读派生值刷新
         updateRepository(repo.id, { customTags: newTags });
     };
 
@@ -440,21 +460,28 @@ export const DetailPage: React.FC = () => {
             ? {
                 ...style,
                 outline: 'none',
-                boxShadow: '0 0 0 2px rgba(99, 102, 241, 0.28), 0 4px 14px rgba(0, 0, 0, 0.08)',
+                // roving 激活焦点环：primary token 调出的软环 + 阴影标度
+                boxShadow: '0 0 0 2px color-mix(in srgb, var(--color-primary) 45%, transparent), var(--shadow-md)',
             }
             : style
     ), [roving]);
+
+    // 别名弹窗：覆盖 Modal 默认初始焦点（关闭按钮），聚焦输入框
+    const aliasInputRef = useRef<HTMLInputElement | null>(null);
+    useEffect(() => {
+        if (editingAlias) {
+            window.requestAnimationFrame(() => aliasInputRef.current?.focus());
+        }
+    }, [editingAlias]);
 
     if (!repo) {
         return null;
     }
 
-    // F1 三态显示：成功 / 曾成功但最近失败（保留旧摘要 + 失败冷却横幅）/ 未分析（含首次失败）
-    const failedCooldownHours = repo.analysisFailed ? getCooldownHours(repo) : 0;
-
-    const platformIcons: Record<string, string> = {
-        mac: '🍎', windows: '🪟', linux: '🐧', ios: '📱',
-        android: '🤖', docker: '🐳', web: '🌐', cli: '⌨️',
+    // 平台图标走 constants/platformIcons.ts 全站统一映射
+    const renderPlatformIcon = (platformId: string): React.ReactNode => {
+        const Icon = getPlatformIcon(platformId);
+        return <Icon size={14} />;
     };
 
     return (
@@ -542,8 +569,8 @@ export const DetailPage: React.FC = () => {
                 </button>
             </div>
 
-            {/* 内容 */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }} className="animate-slide-in">
+            {/* 内容（进入动画由 App.tsx 页面容器统一提供） */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
                 {/* 仓库信息头 */}
                 <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
                     <img
@@ -589,14 +616,7 @@ export const DetailPage: React.FC = () => {
                             <Tag size={14} />
                             {t('tags', lang)}
                             {hasTags && (
-                                <span style={{
-                                    marginLeft: 4,
-                                    padding: '0 6px',
-                                    fontSize: 11,
-                                    borderRadius: 10,
-                                    background: showTagsSection ? 'rgba(255,255,255,0.3)' : 'var(--color-primary)',
-                                    color: showTagsSection ? '#fff' : 'var(--color-primary)',
-                                }}>
+                                <span className={`count-pill ${showTagsSection ? 'count-pill-on-solid' : 'count-pill-soft'}`}>
                                     {(repo.customTags?.length ?? 0)}
                                 </span>
                             )}
@@ -614,14 +634,7 @@ export const DetailPage: React.FC = () => {
                             <FileText size={14} />
                             {t('notes', lang)}
                             {hasNotes && (
-                                <span style={{
-                                    marginLeft: 4,
-                                    padding: '0 6px',
-                                    fontSize: 11,
-                                    borderRadius: 10,
-                                    background: showNotesSection ? 'rgba(255,255,255,0.3)' : 'var(--color-primary)',
-                                    color: showNotesSection ? '#fff' : 'var(--color-primary)',
-                                }}>
+                                <span className={`count-pill ${showNotesSection ? 'count-pill-on-solid' : 'count-pill-soft'}`}>
                                     {currentNote ? 1 : 0}
                                 </span>
                             )}
@@ -639,20 +652,23 @@ export const DetailPage: React.FC = () => {
                     </p>
                 </div>
 
-                {/* 🆕 v1.6.1 标签分组（展开/折叠动画） */}
+                {/* 🆕 v1.6.1 标签分组（展开/折叠动画：grid 行高过渡，无高度硬截断） */}
                 <div
                     style={{
-                        maxHeight: showTagsSection ? '500px' : '0',
+                        display: 'grid',
+                        gridTemplateRows: showTagsSection ? '1fr' : '0fr',
                         opacity: showTagsSection ? 1 : 0,
                         overflow: 'hidden',
-                        transition: 'all 0.3s ease',
+                        transition: 'grid-template-rows 0.3s ease, opacity 0.3s ease, margin-bottom 0.3s ease',
                         marginBottom: showTagsSection ? 12 : 0,
                     }}
                 >
+                    <div style={{ minHeight: 0, overflow: 'hidden' }}>
                     <div className="card">
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                             <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                🏷️ {t('tags', lang)}
+                                <Tag size={14} />
+                                {t('tags', lang)}
                             </h3>
                             <button
                                 ref={bindControlRef('tag-add')}
@@ -694,32 +710,21 @@ export const DetailPage: React.FC = () => {
                             )}
                         </div>
 
-                        {/* 标签选择器 */}
+                        {/* 标签选择器（TagChip 共享组件，roving props 透传） */}
                         {showTagSelector && tags.length > 0 && (
                             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--color-border)' }}>
-                                {tags.map((tag) => {
-                                    const isSelected = (repo.customTags || []).includes(tag.id);
-                                    return (
-                                        <button
-                                            ref={bindControlRef(`tag-option:${tag.id}`)}
-                                            key={tag.id}
-                                            className={`btn btn-sm ${isSelected ? 'btn-primary' : 'btn-ghost'}`}
-                                            style={getControlStyle(`tag-option:${tag.id}`, {
-                                                padding: '4px 8px',
-                                                borderRadius: 999,
-                                                border: `1px solid ${tag.color || 'var(--color-border)'}`,
-                                                backgroundColor: isSelected ? (tag.color || 'var(--color-primary)') : 'transparent',
-                                                color: isSelected ? '#fff' : (tag.color || 'var(--color-text-primary)'),
-                                            })}
-                                            tabIndex={roving.getTabIndex(`tag-option:${tag.id}`)}
-                                            onFocus={() => roving.setActiveId(`tag-option:${tag.id}`)}
-                                            onClick={() => handleToggleTag(tag.id)}
-                                        >
-                                            {tag.icon && <span>{tag.icon} </span>}
-                                            {tag.name}
-                                        </button>
-                                    );
-                                })}
+                                {tags.map((tag) => (
+                                    <TagChip
+                                        key={tag.id}
+                                        ref={bindControlRef(`tag-option:${tag.id}`)}
+                                        tag={tag}
+                                        selected={(repo.customTags || []).includes(tag.id)}
+                                        onClick={() => handleToggleTag(tag.id)}
+                                        tabIndex={roving.getTabIndex(`tag-option:${tag.id}`)}
+                                        onFocus={() => roving.setActiveId(`tag-option:${tag.id}`)}
+                                        style={getControlStyle(`tag-option:${tag.id}`)}
+                                    />
+                                ))}
                             </div>
                         )}
 
@@ -740,6 +745,7 @@ export const DetailPage: React.FC = () => {
                                 </button>
                             </div>
                         )}
+                    </div>
                     </div>
                 </div>
 
@@ -794,7 +800,7 @@ export const DetailPage: React.FC = () => {
                                             fontSize: 13, display: 'flex', alignItems: 'center', gap: 4,
                                             color: 'var(--color-text-secondary)',
                                         }}>
-                                            {platformIcons[p] || '📦'} {p}
+                                            {renderPlatformIcon(p)} {p}
                                         </span>
                                     ))}
                                 </div>
@@ -829,7 +835,7 @@ export const DetailPage: React.FC = () => {
                                             fontSize: 13, display: 'flex', alignItems: 'center', gap: 4,
                                             color: 'var(--color-text-secondary)',
                                         }}>
-                                            {platformIcons[p] || '📦'} {p}
+                                            {renderPlatformIcon(p)} {p}
                                         </span>
                                     ))}
                                 </div>
@@ -858,16 +864,18 @@ export const DetailPage: React.FC = () => {
                     )}
                 </div>
 
-                {/* 🆕 v1.6.1 笔记（展开/折叠动画） */}
+                {/* 🆕 v1.6.1 笔记（展开/折叠动画：grid 行高过渡，无高度硬截断） */}
                 <div
                     style={{
-                        maxHeight: showNotesSection ? '500px' : '0',
+                        display: 'grid',
+                        gridTemplateRows: showNotesSection ? '1fr' : '0fr',
                         opacity: showNotesSection ? 1 : 0,
                         overflow: 'hidden',
-                        transition: 'all 0.3s ease',
+                        transition: 'grid-template-rows 0.3s ease, opacity 0.3s ease, margin-bottom 0.3s ease',
                         marginBottom: showNotesSection ? 12 : 0,
                     }}
                 >
+                    <div style={{ minHeight: 0, overflow: 'hidden' }}>
                     <div className="card">
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                             <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -895,15 +903,11 @@ export const DetailPage: React.FC = () => {
                                     value={noteValue}
                                     onChange={(e) => setNoteValue(e.target.value)}
                                     placeholder={t('notePlaceholder', lang)}
+                                    className="input"
                                     style={{
                                         width: '100%',
                                         minHeight: 120,
                                         padding: 12,
-                                        borderRadius: 8,
-                                        border: '1px solid var(--color-border)',
-                                        background: 'var(--color-background)',
-                                        color: 'var(--color-text-primary)',
-                                        fontSize: 14,
                                         lineHeight: 1.6,
                                         resize: 'vertical',
                                     }}
@@ -913,7 +917,7 @@ export const DetailPage: React.FC = () => {
                                         <button
                                             ref={bindControlRef('note-delete')}
                                             className="btn btn-ghost btn-sm"
-                                            style={getControlStyle('note-delete', { color: 'var(--color-error)' })}
+                                            style={getControlStyle('note-delete', { color: 'var(--color-error-text)' })}
                                             tabIndex={roving.getTabIndex('note-delete')}
                                             onFocus={() => roving.setActiveId('note-delete')}
                                             onClick={handleDeleteNote}
@@ -962,6 +966,7 @@ export const DetailPage: React.FC = () => {
                             </div>
                         )}
                     </div>
+                    </div>
                 </div>
 
                 {/* Topics */}
@@ -986,13 +991,14 @@ export const DetailPage: React.FC = () => {
                         </h3>
                         <button
                             ref={bindControlRef('homepage')}
-                            className="btn btn-ghost btn-sm"
+                            className="link"
                             style={getControlStyle('homepage', {
                                 fontSize: 14,
-                                color: 'var(--color-primary)',
-                                textDecoration: 'none',
                                 padding: 0,
+                                border: 'none',
+                                background: 'none',
                                 height: 'auto',
+                                textAlign: 'left',
                             })}
                             tabIndex={roving.getTabIndex('homepage')}
                             onFocus={() => roving.setActiveId('homepage')}
@@ -1004,51 +1010,37 @@ export const DetailPage: React.FC = () => {
                 )}
             </div>
 
-            {/* 🆕 别名编辑弹窗 */}
-            {editingAlias && (
-                <div style={{
-                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-                    background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    zIndex: 1000,
-                }}>
-                    <div style={{
-                        background: 'var(--color-surface)',
-                        borderRadius: 12,
-                        padding: 20,
-                        width: '90%',
-                        maxWidth: 400,
-                    }}>
-                        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
-                            {t('editAlias', lang)}
-                        </h3>
-                        <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 12 }}>
-                            {t('aliasHint', lang)}
-                        </p>
-                        <input
-                            type="text"
-                            value={aliasValue}
-                            onChange={(e) => setAliasValue(e.target.value)}
-                            placeholder={t('aliasPlaceholder', lang)}
-                            style={{
-                                width: '100%', padding: 10, borderRadius: 8,
-                                border: '1px solid var(--color-border)',
-                                background: 'var(--color-background)',
-                                color: 'var(--color-text-primary)',
-                                fontSize: 14,
-                            }}
-                            autoFocus
-                        />
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-                            <button className="btn btn-ghost btn-sm" onClick={handleCancelAlias}>
-                                {t('cancel', lang)}
-                            </button>
-                            <button className="btn btn-primary btn-sm" onClick={handleSaveAlias}>
-                                {t('save', lang)}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            {/* 🆕 别名编辑弹窗（统一收编 Modal：遮罩淡入/焦点圈定/Escape） */}
+            <Modal
+                isOpen={editingAlias}
+                onClose={handleCancelAlias}
+                title={t('editAlias', lang)}
+                footer={
+                    <>
+                        <button className="btn btn-ghost btn-sm" onClick={handleCancelAlias}>
+                            {t('cancel', lang)}
+                        </button>
+                        <button className="btn btn-primary btn-sm" onClick={handleSaveAlias}>
+                            {t('save', lang)}
+                        </button>
+                    </>
+                }
+            >
+                <p style={{ fontSize: 'var(--text-base)', color: 'var(--color-text-muted)', margin: '0 0 12px' }}>
+                    {t('aliasHint', lang)}
+                </p>
+                <input
+                    ref={aliasInputRef}
+                    type="text"
+                    className="input"
+                    value={aliasValue}
+                    onChange={(e) => setAliasValue(e.target.value)}
+                    placeholder={t('aliasPlaceholder', lang)}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleSaveAlias();
+                    }}
+                />
+            </Modal>
 
             {/* 🆕 笔记删除确认弹窗 */}
             <ConfirmDialog

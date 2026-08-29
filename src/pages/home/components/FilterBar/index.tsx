@@ -15,14 +15,17 @@ import React, {
     useState
 } from 'react';
 import { useStore } from '@/stores/useStore';
+import { useProgressStore } from '@/stores/useProgressStore';
 import { t, type TranslationKey } from '@/locales';
 import { PLATFORM_OPTIONS, PLATFORM_NONE } from '@/constants/platforms';
+import { getPlatformIcon } from '@/constants/platformIcons';
 import type { SortBy, SortOrder, Tag as TagType, Repository } from '@/types';
 import { shouldIgnoreGlobalKeydown } from '@/utils/keyboard';
 import {
     ArrowUpDown, Tag as TagIcon, Filter, RefreshCw, Settings,
-    LayoutGrid, List, Bell, Edit3, Plus
+    LayoutGrid, List, Bell, Edit3, Plus, Check
 } from 'lucide-react';
+import { TagChip } from '@/components/TagChip';
 
 interface FilterBarProps {
     lang: 'zh' | 'en';
@@ -49,7 +52,8 @@ interface ToolbarControl {
     title: string;
     action: () => void;
     disabled?: boolean;
-    style?: React.CSSProperties;
+    /** 激活态（primary 实底，.btn-filter.active）；语义上可按压的按钮同步输出 aria-pressed */
+    active?: boolean;
     content: React.ReactNode;
 }
 
@@ -82,10 +86,22 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     onRequestToolbarArea,
     hasListResults
 }, ref) => {
-    const { searchFilter, setSearchFilter, setCurrentPage } = useStore();
-    const unreadCount = useStore((state) => state.getUnreadCount)();
-    const releaseCheckStatus = useStore((state) => state.releaseCheckStatus);
-    const subscriptionVersion = useStore((state) => state.subscriptionVersion);
+    // 精确订阅（阶段2 性能重构）
+    const searchFilter = useStore((state) => state.searchFilter);
+    const setSearchFilter = useStore((state) => state.setSearchFilter);
+    // 阶段3 排序收敛：排序菜单改用专用 action（原子写 settings + searchFilter）
+    const setSortPreference = useStore((state) => state.setSortPreference);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    // 订阅单源：内存 subscribedRepoIds（阶段3 起不再渲染期直读存储表/subscriptionVersion）
+    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
+    // 未读数依赖 releases 与订阅数据，订阅二者保持角标响应式
+    const releases = useStore((state) => state.releases);
+    const getUnreadCount = useStore((state) => state.getUnreadCount);
+    const unreadCount = useMemo(
+        () => getUnreadCount(),
+        [getUnreadCount, releases, subscribedRepoIds]
+    );
+    const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
 
     // UI 状态
     const [showSortMenu, setShowSortMenu] = useState(false);
@@ -96,20 +112,21 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
     const showUnreadBadge = unreadCount > 0 || releaseCheckStatus.checking;
+    // 订阅数从 store 派生（repositories.isSubscribed 由 loadRepositories/toggle/clear 维护）
     const subscribedCount = useMemo(
-        () => window.githubStarsAPI?.getReleaseSubscriptions?.().length || 0,
-        [subscriptionVersion]
+        () => repositories.reduce((count, r) => (r.isSubscribed ? count + 1 : count), 0),
+        [repositories]
     );
 
-    // 排序操作
+    // 排序操作（阶段3：走 setSortPreference，排序偏好原子持久化）
     const handleSortChange = useCallback((sortBy: SortBy) => {
-        setSearchFilter({ sortBy });
+        setSortPreference({ sortBy });
         setShowSortMenu(false);
-    }, [setSearchFilter]);
+    }, [setSortPreference]);
 
     const toggleSortOrder = useCallback(() => {
-        setSearchFilter({ sortOrder: searchFilter.sortOrder === 'asc' ? 'desc' : 'asc' });
-    }, [searchFilter.sortOrder, setSearchFilter]);
+        setSortPreference({ sortOrder: searchFilter.sortOrder === 'asc' ? 'desc' : 'asc' });
+    }, [searchFilter.sortOrder, setSortPreference]);
 
     const handleOpenReleases = useCallback(() => {
         setCurrentPage('releases');
@@ -148,10 +165,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             key: 'unread',
             title: t('releases', lang),
             action: handleOpenReleases,
-            style: {
-                background: 'var(--color-primary-light)',
-                color: 'var(--color-primary)',
-            },
+            active: true,
             content: (
                 <>
                     <Bell size={14} />
@@ -193,10 +207,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             key: 'tags',
             title: t('tags', lang),
             action: () => setShowTagFilter((prev) => !prev),
-            style: {
-                background: searchFilter.customTags.length > 0 ? 'var(--color-primary)' : undefined,
-                color: searchFilter.customTags.length > 0 ? 'white' : undefined,
-            },
+            active: searchFilter.customTags.length > 0,
             content: (
                 <>
                     <TagIcon size={14} />
@@ -208,12 +219,9 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         },
         {
             key: 'platforms',
-            title: lang === 'zh' ? '平台筛选' : 'Platform Filter',
+            title: t('platformFilter', lang),
             action: () => setShowPlatformFilter((prev) => !prev),
-            style: {
-                background: searchFilter.platforms.length > 0 ? 'var(--color-primary)' : undefined,
-                color: searchFilter.platforms.length > 0 ? 'white' : undefined,
-            },
+            active: searchFilter.platforms.length > 0,
             content: (
                 <>
                     <Filter size={14} />
@@ -414,11 +422,11 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         toolbarControls
     ]);
 
-    const getToolbarButtonStyle = useCallback((index: number, style?: React.CSSProperties): React.CSSProperties => ({
-        ...style,
+    // 仅产出 roving 激活焦点环（颜色由 primary token 调出，激活/悬浮配色交由 .btn-filter 类）
+    const getToolbarButtonStyle = useCallback((index: number): React.CSSProperties => ({
         boxShadow: keyboardArea === 'toolbar' && activeControlIndex === index
-            ? '0 0 0 2px rgba(99, 102, 241, 0.22)'
-            : style?.boxShadow,
+            ? '0 0 0 2px color-mix(in srgb, var(--color-primary) 40%, transparent)'
+            : undefined,
         outline: 'none',
     }), [activeControlIndex, keyboardArea]);
 
@@ -439,15 +447,16 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                             <button
                                 key={control.key}
                                 ref={(element) => { buttonRefs.current[index] = element; }}
-                                className="btn btn-ghost btn-sm"
+                                className={`btn btn-filter btn-sm${control.active ? ' active' : ''}`}
                                 tabIndex={activeControlIndex === index ? 0 : -1}
                                 onClick={control.action}
                                 onMouseEnter={() => activateControl(index)}
                                 onFocus={() => activateControl(index)}
                                 title={control.title}
                                 aria-label={control.title}
+                                aria-pressed={control.active === undefined ? undefined : control.active}
                                 disabled={control.disabled}
-                                style={getToolbarButtonStyle(index, control.style)}
+                                style={getToolbarButtonStyle(index)}
                             >
                                 {control.content}
                             </button>
@@ -657,12 +666,15 @@ const SortMenu = memo<{
     onClose: () => void;
     onHoverItem: (index: number) => void;
 }>(({ sortBy, sortOrder, activeIndex, lang, onSortChange, onToggleOrder, onClose, onHoverItem }) => (
-    <div style={{
-        position: 'absolute', top: '100%', right: 0, marginTop: 4,
-        background: 'var(--color-surface)', border: '1px solid var(--color-border)',
-        borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-        minWidth: 160, zIndex: 100, overflow: 'hidden',
-    }}>
+    <div
+        className="panel-enter"
+        style={{
+            position: 'absolute', top: '100%', right: 0, marginTop: 4,
+            background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+            borderRadius: 8, boxShadow: 'var(--shadow-md)',
+            minWidth: 160, zIndex: 100, overflow: 'hidden',
+        }}
+    >
         {SORT_OPTIONS.map((opt, index) => (
             <button
                 key={opt.value}
@@ -672,16 +684,17 @@ const SortMenu = memo<{
                     background: activeIndex === index
                         ? 'var(--color-surface-hover)'
                         : sortBy === opt.value ? 'var(--color-surface-secondary)' : 'transparent',
+                    fontWeight: sortBy === opt.value ? 600 : undefined,
                 }}
                 onClick={() => onSortChange(opt.value)}
                 onMouseEnter={() => onHoverItem(index)}
             >
                 <span style={{
-                    width: 20, display: 'inline-block', textAlign: 'center',
-                    color: 'var(--color-primary)', fontWeight: 'bold',
+                    width: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    color: 'var(--color-primary)',
                     opacity: sortBy === opt.value ? 1 : 0,
                 }}>
-                    ✓
+                    <Check size={14} />
                 </span>
                 <span style={{ marginLeft: 4 }}>{t(opt.labelKey as TranslationKey, lang)}</span>
             </button>
@@ -720,6 +733,7 @@ const TagFilterBar = memo<{
     return (
         <div
             ref={containerRef}
+            className="panel-enter"
             style={{
                 padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)', display: 'flex', flexWrap: 'wrap', gap: 6,
@@ -729,27 +743,15 @@ const TagFilterBar = memo<{
             {tags.length > 0 ? (
                 <>
                     <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{t('tags', lang)}:</span>
-                    {tags.map((tag) => {
-                        const isSelected = selectedTags.includes(tag.id);
-                        return (
-                            <button
-                                key={tag.id}
-                                className="btn btn-sm"
-                                style={{
-                                    padding: '2px 8px', borderRadius: 999,
-                                    border: `1px solid ${tag.color || 'var(--color-border)'}`,
-                                    background: isSelected ? (tag.color || 'var(--color-primary)') : 'transparent',
-                                    color: isSelected ? '#fff' : (tag.color || 'var(--color-text-primary)'),
-                                    fontSize: 12,
-                                }}
-                                onClick={() => onTagToggle(tag.id)}
-                                onFocus={syncActiveIndex}
-                            >
-                                {tag.icon && <span>{tag.icon} </span>}
-                                {tag.name}
-                            </button>
-                        );
-                    })}
+                    {tags.map((tag) => (
+                        <TagChip
+                            key={tag.id}
+                            tag={tag}
+                            selected={selectedTags.includes(tag.id)}
+                            onClick={() => onTagToggle(tag.id)}
+                            onFocus={syncActiveIndex}
+                        />
+                    ))}
                     {selectedTags.length > 0 && (
                         <button
                             className="btn btn-ghost btn-sm"
@@ -797,13 +799,29 @@ const PlatformFilterBar = memo<{
     onClear: () => void;
 }>(({ repositories, selectedPlatforms, lang, onClose, onPlatformToggle, onClear }) => {
     const { containerRef, syncActiveIndex } = useFilterPanelNav({ enabled: true, onClose });
-    const unanalyzedCount = repositories.filter(r =>
-        !r.analyzedAt && !r.analysisFailed
-    ).length;
+
+    // 阶段3 派生统计 memo 化：一次遍历生成平台计数 Map + 未分析计数
+    // （原实现每个平台选项各做一次全量 filter，约 9 次遍历）
+    const { platformCounts, unanalyzedCount } = useMemo(() => {
+        const counts = new Map<string, number>();
+        let unanalyzed = 0;
+        for (const repo of repositories) {
+            if (!repo.analyzedAt && !repo.analysisFailed) {
+                unanalyzed++;
+            }
+            if (repo.aiPlatforms) {
+                for (const platform of repo.aiPlatforms) {
+                    counts.set(platform, (counts.get(platform) || 0) + 1);
+                }
+            }
+        }
+        return { platformCounts: counts, unanalyzedCount: unanalyzed };
+    }, [repositories]);
 
     return (
         <div
             ref={containerRef}
+            className="panel-enter"
             style={{
                 padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)', display: 'flex', flexWrap: 'wrap', gap: 6,
@@ -816,44 +834,38 @@ const PlatformFilterBar = memo<{
 
             {/* 未分析选项 */}
             <button
-                className="btn btn-sm"
-                style={{
-                    padding: '2px 8px', borderRadius: 999,
-                    border: '1px solid var(--color-border)',
-                    background: selectedPlatforms.includes(PLATFORM_NONE) ? 'var(--color-text-muted)' : 'transparent',
-                    color: selectedPlatforms.includes(PLATFORM_NONE) ? '#fff' : 'var(--color-text-primary)',
-                    fontSize: 12,
-                    opacity: unanalyzedCount === 0 ? 0.5 : 1,
-                }}
+                className={`chip${selectedPlatforms.includes(PLATFORM_NONE) ? ' active' : ''}`}
+                style={{ opacity: unanalyzedCount === 0 ? 0.5 : 1 }}
                 onClick={() => onPlatformToggle(PLATFORM_NONE)}
                 onFocus={syncActiveIndex}
                 disabled={unanalyzedCount === 0}
+                aria-pressed={selectedPlatforms.includes(PLATFORM_NONE)}
             >
-                {lang === 'zh' ? '未分析' : 'Unanalyzed'}
+                {t('platformUnanalyzed', lang)}
                 {unanalyzedCount > 0 && <span style={{ marginLeft: 4, opacity: 0.7 }}>({unanalyzedCount})</span>}
             </button>
 
             {/* 平台选项 */}
             {PLATFORM_OPTIONS.map((platform) => {
-                const count = repositories.filter(r => r.aiPlatforms?.includes(platform.id)).length;
+                const count = platformCounts.get(platform.id) || 0;
                 const isSelected = selectedPlatforms.includes(platform.id);
+                const PlatformIcon = getPlatformIcon(platform.id);
                 return (
                     <button
                         key={platform.id}
-                        className="btn btn-sm"
+                        className={`chip${isSelected ? ' active' : ''}`}
                         style={{
-                            padding: '2px 8px', borderRadius: 999,
-                            border: '1px solid var(--color-primary)',
-                            background: isSelected ? 'var(--color-primary)' : 'transparent',
-                            color: isSelected ? '#fff' : 'var(--color-primary)',
-                            fontSize: 12,
+                            // 未选中态保留 primary 描边/文字的强调语义；选中态配色交由 .chip.active
+                            borderColor: 'var(--color-primary)',
+                            color: isSelected ? undefined : 'var(--color-primary)',
                             opacity: count === 0 ? 0.5 : 1,
                         }}
                         onClick={() => onPlatformToggle(platform.id)}
                         onFocus={syncActiveIndex}
                         disabled={count === 0}
+                        aria-pressed={isSelected}
                     >
-                        {platform.icon} {platform.label}
+                        <PlatformIcon size={12} /> {platform.label}
                         {count > 0 && <span style={{ marginLeft: 4, opacity: 0.7 }}>({count})</span>}
                     </button>
                 );

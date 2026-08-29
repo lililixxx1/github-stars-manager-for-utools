@@ -30,7 +30,7 @@ const CACHE_EXPIRY = 7 * 24 * 60 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 100;
 
 /**
- * 将翻译缓存同步写回 dbStorage（M1：同步读 + 同步写，无 load-write 竞态）
+ * 将翻译缓存同步写回 dbStorage（R6：同步读 + 同步写，无 load-write 竞态）
  */
 function persistTranslationCache(): void {
     try {
@@ -39,7 +39,7 @@ function persistTranslationCache(): void {
             .slice(0, MAX_CACHE_ENTRIES);
         translationCache.clear();
         entries.forEach(([id, entry]) => translationCache.set(id, entry));
-        window.githubStarsAPI.setAiTranslations?.(Object.fromEntries(entries));
+        window.githubStarsAPI?.setAiTranslations?.(Object.fromEntries(entries));
     } catch (error) {
         console.error('[translateRelease] 翻译缓存落盘失败:', error);
     }
@@ -141,7 +141,7 @@ export const aiService = {
             };
         }
 
-        // analyzeRepo 失败时会抛错（额度耗尽、网络异常、返回不可解析等），由调用方处理
+        // analyzeRepo 失败时会抛错（额度耗尽、网络异常、返回不可解析等，R2），由调用方处理
         return await window.githubStarsAPI.analyzeRepo(
             readme,
             {
@@ -156,6 +156,12 @@ export const aiService = {
 
     /**
      * 批量分析仓库
+     *
+     * 阶段3 不可变契约：传入的 repo 对象与 store 中是同一引用，
+     * 因此这里**绝不原地突变**——分析结果构造为新对象放入 results，
+     * 由调用方（useStore.startAutoAnalyze）合并进状态数组。
+     * 未被分析（结果为 null）的仓库保持原引用返回。
+     *
      * @param repos 要分析的仓库列表
      * @param token GitHub Token
      * @param onProgress 进度回调
@@ -174,7 +180,7 @@ export const aiService = {
     ): Promise<Repository[]> {
         const queue = [...repos];
         let completed = 0;
-        // 连续失败熔断：额度耗尽/服务异常时停止整批任务，避免无意义地继续消耗
+        // 连续失败熔断（R-熔断）：额度耗尽/服务异常时停止整批任务，避免无意义地继续消耗
         const MAX_CONSECUTIVE_FAILURES = 5;
         let consecutiveFailures = 0;
         let circuitBroken = false;
@@ -182,47 +188,65 @@ export const aiService = {
         // 使用 Map 保证顺序和唯一性（修复竞态条件）
         const results = new Map<number, Repository>();
 
-        const markFailed = (repo: Repository) => {
-            repo.analysisFailed = true;
-            // analyzedAt 记录本次尝试时间，供 24 小时冷却判断使用
-            repo.analyzedAt = new Date().toISOString();
-            consecutiveFailures++;
-        };
-
         const processQueue = async () => {
             while (queue.length > 0 && !signal?.aborted && !circuitBroken) {
                 const repo = queue.shift();
                 if (!repo) break;
 
+                // 每轮的产出对象（成功/失败都构造新对象，不可变契约下不触碰传入引用）。
+                // onProgress 携带该对象（陷阱③：分支旧实现传原始引用，R5 逐仓增量刷新会拿到无结果数据）
+                let outcome: Repository = repo;
+                let failed = false;
+
                 try {
                     const result = await aiService.analyzeRepository(repo, token, language, model);
-                    if (result && !signal?.aborted) {
-                        repo.aiSummary = result.summary;
-                        repo.aiTags = result.tags;
-                        repo.aiPlatforms = result.platforms;
-                        repo.analyzedAt = new Date().toISOString();
-                        repo.analysisFailed = false;
-                        consecutiveFailures = 0;
-                    } else if (!signal?.aborted) {
-                        markFailed(repo);
+                    if (!signal?.aborted) {
+                        if (result) {
+                            // 构造新对象，不触碰传入引用（搜索索引 WeakMap 依赖引用不可变语义）
+                            outcome = {
+                                ...repo,
+                                aiSummary: result.summary,
+                                aiTags: result.tags,
+                                aiPlatforms: result.platforms,
+                                analyzedAt: new Date().toISOString(),
+                                analysisFailed: false,
+                            };
+                            consecutiveFailures = 0;
+                        } else {
+                            failed = true;
+                        }
                     }
                 } catch (error) {
                     if (!signal?.aborted) {
                         console.error(`Failed to analyze ${repo.fullName}:`, error);
-                        markFailed(repo);
+                        failed = true;
                     }
                 }
+
+                if (failed && !signal?.aborted) {
+                    // 失败标记（R-熔断）：analyzedAt 记录本次尝试时间，供 24 小时冷却判断使用；
+                    // spread 保留旧 aiSummary/aiTags（详情页失败三态显示依赖旧摘要）
+                    outcome = {
+                        ...repo,
+                        analysisFailed: true,
+                        analyzedAt: new Date().toISOString(),
+                    };
+                    consecutiveFailures++;
+                }
+
+                if (signal?.aborted) break;
+
+                // 先登记再判熔断（C1）：不可变契约下第 5 个失败仓的失败对象必须先进 results
+                // 并随 onProgress 交给调用方，否则冷却记录丢失——熔断场景（额度耗尽）本身
+                // 恰是最需要冷却记录的场景，下一批会重复耗能
+                results.set(repo.id, outcome);
+                completed++;
+                onProgress(completed, repos.length, outcome);
 
                 if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && queue.length > 0) {
                     circuitBroken = true;
                     console.warn(`[batchAnalyze] 连续 ${MAX_CONSECUTIVE_FAILURES} 次失败，熔断剩余 ${queue.length} 个仓库的分析（多为 AI 额度耗尽或服务异常）`);
                     break;
-                }
-
-                if (!signal?.aborted) {
-                    results.set(repo.id, repo);  // 使用 Map 保证唯一性
-                    completed++;
-                    onProgress(completed, repos.length, repo);
                 }
             }
         };

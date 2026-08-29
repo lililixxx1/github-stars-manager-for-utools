@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from './stores/useStore';
+import { useProgressStore } from './stores/useProgressStore';
 import { HomePage } from './pages/HomePage';
 import { DetailPage } from './pages/DetailPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -7,15 +8,42 @@ import { TagsPage } from './pages/TagsPage';
 import { ReleasesPage } from './pages/ReleasesPage';
 import { AnalyzeProgress } from './components/AnalyzeProgress';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { ToastHost, toast } from './components/Toast';
 import { t } from './locales';
 import { logger } from './utils/logger';
 import { checkAnalysisNeeded } from './utils/analysis';
+
+// ==================== 子输入框关键词防抖（阶段3 性能重构） ====================
+
+/** 防抖间隔：每敲一个字符不再全量重算筛选管道 */
+const SUBINPUT_DEBOUNCE_MS = 120;
+
+/** 模块级防抖定时器（setSubInput 回调闭包不稳定，不能用 ref 挂在组件上） */
+let subInputDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 取消挂起的防抖写入（程序化设置关键词前必须调用，避免旧词复活） */
+function cancelPendingSubInputKeyword(): void {
+    if (subInputDebounceTimer !== null) {
+        clearTimeout(subInputDebounceTimer);
+        subInputDebounceTimer = null;
+    }
+}
+
+/** 防抖写入关键词（仅用于子输入框 onChange 打字路径） */
+function scheduleSubInputKeyword(text: string): void {
+    cancelPendingSubInputKeyword();
+    subInputDebounceTimer = setTimeout(() => {
+        subInputDebounceTimer = null;
+        useStore.getState().setSearchFilter({ keyword: text });
+    }, SUBINPUT_DEBOUNCE_MS);
+}
 
 function setupRepositorySearchSubInput(isFocus = true): void {
     if (typeof utools === 'undefined') return;
 
     utools.setSubInput(({ text }) => {
-        useStore.getState().setSearchFilter({ keyword: text });
+        // 打字路径走 120ms 防抖：筛选管道（搜索/排序）不再每键全量重算
+        scheduleSubInputKeyword(text);
     }, '搜索仓库...', isFocus);
 }
 
@@ -26,12 +54,24 @@ function releaseRepositorySearchSubInput(): void {
     utools.removeSubInput();
 }
 
-const App: React.FC = () => {
-    const { currentPage, loadRepositories, loadSettings, loadToken, loadReleases, setCurrentPage, setSelectedRepoId, settings } = useStore();
+/**
+ * 入口带词进入标志：onPluginEnter 程序化写入搜索关键词时置位。
+ * 下方 [currentPage] effect 在页面切到 home 时默认会清空关键词（方案B：返回首页清空上次搜索词），
+ * 若不跳过一次，后台驻留 + 上次停留非 home 页时，入口刚写入的关键词会被该 effect 静默吞掉。
+ * 标志在 effect 每次运行时读取并复位，不会残留到后续导航。
+ */
+let enterKeywordApplied = false;
 
-    // F2：uTools 指令（search/repo fallback）带入关键字切回 home 时，跳过一次 [currentPage] effect
-    // 的"清空关键字 + 重建子输入框"，防止指令关键字被后置执行的效果清掉
-    const preserveHomeKeywordRef = useRef(false);
+const App: React.FC = () => {
+    // 精确订阅（阶段2 性能重构）：根组件只订阅页面路由与设置，进度类状态在 useProgressStore
+    const currentPage = useStore((state) => state.currentPage);
+    const settings = useStore((state) => state.settings);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const setSelectedRepoId = useStore((state) => state.setSelectedRepoId);
+    const loadRepositories = useStore((state) => state.loadRepositories);
+    const loadSettings = useStore((state) => state.loadSettings);
+    const loadToken = useStore((state) => state.loadToken);
+    const loadReleases = useStore((state) => state.loadReleases);
 
     // AI 分析确认弹窗状态 🆕 v1.6.0
     const [showAnalyzeConfirm, setShowAnalyzeConfirm] = useState(false);
@@ -84,15 +124,14 @@ const App: React.FC = () => {
         // 🆕 v1.4.0 自动检查版本更新
         const timer = setTimeout(() => {
             const state = useStore.getState();
-            const { token: currentToken, releaseCheckStatus, settings: currentSettings } = state;
+            const { token: currentToken, settings: currentSettings } = state;
 
             // 防止重复检查
-            if (releaseCheckStatus.checking) return;
+            if (useProgressStore.getState().releaseCheckStatus.checking) return;
 
             if (currentToken && currentSettings?.autoCheckReleaseUpdates !== false) {
-                // 检查是否有订阅的仓库
-                const subscriptions = window.githubStarsAPI.getReleaseSubscriptions();
-                if (subscriptions.length > 0) {
+                // 检查是否有订阅的仓库（订阅单源：store 内 subscribedRepoIds，loadRepositories 已装载）
+                if (state.subscribedRepoIds.size > 0) {
                     state.checkReleaseUpdates();
                 }
             }
@@ -106,13 +145,13 @@ const App: React.FC = () => {
         // 延迟检查自动分析（确保页面渲染完成）
         const timer = setTimeout(() => {
             const state = useStore.getState();
-            const { settings: currentSettings, token: currentToken, repositories: currentRepos, isAnalyzing } = state;
+            const { settings: currentSettings, token: currentToken, repositories: currentRepos } = state;
 
             // 防止重复分析
-            if (isAnalyzing) return;
+            if (useProgressStore.getState().isAnalyzing) return;
 
             if (currentSettings?.autoAnalyzeOnOpen && currentToken) {
-                // 筛选需要分析的仓库（与 startAutoAnalyze 使用同一判断，含失败冷却）
+                // 筛选需要分析的仓库（与 startAutoAnalyze 使用同一判断，含失败 24h 冷却）
                 const toAnalyze = currentRepos.filter(r => checkAnalysisNeeded(r).needsAnalyze);
 
                 if (toAnalyze.length > 0) {
@@ -133,6 +172,8 @@ const App: React.FC = () => {
         };
 
         const handleSearch = (e: CustomEvent) => {
+            // 程序化设置关键词：不走防抖，并取消挂起的防抖定时器避免旧词复活
+            cancelPendingSubInputKeyword();
             useStore.getState().setSearchFilter({ keyword: e.detail.query });
         };
 
@@ -147,9 +188,14 @@ const App: React.FC = () => {
         };
 
         // 🆕 v1.6.3 全局监听 trigger-sync 事件（Token 验证成功后触发）
-        const handleTriggerSync = () => {
+        const handleTriggerSync = async () => {
             logger.log('[App] 收到 trigger-sync 事件，触发同步');
-            useStore.getState().syncRepositories();
+            const result = await useStore.getState().syncRepositories();
+            // 被长任务互斥挡住时给出反馈，避免"验证成功却无同步发生"
+            if (result === 'busy') {
+                const lang = (useStore.getState().settings?.language || 'zh') as 'zh' | 'en';
+                toast.show(t('syncSkippedBusy', lang));
+            }
         };
 
         window.addEventListener('navigate', handleNavigate as EventListener);
@@ -178,20 +224,22 @@ const App: React.FC = () => {
 
                         setCurrentPage('home');
                         // 🆕 v1.6.4 清空上次搜索词，使空子输入框与"全部仓库"列表保持一致
+                        // 程序化路径：取消挂起的防抖定时器，避免旧关键词在清空后复活
+                        cancelPendingSubInputKeyword();
                         useStore.getState().setSearchFilter({ keyword: '' });
                         // 设置子输入框
                         setupRepositorySearchSubInput(true);
                         break;
                     case 'github-stars-search':
-                        // F2：仅在确实发生页切换时设保留标志（zustand set 同步生效，判断必须在 setCurrentPage 之前）
-                        if (useStore.getState().currentPage !== 'home') {
-                            preserveHomeKeywordRef.current = true;
-                        }
                         setCurrentPage('home');
                         if (typeof payload === 'string') {
+                            // 程序化路径：立即生效并取消挂起的防抖写入
+                            cancelPendingSubInputKeyword();
                             useStore.getState().setSearchFilter({ keyword: payload });
                             setupRepositorySearchSubInput(true);
                             if (payload) {
+                                // 标记入口带词：阻止 [currentPage] effect 清掉刚写入的关键词
+                                enterKeywordApplied = true;
                                 utools.setSubInputValue(payload);
                             }
                         }
@@ -204,21 +252,18 @@ const App: React.FC = () => {
                                 setSelectedRepoId(repo.id);
                                 setCurrentPage('detail');
                             } else {
-                                if (useStore.getState().currentPage !== 'home') {
-                                    preserveHomeKeywordRef.current = true;
-                                }
                                 setCurrentPage('home');
+                                // 程序化路径：立即生效并取消挂起的防抖写入
+                                cancelPendingSubInputKeyword();
                                 useStore.getState().setSearchFilter({ keyword: payload });
                                 setupRepositorySearchSubInput(true);
                                 if (payload) {
+                                    // 与 github-stars-search 分支对齐：过滤词同步进子输入框 + 跳过一次清空
+                                    enterKeywordApplied = true;
                                     utools.setSubInputValue(payload);
                                 }
                             }
                         }
-                        break;
-                    case 'github-stars-releases': // 🆕 v1.4.0 版本通知点击
-                        useStore.getState().setReleasesInitialTab('updates');
-                        setCurrentPage('releases');
                         break;
                 }
             });
@@ -233,15 +278,18 @@ const App: React.FC = () => {
 
     useEffect(() => {
         // 🆕 v1.6.4 双向管理子输入框：进入 home 时挂载，离开 home 时移除
+        // 入口带词进入时跳过一次清空（onPluginEnter 写入的关键词只在页面切换时会被这里误清）
+        const skipKeywordClear = enterKeywordApplied;
+        enterKeywordApplied = false;
+
         if (currentPage === 'home') {
-            if (preserveHomeKeywordRef.current) {
-                // F2：本次到达 home 由 uTools 指令带入关键字（handler 已完成设置与子输入框挂载），消费标志跳过清空
-                preserveHomeKeywordRef.current = false;
-            } else {
+            if (!skipKeywordClear) {
                 // 返回首页时清空上次搜索词，与空子输入框保持一致（方案B 语义）
+                // 程序化清空：取消挂起的防抖定时器，避免旧关键词复活
+                cancelPendingSubInputKeyword();
                 useStore.getState().setSearchFilter({ keyword: '' });
-                setupRepositorySearchSubInput(true);
             }
+            setupRepositorySearchSubInput(true);
         } else {
             releaseRepositorySearchSubInput();
         }
@@ -251,15 +299,16 @@ const App: React.FC = () => {
     const lang = (settings?.language || 'zh') as 'zh' | 'en';
 
     // 确认弹窗处理函数
-    const handleAnalyzeConfirm = () => {
+    const handleAnalyzeConfirm = async () => {
         setShowAnalyzeConfirm(false);
-        useStore.getState().startAutoAnalyze();
+        const result = await useStore.getState().startAutoAnalyze();
+        if (result === 'busy') {
+            toast.show(t('analyzeDeferredBusy', lang));
+        }
     };
 
     return (
         <>
-            {/* F9：批量分析全局进度浮窗（idle 时返回 null），用户离开设置页后仍可见进度与中止入口 */}
-            <AnalyzeProgress />
             <ConfirmDialog
                 isOpen={showAnalyzeConfirm}
                 title={t('analyzeConfirmTitle', lang)}
@@ -269,11 +318,16 @@ const App: React.FC = () => {
                 onConfirm={handleAnalyzeConfirm}
                 onCancel={() => setShowAnalyzeConfirm(false)}
             />
-            {currentPage === 'detail' && <DetailPage />}
-            {currentPage === 'settings' && <SettingsPage />}
-            {currentPage === 'tags' && <TagsPage />}
-            {currentPage === 'releases' && <ReleasesPage />}
-            {currentPage !== 'detail' && currentPage !== 'settings' && currentPage !== 'tags' && currentPage !== 'releases' && <HomePage />}
+            <AnalyzeProgress />
+            <ToastHost />
+            {/* 阶段8：页面级进入动画统一挂在容器上（替代逐卡片动画）；首页轻播避免与首屏争抢 */}
+            {currentPage === 'detail' && <div className="page-enter"><DetailPage /></div>}
+            {currentPage === 'settings' && <div className="page-enter"><SettingsPage /></div>}
+            {currentPage === 'tags' && <div className="page-enter"><TagsPage /></div>}
+            {currentPage === 'releases' && <div className="page-enter"><ReleasesPage /></div>}
+            {currentPage !== 'detail' && currentPage !== 'settings' && currentPage !== 'tags' && currentPage !== 'releases' && (
+                <div className="page-enter page-enter-light"><HomePage /></div>
+            )}
         </>
     );
 };

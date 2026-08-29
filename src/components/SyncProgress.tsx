@@ -1,4 +1,5 @@
 import React from 'react';
+import { Check } from 'lucide-react';
 import { t } from '../locales';
 
 interface SyncProgressProps {
@@ -9,7 +10,8 @@ interface SyncProgressProps {
 }
 
 export const SyncProgress: React.FC<SyncProgressProps> = ({ current, total, status, language }) => {
-    if (status === 'idle') return null;
+    // 过程进度条只管 syncing/completed；error 由 HomePage 可关闭横幅单源展示（B4）
+    if (status === 'idle' || status === 'error') return null;
 
     const hasKnownTotal = total > 0;
     const pct = hasKnownTotal ? Math.round((current / total) * 100) : 0;
@@ -30,11 +32,15 @@ export const SyncProgress: React.FC<SyncProgressProps> = ({ current, total, stat
                 <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
                     {status === 'syncing' && t('syncing', language)}
                     {status === 'completed' && t('syncComplete', language)}
-                    {status === 'error' && t('syncError', language)}
                 </span>
-                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                <span style={{ fontSize: 12, color: 'var(--color-text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     {status === 'syncing' && syncingText}
-                    {status === 'completed' && `${current} ✓`}
+                    {status === 'completed' && (
+                        <>
+                            {current}
+                            <Check size={12} style={{ color: 'var(--color-success-strong)' }} />
+                        </>
+                    )}
                 </span>
             </div>
             {status === 'syncing' && (

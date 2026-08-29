@@ -7,12 +7,44 @@
  */
 
 import type { Repository, SortBy, SortOrder } from '@/types';
+import { getSearchIndex } from './filterSelectors';
 
 /** 排序函数类型 */
 export type SortFn = (repos: Repository[]) => Repository[];
 
 /**
- * 创建排序器
+ * 计算单个仓库的排序 key（decorate 阶段调用一次）
+ * - 数值型：stars / 日期时间戳（时间戳来自搜索索引 WeakMap 缓存，Date.parse 预计算）
+ * - 字符串型：name 排序用（别名优先）
+ */
+function getSortKey(repo: Repository, sortBy: SortBy): number | string {
+    switch (sortBy) {
+        case 'stars':
+            return repo.stargazersCount;
+
+        case 'updated':
+            return getSearchIndex(repo).updatedAt;
+
+        case 'starredAt':
+            // 收藏时间排序，没有 starredAt 的（索引中为 0）排到 desc 末尾
+            return getSearchIndex(repo).starredAt;
+
+        case 'name':
+            // 优先使用别名，没有别名则使用仓库名
+            return repo.alias || repo.name;
+
+        default:
+            return 0;
+    }
+}
+
+/**
+ * 创建排序器（decorate-sort-undecorate 版）
+ *
+ * 先一次性为每个仓库计算排序 key（数值/字符串），比较器只做 key 间的
+ * 数值相减或 localeCompare，禁止在比较器内 new Date/Date.parse——
+ * 原实现 O(n log n) 次日期字符串解析在万级仓库下是排序的主要开销。
+ *
  * @param sortBy - 排序字段
  * @param sortOrder - 排序方向
  * @returns 排序函数
@@ -21,38 +53,17 @@ export type SortFn = (repos: Repository[]) => Repository[];
  */
 export const createSorter = (sortBy: SortBy, sortOrder: SortOrder): SortFn => {
     return (repos) => {
-        const sorted = [...repos].sort((a, b) => {
-            let comparison = 0;
+        const decorated = repos.map(repo => ({ repo, key: getSortKey(repo, sortBy) }));
 
-            switch (sortBy) {
-                case 'stars':
-                    comparison = b.stargazersCount - a.stargazersCount;
-                    break;
-
-                case 'updated':
-                    comparison = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-                    break;
-
-                case 'starredAt':
-                    // 收藏时间排序，没有 starredAt 的排到后面
-                    const aStarred = a.starredAt ? new Date(a.starredAt).getTime() : 0;
-                    const bStarred = b.starredAt ? new Date(b.starredAt).getTime() : 0;
-                    comparison = bStarred - aStarred;
-                    break;
-
-                case 'name':
-                    // 优先使用别名，没有别名则使用仓库名
-                    comparison = (a.alias || a.name).localeCompare(b.alias || b.name);
-                    break;
-
-                default:
-                    comparison = 0;
-            }
+        decorated.sort((a, b) => {
+            const comparison = typeof a.key === 'string' || typeof b.key === 'string'
+                ? String(a.key).localeCompare(String(b.key))
+                : (b.key as number) - (a.key as number);
 
             return sortOrder === 'desc' ? comparison : -comparison;
         });
 
-        return sorted;
+        return decorated.map(item => item.repo);
     };
 };
 

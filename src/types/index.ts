@@ -47,9 +47,7 @@ export interface Repository {
     // 用户自定义字段 (v1.1.0)
     alias?: string;                      // 用户设置的别名
     customTags: string[];                // 用户自定义标签ID列表 (v1.1.0 必填，默认[])
-    userNotes?: string;                  // 用户备注 (兼容旧字段)
     customDescription?: string;
-    customCategory?: string;
     isSubscribed?: boolean;
 
     // 元数据
@@ -120,12 +118,13 @@ export interface Settings {
     aiConcurrency?: number;
     theme: 'light' | 'dark' | 'auto';
     defaultView: ViewMode;
-    itemsPerPage: number;
+    itemsPerPage: number;                // 每页条数；0 = 全部展示（阶段6 首页虚拟滚动，不 slice 不分页）
     language: 'zh' | 'en';
     defaultSortBy: SortBy;               // 默认排序字段 🆕 v1.1.0
     defaultSortOrder: SortOrder;         // 默认排序方向 🆕 v1.1.0
     autoAnalyzeOnOpen?: boolean;         // 🆕 v1.3.0 启动时自动分析
     autoCheckReleaseUpdates?: boolean;   // 🆕 v1.4.0 启动时自动检查版本更新
+    lastReleasesTab?: 'updates' | 'subscriptions';  // 🆕 阶段3 版本页 Tab 持久化（替代 localStorage，唯一绕过 utools 存储之处）
 }
 
 // ==================== 同步状态 ====================
@@ -134,15 +133,6 @@ export interface SyncState {
     latestRepoIds: number[];             // 最新一页中的仓库 ID，用于增量停止判断
     lastSyncAt: number | null;           // 最近一次同步时间
     lastFullSyncAt: number | null;       // 最近一次全量同步时间
-}
-
-// ==================== 自定义分类 ====================
-export interface Category {
-    id: string;
-    name: string;
-    icon: string;
-    keywords: string[];
-    isCustom?: boolean;
 }
 
 // ==================== 搜索过滤 ====================
@@ -217,6 +207,8 @@ export interface GithubStarsAPI {
     setToken: (token: string) => void;
     getRepos: () => Repository[];
     setRepos: (repos: Repository[]) => void;
+    patchRepo: (id: number, patch: Partial<Repository>) => void;                          // 🆕 v2 单仓库增量写
+    patchReposBatch: (updates: Array<{ id: number; patch: Partial<Repository> }>) => void; // 🆕 v2 批量增量写
     getSyncState: () => SyncState | null;
     setSyncState: (state: SyncState) => void;
     /** 清除本机增量同步状态（备份导入后强制下次同步走全量对账） */
@@ -227,23 +219,13 @@ export interface GithubStarsAPI {
     setReadReleaseIds: (ids: number[]) => void;
     getReleaseSubscriptions: () => number[];
     setReleaseSubscriptions: (ids: number[]) => void;
-    getCategories: () => Category[];
-    setCategories: (categories: Category[]) => void;
-
-    // ========== 分片存储 ==========
-    getReposMeta: () => { sharded: boolean; totalShards: number; shardPrefix?: string } | null;
-    setReposMeta: (meta: { sharded: boolean; totalShards: number; shardPrefix?: string }) => void;
-    getReposShard: (index: number) => string | null;
-    setReposShard: (index: number, data: string) => void;
-    removeReposShard: (index: number) => void;
-    removeReposMeta: () => void;
 
     // ========== 标签操作 🆕 v1.1.0 ==========
     getTags: () => Tag[];
     setTags: (tags: Tag[]) => void;
     addTag: (tag: Omit<Tag, 'id' | 'createdAt' | 'updatedAt'>) => Tag;
     updateTag: (id: string, updates: Partial<Omit<Tag, 'id' | 'createdAt'>>) => Tag | null;
-    deleteTag: (id: string) => void;
+    deleteTag: (id: string) => Promise<void>;          // v2 preload 侧为 async（原子化写入）
     reorderTags: (tagIds: string[]) => void;
 
     // ========== 笔记操作 🆕 v1.1.0 ==========
@@ -274,8 +256,6 @@ export interface GithubStarsAPI {
 
     // ========== 版本检测 🆕 v1.4.0 ==========
     getLatestRelease: (owner: string, repo: string, token: string) => Promise<Release | null>;
-    getReleaseCheckStatus: () => ReleaseCheckStatus;
-    setReleaseCheckStatus: (status: ReleaseCheckStatus) => void;
 }
 
 declare global {

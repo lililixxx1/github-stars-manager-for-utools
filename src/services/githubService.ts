@@ -1,7 +1,28 @@
-import type { Repository, SyncState } from '../types';
+/**
+ * GitHub 星标仓库同步服务
+ *
+ * 同步策略：
+ * - 全量（首次 / 距上次全量 ≥ 7 天）：page=N 参数预推 + 有界并发窗口（FULL_SYNC_CONCURRENCY）
+ *   抓取。先请求 page=1 从 Link header 取 lastPage 作为总页数估计，随后滑动窗口并发请求
+ *   后续页，页间保留 ~100ms 发车间隔做节流。starred 列表按 created desc 排序，同步期间
+ *   新增 star 会让相邻页快照漂移：任一页响应不足 PER_PAGE 条或为空数组即视为末页
+ *   （短页即停兜底，lastPage 仅为估计值；若估计末页仍为满页则向后扩展一页）；
+ *   漂移产生的首尾重复按 repo id 去重（保留更靠前页的记录）后按页序升序拼接。
+ * - 增量：保持串行逐页扫描（页间存在顺序依赖，不做并发），直到
+ *   「整页已知 + 含最新标记 + 最老 starredAt ≤ 已知」停止条件满足；结果同样按 id 去重
+ *   （防御性，抵御快照漂移）。
+ * - 限流退避（403/429 retry-after）与 keep-alive 由 preload 层请求层负责，本层不重试；
+ *   任一页最终失败则整轮同步按原错误语义向上抛出（不吞、不部分返回）。
+ */
+
+import type { Repository, StarredReposPage, SyncState } from '../types';
 
 const PER_PAGE = 100;
 const FULL_SYNC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+// 全量同步并发窗口：同时在途的最大页请求数
+const FULL_SYNC_CONCURRENCY = 3;
+// 相邻页请求之间的发车间隔（ms），避免瞬时打满 API 配额
+const PAGE_DISPATCH_INTERVAL_MS = 100;
 
 type SyncMode = 'full' | 'incremental';
 
@@ -12,12 +33,26 @@ interface SyncResult {
 }
 
 export const githubService = {
-    async verifyToken(token: string): Promise<boolean> {
+    /**
+     * 验证 Token，返回结构化结果（本方法不抛错）。
+     * 失败原因按 preload reject 的 Error.status 分类：
+     * - 401 → invalid；403/429（preload 限流退避重试后仍失败）→ rateLimited；
+     * - 无 status（网络错误/超时/解析失败）→ network。
+     */
+    async verifyToken(token: string): Promise<{ ok: boolean; reason?: 'invalid' | 'rateLimited' | 'network' }> {
         try {
             await window.githubStarsAPI.verifyToken(token);
-            return true;
-        } catch {
-            return false;
+            return { ok: true };
+        } catch (error) {
+            // TS strict 下 error 为 unknown，安全收窄后读取可选 status
+            const status = (error as { status?: number } | null | undefined)?.status;
+            if (status === 401) {
+                return { ok: false, reason: 'invalid' };
+            }
+            if (status === 403 || status === 429) {
+                return { ok: false, reason: 'rateLimited' };
+            }
+            return { ok: false, reason: 'network' };
         }
     },
 
@@ -65,39 +100,130 @@ export const githubService = {
     }
 };
 
+/**
+ * 全量同步：page=N 预推 + 有界并发窗口分页抓取。
+ *
+ * - 进度语义：每按序确认一页回调一次 onProgress(current, total)，current 为去重后的
+ *   累计仓库数，total 沿用 lastPage 估计值（页数 × PER_PAGE）；若最终实际页数与估计
+ *   不同（同步期间列表增长/收缩或 Link 缺失），最后一次回调校正 total 为实际仓库数。
+ * - 错误语义：窗口内任一页最终抛错（含 preload 重试后仍失败）时整轮同步向上抛出，
+ *   不吞、不部分返回。
+ */
 async function syncAllRepos(
     token: string,
     onProgress: (current: number, total: number) => void
 ): Promise<SyncResult> {
-    const allRepos: Repository[] = [];
-    let page = 1;
-    let totalPages: number | null = null;
+    // 第 1 页串行请求：取得 Link header 的 lastPage 作为总页数估计
+    const firstResult = await window.githubStarsAPI.getStarredReposPage(token, 1, PER_PAGE);
+    const firstRepos = transformPageItems(firstResult.items);
 
-    while (true) {
-        const result = await window.githubStarsAPI.getStarredReposPage(token, page, PER_PAGE);
-        totalPages = result.totalPages ?? totalPages;
-
-        const transformedRepos = result.items.map((item: any) => {
-            const repo = item.repo || item;
-            return transformRepo(repo, item.starred_at);
+    // 按页序升序拼接的结果 + repo id 去重：同步期间新增 star 会让相邻页快照漂移产生
+    // 首尾重复，去重保留先出现者（即更靠前页的记录）
+    const orderedRepos: Repository[] = [];
+    const seenRepoIds = new Set<number>();
+    const appendRepos = (repos: Repository[]): void => {
+        repos.forEach((repo) => {
+            if (seenRepoIds.has(repo.id)) return;
+            seenRepoIds.add(repo.id);
+            orderedRepos.push(repo);
         });
+    };
 
-        allRepos.push(...transformedRepos);
-        onProgress(allRepos.length, totalPages ? totalPages * PER_PAGE : 0);
+    appendRepos(firstRepos);
 
-        if (!result.hasNext || result.items.length < PER_PAGE) {
-            break;
+    // Link lastPage 仅为估计值；缺失时退化为「满页即可能还有下一页」，由短页即停兜底
+    const estimatedLastPage = firstResult.totalPages != null
+        ? firstResult.totalPages
+        : (firstRepos.length === PER_PAGE ? 2 : 1);
+    const estimatedTotal = firstResult.totalPages != null
+        ? firstResult.totalPages * PER_PAGE
+        : 0;
+
+    let lastConfirmedPage = 1;
+    let lastPageWithItems = firstRepos.length > 0 ? 1 : 0;
+    onProgress(orderedRepos.length, estimatedTotal);
+
+    // 并发完成顺序可能与页序不一致：先暂存，按序确认后再拼接并回调进度
+    const pendingPages = new Map<number, Repository[]>();
+    const consumeConfirmedPages = (): void => {
+        while (pendingPages.has(lastConfirmedPage + 1)) {
+            const page = lastConfirmedPage + 1;
+            const repos = pendingPages.get(page)!;
+            pendingPages.delete(page);
+            lastConfirmedPage = page;
+
+            appendRepos(repos);
+            if (repos.length > 0) {
+                lastPageWithItems = page;
+                onProgress(orderedRepos.length, estimatedTotal);
+            }
         }
+    };
 
-        page = result.nextPage ?? page + 1;
-        // 限流保护
-        await new Promise(resolve => setTimeout(resolve, 100));
+    // 发车节流：所有页请求经同一队列串行发车，相邻发车时刻间隔 ~100ms。发车链在
+    // 「发车时刻」即推进（不等待响应完成），因此窗口内页请求保持并发在途
+    let dispatchTurn: Promise<void> = Promise.resolve();
+    const dispatchPageRequest = (page: number): Promise<StarredReposPage> => {
+        const depart = dispatchTurn.then(() => sleep(PAGE_DISPATCH_INTERVAL_MS));
+        dispatchTurn = depart;
+        return depart.then(() => window.githubStarsAPI.getStarredReposPage(token, page, PER_PAGE));
+    };
+
+    let nextDispatchPage = 2;
+    let highestFullPage = firstRepos.length === PER_PAGE ? 1 : 0;
+    // 第 1 页已短或其 Link 已指明无下一页时无需继续（与串行版一致：信任 hasNext）
+    let reachedEnd = firstRepos.length < PER_PAGE || !firstResult.hasNext;
+    let firstError: unknown = null;
+
+    const runFetchWorker = async (): Promise<void> => {
+        while (firstError === null && !reachedEnd) {
+            // 页号预推：估计末页之内直接发车；估计末页之后仅在满页（同步期间列表增长）
+            // 时向后扩展一页，直到出现短页/空页或 Link 指示无下一页
+            const canDispatch = nextDispatchPage <= estimatedLastPage
+                || nextDispatchPage <= highestFullPage + 1;
+            if (!canDispatch) return;
+
+            const page = nextDispatchPage;
+            nextDispatchPage += 1;
+
+            let result: StarredReposPage;
+            try {
+                result = await dispatchPageRequest(page);
+            } catch (error) {
+                // 窗口内任一页最终失败（preload 重试后仍失败）：记录首个错误并终止整轮
+                if (firstError === null) firstError = error;
+                return;
+            }
+
+            const repos = transformPageItems(result.items);
+            if (repos.length < PER_PAGE || !result.hasNext) {
+                reachedEnd = true; // 短页/空页 = 末页兜底；Link 无下一页则信任之
+            } else {
+                highestFullPage = Math.max(highestFullPage, page);
+            }
+            pendingPages.set(page, repos);
+            consumeConfirmedPages();
+        }
+    };
+
+    const workerCount = Math.min(FULL_SYNC_CONCURRENCY, Math.max(estimatedLastPage - 1, 1));
+    await Promise.all(Array.from({ length: workerCount }, () => runFetchWorker()));
+
+    if (firstError !== null) {
+        throw firstError;
+    }
+
+    consumeConfirmedPages();
+
+    // 实际页数与估计不同时，最后一次回调校正 total 为实际仓库数（进度收敛到 100%）
+    if (lastPageWithItems !== estimatedLastPage) {
+        onProgress(orderedRepos.length, orderedRepos.length);
     }
 
     return {
         mode: 'full',
-        repos: allRepos,
-        processedCount: allRepos.length,
+        repos: orderedRepos,
+        processedCount: orderedRepos.length,
     };
 }
 
@@ -112,6 +238,7 @@ async function syncIncrementalRepos(
         ? new Date(syncState.latestStarredAt).getTime()
         : 0;
     const latestKnownRepoIds = new Set(syncState?.latestRepoIds || []);
+    // 按 repo id 去重（防御性）：串行扫描下相邻页快照漂移同样可能产生重复
     const scannedRepos = new Map<number, Repository>();
 
     let page = 1;
@@ -168,7 +295,7 @@ async function syncIncrementalRepos(
         }
 
         page++;
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await sleep(PAGE_DISPATCH_INTERVAL_MS);
     }
 
     return {
@@ -183,6 +310,13 @@ function shouldPerformFullSync(existingRepos: Repository[], syncState: SyncState
     if (!syncState?.latestStarredAt || !syncState.lastFullSyncAt) return true;
 
     return Date.now() - syncState.lastFullSyncAt >= FULL_SYNC_INTERVAL_MS;
+}
+
+function transformPageItems(items: any[]): Repository[] {
+    return items.map((item: any) => {
+        const repo = item.repo || item;
+        return transformRepo(repo, item.starred_at);
+    });
 }
 
 function transformRepo(raw: any, starredAt?: string): Repository {
@@ -208,6 +342,10 @@ function transformRepo(raw: any, starredAt?: string): Repository {
         customTags: [], // v1.1.0: 初始化为空数组
         lastSyncedAt: Date.now(),
     };
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function compareStarredAtDesc(a: Repository, b: Repository): number {

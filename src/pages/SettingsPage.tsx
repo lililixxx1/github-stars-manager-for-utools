@@ -1,18 +1,25 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useStore } from '../stores/useStore';
+import { useProgressStore } from '../stores/useProgressStore';
 import { storageService } from '../services/storageService';
 import { githubService } from '../services/githubService';
 import { t } from '../locales';
 import { TokenHelp, TokenHelpHeaderButton } from '../components/TokenHelp';
+import { Toggle } from '../components/Toggle';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { toast } from '../components/Toast';
 import { logger } from '../utils/logger';
 import { useBackShortcut } from '../hooks/useBackShortcut';
-import { buildBackup, validateBackup } from '../utils/backup';
+import type { Repository, Settings } from '../types';
 import {
     ArrowLeft, Key, Check, X, Loader2, Download, Upload,
-    Sun, Moon, Monitor, Globe, Sparkles, Play, StopCircle, Zap, Bell
+    Sun, Moon, Monitor, Globe, Sparkles, Play, StopCircle, Zap, Bell,
+    AlertTriangle, Link2, BrainCircuit, Rss, Palette, Database
 } from 'lucide-react';
+import pkg from '../../package.json';
+import { buildBackup, validateBackup, type ValidatedBackup } from '../utils/backup';
 
-// F3：validateBackup 错误码 → 用户语言文案
+// F3：validateBackup 错误码 → 用户语言文案（v1.7 合并：categories 已删除，无对应码）
 const importErrorText = (code: string, lang: 'zh' | 'en'): string => {
     const zhMap: Record<string, string> = {
         invalid_file: '文件不是有效的备份',
@@ -21,7 +28,6 @@ const importErrorText = (code: string, lang: 'zh' | 'en'): string => {
         notes_invalid: '笔记数据格式错误',
         release_subscriptions_invalid: '订阅数据格式错误',
         read_release_ids_invalid: '已读记录格式错误',
-        categories_invalid: '分类数据格式错误',
     };
     const enMap: Record<string, string> = {
         invalid_file: 'Not a valid backup file',
@@ -30,28 +36,46 @@ const importErrorText = (code: string, lang: 'zh' | 'en'): string => {
         notes_invalid: 'Invalid notes data',
         release_subscriptions_invalid: 'Invalid subscription data',
         read_release_ids_invalid: 'Invalid read history data',
-        categories_invalid: 'Invalid categories data',
     };
     const map = lang === 'zh' ? zhMap : enMap;
     return map[code] || map.invalid_file;
 };
 
+// F3（有意加严）：长任务进行中拒绝导入——六类直写与在途同步/分析/版本检查交错会污染合并结果
+const notifyJobBusy = (lang: 'zh' | 'en') => {
+    window.githubStarsAPI.showNotification(
+        lang === 'zh' ? '有任务正在进行，请稍后再导入' : 'A job is in progress, please import later'
+    );
+};
+
 export const SettingsPage: React.FC = () => {
     const projectRepositoryUrl = 'https://github.com/lililixxx1/github-stars-manager-for-utools';
-    const {
-        settings, saveSettings, token, setCurrentPage,
-        repositories,
-        isAnalyzing, analyzeProgress, startAutoAnalyze, stopAnalyze,
-        releaseCheckStatus, checkReleaseUpdates, setReleasesInitialTab,
-    } = useStore();
+    // 精确订阅（阶段2 性能重构）：进度类状态在 useProgressStore
+    const settings = useStore((state) => state.settings);
+    const saveSettings = useStore((state) => state.saveSettings);
+    const token = useStore((state) => state.token);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const repositories = useStore((state) => state.repositories);
+    const startAutoAnalyze = useStore((state) => state.startAutoAnalyze);
+    const stopAnalyze = useStore((state) => state.stopAnalyze);
+    const checkReleaseUpdates = useStore((state) => state.checkReleaseUpdates);
+    const setReleasesInitialTab = useStore((state) => state.setReleasesInitialTab);
+
+    const isAnalyzing = useProgressStore((state) => state.isAnalyzing);
+    const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
 
     const lang = (settings.language || 'zh') as 'zh' | 'en';
     const [tokenInput, setTokenInput] = useState(token || '');
     const [verifying, setVerifying] = useState(false);
     const [verifyResult, setVerifyResult] = useState<'success' | 'error' | null>(null);
+    const [verifyErrorReason, setVerifyErrorReason] = useState<'invalid' | 'rateLimited' | 'network' | null>(null);
     const [aiModels, setAiModels] = useState<any[]>([]);
     const [loadingModels, setLoadingModels] = useState(false);
     const [tokenHelpExpanded, setTokenHelpExpanded] = useState(false);
+    const [pendingImport, setPendingImport] = useState<{
+        data: ValidatedBackup;
+        skipped: { repos: number; tags: number; notes: number };
+    } | null>(null);
     const autoSyncTimerRef = useRef<number | null>(null);
 
     useEffect(() => {
@@ -88,7 +112,7 @@ export const SettingsPage: React.FC = () => {
     });
 
     const scheduleAutoSync = () => {
-        const { syncStatus } = useStore.getState();
+        const { syncStatus } = useProgressStore.getState();
 
         logger.log('[AutoSync] Token 验证成功，准备触发自动同步', {
             syncStatus,
@@ -115,25 +139,41 @@ export const SettingsPage: React.FC = () => {
         if (!tokenInput.trim()) return;
         setVerifying(true);
         setVerifyResult(null);
+        setVerifyErrorReason(null);
         try {
-            const valid = await githubService.verifyToken(tokenInput.trim());
-            if (valid) {
+            const result = await githubService.verifyToken(tokenInput.trim());
+            if (result.ok) {
                 storageService.setToken(tokenInput.trim());
                 useStore.setState({ token: tokenInput.trim() });
                 setVerifyResult('success');
                 scheduleAutoSync();
             } else {
+                setVerifyErrorReason(result.reason ?? 'network');
                 setVerifyResult('error');
             }
         } catch {
+            // verifyToken 契约上不抛错；此处仅为 setToken 等意外异常兜底，防止 verifying 卡死
+            setVerifyErrorReason('network');
             setVerifyResult('error');
         } finally {
             setVerifying(false);
         }
     };
 
-    // F3：导出七类数据（repositories/tags/notes/subscriptions/readReleaseIds/categories/settings）
+    // 开始/停止批量分析：被长任务互斥挡住时提示已排队（store 内自动重试），而非静默无响应
+    const handleAnalyzeToggle = async () => {
+        if (isAnalyzing) {
+            stopAnalyze();
+            return;
+        }
+        const result = await startAutoAnalyze();
+        if (result === 'busy') {
+            toast.show(t('analyzeDeferredBusy', lang));
+        }
+    };
+
     const handleExport = () => {
+        // F3：六类数据完整备份（repositories/tags/notes/subscriptions/readReleaseIds/settings）
         const data = buildBackup();
         const json = JSON.stringify(data, null, 2);
         const blob = new Blob([json], { type: 'application/json' });
@@ -145,16 +185,10 @@ export const SettingsPage: React.FC = () => {
         URL.revokeObjectURL(url);
     };
 
-    // F3：同步进行中拒绝导入（导入与在途同步交错会使 clearSyncState 失效——同步完成会重建 syncState）
-    const notifySyncing = () => {
-        window.githubStarsAPI.showNotification(
-            lang === 'zh' ? '同步进行中，请稍后再导入' : 'A sync is in progress, please import later'
-        );
-    };
-
     const handleImport = () => {
-        if (useStore.getState().syncStatus === 'syncing') {
-            notifySyncing();
+        // 长任务互斥（有意加严）：文件选择对话框期间任务可能启动，落地写入前还会再查一次
+        if (useProgressStore.getState().isJobBusy()) {
+            notifyJobBusy(lang);
             return;
         }
         const input = document.createElement('input');
@@ -165,64 +199,80 @@ export const SettingsPage: React.FC = () => {
             if (!file) return;
             const reader = new FileReader();
             reader.onload = (ev) => {
-                // 文件选择对话框期间同步可能已启动，落地写入前再检查一次
-                if (useStore.getState().syncStatus === 'syncing') {
-                    notifySyncing();
-                    return;
-                }
                 try {
                     const raw = JSON.parse(ev.target?.result as string);
+                    // F3：六类形状校验（validateBackup：单条无效跳过计数，字段级损坏整批拒绝），
+                    // 乱值不落盘、不弹确认
                     const result = validateBackup(raw);
                     if (!result.ok) {
-                        window.githubStarsAPI.showNotification(
+                        toast.show(
                             lang === 'zh'
                                 ? `导入失败：${importErrorText(result.error, lang)}`
-                                : `Import failed: ${importErrorText(result.error, lang)}`
+                                : `Import failed: ${importErrorText(result.error, lang)}`,
+                            { type: 'error' }
                         );
                         return;
                     }
 
-                    const data = result.data;
-                    const api = window.githubStarsAPI;
-                    // 字段存在才写（缺失跳过，兼容旧格式备份）；repositories 为数组即写入（含空数组的合法语义）
-                    if (data.repositories !== undefined) {
-                        api.setRepos(data.repositories);
-                        // 清除本机增量同步状态：导入的异构数据与旧 syncState 错配，下次同步必须全量对账
-                        api.clearSyncState();
-                    }
-                    if (data.tags !== undefined) api.setTags(data.tags);
-                    if (data.notes !== undefined) api.setNotes(data.notes);
-                    if (data.releaseSubscriptions !== undefined) api.setReleaseSubscriptions(data.releaseSubscriptions);
-                    if (data.readReleaseIds !== undefined) api.setReadReleaseIds(data.readReleaseIds);
-                    if (data.categories !== undefined) api.setCategories(data.categories);
-                    if (data.settings !== undefined) {
-                        saveSettings(data.settings);
-                    }
-
-                    // 状态刷新：仓库（含 isSubscribed 对齐 + 笔记索引重建）、标签、版本已读状态
-                    const store = useStore.getState();
-                    store.loadRepositories();
-                    store.loadTags();
-                    store.loadReleases();
-                    // 清残留的旧仓库笔记（DetailPage 按需重新 loadNote）
-                    useStore.setState({ currentNote: null });
-                    // FilterBar 的订阅计数仅依赖 subscriptionVersion，不 bump 则不刷新
-                    useStore.setState(s => ({ subscriptionVersion: s.subscriptionVersion + 1 }));
-
-                    window.githubStarsAPI.showNotification(
-                        lang === 'zh'
-                            ? `导入成功：${data.repositories?.length ?? 0} 个仓库（跳过 ${result.skipped.repos} 条无效记录）、${data.tags?.length ?? 0} 个标签、${data.notes?.length ?? 0} 条笔记、${data.releaseSubscriptions?.length ?? 0} 个订阅`
-                            : `Imported ${data.repositories?.length ?? 0} repos (skipped ${result.skipped.repos} invalid), ${data.tags?.length ?? 0} tags, ${data.notes?.length ?? 0} notes, ${data.releaseSubscriptions?.length ?? 0} subscriptions`
-                    );
+                    // 校验通过先挂起，由 ConfirmDialog 二次确认后才落盘（覆盖导入不可逆）；
+                    // skipped 随行携带——成功提示须汇报跳过的无效条目数（F3：部分导入不能误报全量成功）
+                    setPendingImport({ data: result.data, skipped: result.skipped });
                 } catch {
-                    window.githubStarsAPI.showNotification(
-                        lang === 'zh' ? '导入失败：文件格式错误' : 'Import failed: invalid file format'
-                    );
+                    toast.show(t('importFailed', lang), { type: 'error' });
                 }
             };
             reader.readAsText(file);
         };
         input.click();
+    };
+
+    // 确认导入：六类直写 preload 层 + 清 syncState + store 状态刷新；落盘路径套 try/catch，失败不误报成功
+    const confirmImport = () => {
+        if (!pendingImport) return;
+        // 文件选择对话框期间任务可能已启动，落地写入前再检查一次
+        if (useProgressStore.getState().isJobBusy()) {
+            setPendingImport(null);
+            notifyJobBusy(lang);
+            return;
+        }
+        try {
+            const { data, skipped } = pendingImport;
+            const api = window.githubStarsAPI;
+            // 字段存在才写（缺失跳过，兼容旧格式备份）；repositories 为数组即写入（含空数组的合法语义）
+            if (data.repositories !== undefined) {
+                api.setRepos(data.repositories);
+                // 清除本机增量同步状态：导入的异构数据与旧 syncState 错配，下次同步必须全量对账
+                api.clearSyncState();
+            }
+            if (data.tags !== undefined) api.setTags(data.tags);
+            if (data.notes !== undefined) api.setNotes(data.notes);
+            if (data.releaseSubscriptions !== undefined) api.setReleaseSubscriptions(data.releaseSubscriptions);
+            if (data.readReleaseIds !== undefined) api.setReadReleaseIds(data.readReleaseIds);
+            if (data.settings !== undefined) {
+                saveSettings(data.settings);
+            }
+
+            // store 状态刷新序列：导入已直写 preload 层，从存储重载六类对应的内存态
+            // （loadRepositories 会重载订阅单源 subscribedRepoIds 与笔记索引；currentNote
+            // 属旧选中仓库的悬空引用，一并复位）
+            const state = useStore.getState();
+            if (data.repositories !== undefined) state.loadRepositories();
+            if (data.tags !== undefined) state.loadTags();
+            if (data.readReleaseIds !== undefined) state.loadReleases();
+            useStore.setState({ currentNote: null });
+
+            setPendingImport(null);
+            // F3：成功提示含各类数量与跳过的无效条目数——部分导入不能误报全量成功
+            toast.show(
+                lang === 'zh'
+                    ? `导入成功：${data.repositories?.length ?? 0} 个仓库（跳过 ${skipped.repos} 条无效记录）、${data.tags?.length ?? 0} 个标签、${data.notes?.length ?? 0} 条笔记、${data.releaseSubscriptions?.length ?? 0} 个订阅`
+                    : `Imported ${data.repositories?.length ?? 0} repos (skipped ${skipped.repos} invalid), ${data.tags?.length ?? 0} tags, ${data.notes?.length ?? 0} notes, ${data.releaseSubscriptions?.length ?? 0} subscriptions`,
+                { type: 'success', duration: 6000 }
+            );
+        } catch {
+            setPendingImport(null);
+            toast.show(t('importFailed', lang), { type: 'error' });
+        }
     };
 
     const themeOptions = [
@@ -231,7 +281,19 @@ export const SettingsPage: React.FC = () => {
         { value: 'dark', icon: <Moon size={14} />, label: t('darkTheme', lang) },
     ] as const;
 
-    const subscribedCount = window.githubStarsAPI.getReleaseSubscriptions().length;
+    // 订阅数从 store 派生（阶段3：订阅单源 repositories.isSubscribed，不渲染期直读存储）
+    const subscribedCount = useMemo(
+        () => repositories.reduce((count, r) => (r.isSubscribed ? count + 1 : count), 0),
+        [repositories]
+    );
+
+    // AI 分析进度统计（阶段8：文字 + .progress-bar 进度条）
+    const analyzedStats = useMemo(() => {
+        const analyzed = repositories.filter(r => r.analyzedAt && !r.analysisFailed).length;
+        const failed = repositories.filter(r => r.analysisFailed).length;
+        const pct = repositories.length > 0 ? Math.round((analyzed / repositories.length) * 100) : 0;
+        return { analyzed, failed, pct };
+    }, [repositories]);
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -247,7 +309,11 @@ export const SettingsPage: React.FC = () => {
                 <h2 style={{ fontSize: 16, fontWeight: 600 }}>{t('settings', lang)}</h2>
             </div>
 
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }} className="animate-fade-in">
+            {/* 阶段8：9 卡分 5 节（标题带图标），进入动画由 App.tsx 页面容器统一提供 */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+                {/* ===== GitHub 连接 ===== */}
+                <h4 className="settings-section-title"><Link2 size={14} />{t('settingsGroupConnection', lang)}</h4>
+
                 {/* GitHub Token */}
                 <div className="card" style={{ marginBottom: 12 }}>
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -278,8 +344,14 @@ export const SettingsPage: React.FC = () => {
                         </button>
                     </div>
                     {verifyResult && (
-                        <p style={{ fontSize: 13, marginTop: 6, color: verifyResult === 'success' ? 'var(--color-success)' : 'var(--color-error)' }}>
-                            {verifyResult === 'success' ? t('tokenVerified', lang) : t('tokenInvalid', lang)}
+                        <p style={{ fontSize: 13, marginTop: 6, color: verifyResult === 'success' ? 'var(--color-success)' : 'var(--color-error-text)' }}>
+                            {verifyResult === 'success'
+                                ? t('tokenVerified', lang)
+                                : verifyErrorReason === 'rateLimited'
+                                    ? t('errorRateLimited', lang)
+                                    : verifyErrorReason === 'network'
+                                        ? t('errorNetwork', lang)
+                                        : t('errorTokenInvalid', lang)}
                         </p>
                     )}
 
@@ -290,6 +362,9 @@ export const SettingsPage: React.FC = () => {
                         onToggle={() => setTokenHelpExpanded(!tokenHelpExpanded)}
                     />
                 </div>
+
+                {/* ===== AI 分析 ===== */}
+                <h4 className="settings-section-title"><BrainCircuit size={14} />{t('settingsGroupAI', lang)}</h4>
 
                 {/* AI 模型 */}
                 <div className="card" style={{ marginBottom: 12 }}>
@@ -327,49 +402,64 @@ export const SettingsPage: React.FC = () => {
                 <div className="card" style={{ marginBottom: 12 }}>
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
                         <Zap size={14} style={{ color: 'var(--color-primary)' }} />
-                        {lang === 'zh' ? 'AI 分析设置' : 'AI Analysis Settings'}
+                        {t('aiAnalysisSettings', lang)}
                     </h3>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
                         <div>
-                            <div style={{ fontSize: 13, fontWeight: 500 }}>{lang === 'zh' ? '启动时自动分析' : 'Auto-analyze on startup'}</div>
-                            <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '打开插件时自动分析未分析的仓库，每次分析消耗AI能量' : 'Analyze unanalyzed repos when plugin opens'}</div>
+                            <div style={{ fontSize: 13, fontWeight: 500 }}>{t('autoAnalyzeOnOpen', lang)}</div>
+                            <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{t('autoAnalyzeOnOpenHint', lang)}</div>
                         </div>
-                        <button className={`btn ${settings.autoAnalyzeOnOpen ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => saveSettings({ autoAnalyzeOnOpen: !settings.autoAnalyzeOnOpen })} style={{ minWidth: 60 }}>
-                            {settings.autoAnalyzeOnOpen ? (lang === 'zh' ? '开' : 'On') : (lang === 'zh' ? '关' : 'Off')}
-                        </button>
+                        <Toggle
+                            checked={!!settings.autoAnalyzeOnOpen}
+                            onChange={(checked) => saveSettings({ autoAnalyzeOnOpen: checked })}
+                            aria-label={t('autoAnalyzeOnOpen', lang)}
+                        />
                     </div>
                     <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>{lang === 'zh' ? '并发数' : 'Concurrency'}</div>
-                        <div style={{ display: 'flex', gap: 8 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>{t('concurrency', lang)}</div>
+                        {/* 阶段8：等宽数字按钮收敛为分段控件 */}
+                        <div className="segmented" style={{ width: '100%' }}>
                             {[1, 2, 3, 4, 5].map((n) => (
-                                <button key={n} className={`btn ${(settings.aiConcurrency || 1) === n ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => saveSettings({ aiConcurrency: n })} style={{ flex: 1 }}>{n}</button>
+                                <button
+                                    key={n}
+                                    type="button"
+                                    className={`segmented-item${(settings.aiConcurrency || 1) === n ? ' active' : ''}`}
+                                    onClick={() => saveSettings({ aiConcurrency: n })}
+                                    aria-pressed={(settings.aiConcurrency || 1) === n}
+                                >
+                                    {n}
+                                </button>
                             ))}
                         </div>
-                        <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>{lang === 'zh' ? '并发数越高分析越快，但可能触发限流' : 'Higher concurrency is faster but may trigger rate limits'}</div>
+                        <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>{t('concurrencyHint', lang)}</div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <button className="btn btn-primary btn-sm" onClick={() => isAnalyzing ? stopAnalyze() : startAutoAnalyze()} disabled={!token || repositories.length === 0} style={{ flex: 1 }} title={!token ? (lang === 'zh' ? '请先配置 GitHub Token' : 'Please configure GitHub Token first') : repositories.length === 0 ? (lang === 'zh' ? '请先同步仓库' : 'Please sync repositories first') : undefined}>
-                            {isAnalyzing ? <><StopCircle size={14} />{lang === 'zh' ? '停止分析' : 'Stop Analysis'}</> : <><Play size={14} />{lang === 'zh' ? '立即分析' : 'Analyze Now'}</>}
+                        <button className="btn btn-primary btn-sm" onClick={handleAnalyzeToggle} disabled={!token || repositories.length === 0} style={{ flex: 1 }} title={!token ? (lang === 'zh' ? '请先配置 GitHub Token' : 'Please configure GitHub Token first') : repositories.length === 0 ? (lang === 'zh' ? '请先同步仓库' : 'Please sync repositories first') : undefined}>
+                            {isAnalyzing ? <><StopCircle size={14} />{t('stopAnalysis', lang)}</> : <><Play size={14} />{t('analyzeNow', lang)}</>}
                         </button>
                     </div>
-                    {!token && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-warning)' }}>{lang === 'zh' ? '⚠️ 请先配置 GitHub Token 以使用 AI 分析功能' : '⚠️ Please configure GitHub Token to use AI analysis'}</div>}
-                    {isAnalyzing && analyzeProgress && (
-                        <div style={{ marginTop: 12 }}>
-                            <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginBottom: 4 }}>{lang === 'zh' ? '正在分析: ' : 'Analyzing: '}{analyzeProgress.currentRepo}</div>
-                            <div style={{ height: 4, background: 'var(--color-surface-secondary)', borderRadius: 2 }}>
-                                <div style={{ height: '100%', width: `${Math.round((analyzeProgress.current / analyzeProgress.total) * 100)}%`, background: 'linear-gradient(90deg, var(--color-primary), var(--color-primary-light))', borderRadius: 2, transition: 'width 0.3s ease' }} />
-                            </div>
-                            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>{analyzeProgress.current}/{analyzeProgress.total}</div>
+                    {!token && (
+                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-warning-strong)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <AlertTriangle size={12} />
+                            {lang === 'zh' ? '请先配置 GitHub Token 以使用 AI 分析功能' : 'Please configure GitHub Token to use AI analysis'}
                         </div>
                     )}
                     {!isAnalyzing && repositories.length > 0 && (
-                        <div style={{ marginTop: 12, fontSize: 12, color: 'var(--color-text-muted)' }}>
-                            {lang === 'zh' ? `已分析: ${repositories.filter(r => r.analyzedAt && !r.analysisFailed).length} / ${repositories.length} 个仓库` : `Analyzed: ${repositories.filter(r => r.analyzedAt && !r.analysisFailed).length} / ${repositories.length} repos`}
-                            {repositories.filter(r => r.analysisFailed).length > 0 && <span style={{ color: 'var(--color-error)', marginLeft: 8 }}>({lang === 'zh' ? '失败' : 'Failed'}: {repositories.filter(r => r.analysisFailed).length})</span>}
+                        <div style={{ marginTop: 12 }}>
+                            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 6 }}>
+                                {t('analyzedCount', lang, { count: analyzedStats.analyzed, total: repositories.length })}
+                                {analyzedStats.failed > 0 && <span style={{ color: 'var(--color-error-text)', marginLeft: 8 }}>({lang === 'zh' ? '失败' : 'Failed'}: {analyzedStats.failed})</span>}
+                            </div>
+                            <div className="progress-bar">
+                                <div className="progress-bar-fill" style={{ width: `${analyzedStats.pct}%` }} />
+                            </div>
                         </div>
                     )}
                     {repositories.length === 0 && <div style={{ marginTop: 12, fontSize: 12, color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '请先同步仓库后再进行分析' : 'Please sync repositories first'}</div>}
                 </div>
+
+                {/* ===== 版本追踪 ===== */}
+                <h4 className="settings-section-title"><Rss size={14} />{t('settingsGroupReleases', lang)}</h4>
 
                 {/* 版本追踪设置 🆕 v1.4.0 */}
                 <div className="card" style={{ marginBottom: 12 }}>
@@ -377,14 +467,16 @@ export const SettingsPage: React.FC = () => {
                         <Bell size={14} style={{ color: 'var(--color-primary)' }} />
                         {t('releaseSubscription', lang)}
                     </h3>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
                         <div>
                             <div style={{ fontSize: 13, fontWeight: 500 }}>{t('autoCheckUpdates', lang)}</div>
                             <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{lang === 'zh' ? '打开插件时自动检查订阅仓库的版本更新' : 'Automatically check for updates on startup'}</div>
                         </div>
-                        <button className={`btn ${(settings.autoCheckReleaseUpdates !== false) ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => saveSettings({ autoCheckReleaseUpdates: settings.autoCheckReleaseUpdates === false })} style={{ minWidth: 60 }}>
-                            {(settings.autoCheckReleaseUpdates !== false) ? (lang === 'zh' ? '开' : 'On') : (lang === 'zh' ? '关' : 'Off')}
-                        </button>
+                        <Toggle
+                            checked={settings.autoCheckReleaseUpdates !== false}
+                            onChange={(checked) => saveSettings({ autoCheckReleaseUpdates: checked })}
+                            aria-label={t('autoCheckUpdates', lang)}
+                        />
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                         <div>
@@ -402,8 +494,16 @@ export const SettingsPage: React.FC = () => {
                         </button>
                     </div>
                     {releaseCheckStatus.lastCheckedAt && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-text-muted)' }}>{t('lastChecked', lang)}: {new Date(releaseCheckStatus.lastCheckedAt).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US')}</div>}
-                    {releaseCheckStatus.error && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-error)' }}>⚠️ {releaseCheckStatus.error}</div>}
+                    {releaseCheckStatus.error && (
+                        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-error-text)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <AlertTriangle size={12} />
+                            {releaseCheckStatus.error}
+                        </div>
+                    )}
                 </div>
+
+                {/* ===== 外观与语言 ===== */}
+                <h4 className="settings-section-title"><Palette size={14} />{t('settingsGroupAppearance', lang)}</h4>
 
                 {/* 主题 */}
                 <div className="card" style={{ marginBottom: 12 }}>
@@ -424,19 +524,39 @@ export const SettingsPage: React.FC = () => {
                     </div>
                 </div>
 
-                {/* 每页数量 */}
+                {/* 每页数量 🆕 阶段6：0 = 全部（首页虚拟滚动）；阶段8：分段控件 */}
                 <div className="card" style={{ marginBottom: 12 }}>
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{t('itemsPerPage', lang)}</h3>
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div className="segmented" style={{ width: '100%' }}>
                         {[10, 20, 50, 100].map((n) => (
-                            <button key={n} className={`btn ${settings.itemsPerPage === n ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => saveSettings({ itemsPerPage: n })} style={{ flex: 1 }}>{n}</button>
+                            <button
+                                key={n}
+                                type="button"
+                                className={`segmented-item${settings.itemsPerPage === n ? ' active' : ''}`}
+                                onClick={() => saveSettings({ itemsPerPage: n })}
+                                aria-pressed={settings.itemsPerPage === n}
+                            >
+                                {n}
+                            </button>
                         ))}
+                        <button
+                            type="button"
+                            className={`segmented-item${settings.itemsPerPage === 0 ? ' active' : ''}`}
+                            onClick={() => saveSettings({ itemsPerPage: 0 })}
+                            aria-pressed={settings.itemsPerPage === 0}
+                            title={lang === 'zh' ? '不分页，全部展示（虚拟滚动）' : 'Show all without pagination (virtualized)'}
+                        >
+                            {t('itemsPerPageAll', lang)}
+                        </button>
                     </div>
                 </div>
 
+                {/* ===== 数据 ===== */}
+                <h4 className="settings-section-title"><Database size={14} />{t('settingsGroupData', lang)}</h4>
+
                 {/* 导入导出 */}
                 <div className="card" style={{ marginBottom: 12 }}>
-                    <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{lang === 'zh' ? '数据管理' : 'Data Management'}</h3>
+                    <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{t('dataManagement', lang)}</h3>
                     <div style={{ display: 'flex', gap: 8 }}>
                         <button className="btn btn-secondary" onClick={handleExport} style={{ flex: 1 }}><Download size={14} />{t('exportData', lang)}</button>
                         <button className="btn btn-secondary" onClick={handleImport} style={{ flex: 1 }}><Upload size={14} />{t('importData', lang)}</button>
@@ -448,13 +568,26 @@ export const SettingsPage: React.FC = () => {
                     <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>{t('about', lang)}</h3>
                     <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', lineHeight: 1.6 }}>
                         GitHub Stars Manager For uTools<br />
-                        {t('version', lang)}: 1.6.2<br />
-                        <a href="#" onClick={(e) => { e.preventDefault(); window.githubStarsAPI.openExternal(projectRepositoryUrl); }} style={{ color: 'var(--color-primary)', textDecoration: 'none' }}>
+                        {t('version', lang)}: {pkg.version}<br />
+                        <a href="#" onClick={(e) => { e.preventDefault(); window.githubStarsAPI.openExternal(projectRepositoryUrl); }} className="link">
                             {lang === 'zh' ? '项目地址' : 'Project Repository'}
                         </a>
                     </p>
                 </div>
             </div>
+
+            {/* C1：导入二次确认（覆盖导入不可逆，危险场景聚焦取消按钮防误触） */}
+            <ConfirmDialog
+                variant="danger"
+                autoFocusButton="cancel"
+                isOpen={!!pendingImport}
+                title={t('importConfirmTitle', lang)}
+                message={t('importConfirmDesc', lang, { count: pendingImport?.data.repositories?.length ?? 0 })}
+                confirmText={t('importData', lang)}
+                cancelText={t('cancel', lang)}
+                onConfirm={confirmImport}
+                onCancel={() => setPendingImport(null)}
+            />
         </div>
     );
 };
