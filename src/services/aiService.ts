@@ -124,13 +124,21 @@ export const aiService = {
         repo: Repository,
         token: string,
         language: 'zh' | 'en' = 'zh',
-        model?: string
+        model?: string,
+        signal?: AbortSignal
     ): Promise<{ summary: string; tags: string[]; platforms: string[] } | null> {
         const readme = await window.githubStarsAPI.getReadme(
             repo.owner.login,
             repo.name,
             token
         );
+
+        if (signal?.aborted) {
+            // S1：getReadme 在途期间用户已停止——不再发起 utools.ai 调用（能量消耗不可逆）。
+            // 返回 null：结果会被 processQueue 的 !signal?.aborted 守卫整体丢弃，不进失败标记/冷却。
+            // 该仓库保持 needsAnalyze，下次批次重新分析（期望语义）
+            return null;
+        }
 
         if (!readme) {
             // 无 README 属于"无可分析内容"，用描述兜底并视为完成，避免反复重试
@@ -199,7 +207,7 @@ export const aiService = {
                 let failed = false;
 
                 try {
-                    const result = await aiService.analyzeRepository(repo, token, language, model);
+                    const result = await aiService.analyzeRepository(repo, token, language, model, signal);
                     if (!signal?.aborted) {
                         if (result) {
                             // 构造新对象，不触碰传入引用（搜索索引 WeakMap 依赖引用不可变语义）
