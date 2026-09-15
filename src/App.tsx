@@ -34,17 +34,41 @@ function scheduleSubInputKeyword(text: string): void {
     cancelPendingSubInputKeyword();
     subInputDebounceTimer = setTimeout(() => {
         subInputDebounceTimer = null;
+        // 同值守卫（A3）：setSearchFilter 会无条件把页码打回第 1 页，
+        // 程序化回填触发的同值回调不得进入（保住返回首页时的分页恢复）
+        if (text === useStore.getState().searchFilter.keyword) return;
         useStore.getState().setSearchFilter({ keyword: text });
     }, SUBINPUT_DEBOUNCE_MS);
 }
 
-function setupRepositorySearchSubInput(isFocus = true): void {
+/** 一次性子输入框回调抑制上下文（A3b）：回填前置位，
+ *  吞掉窗口内首个"空串或等于回填值"的回调（防御 uTools 注册瞬间回调/回显），真实编辑放行 */
+let subInputSuppress: { until: number; value: string } | null = null;
+
+function setupRepositorySearchSubInput(isFocus = true, restoreValue?: string): void {
     if (typeof utools === 'undefined') return;
 
+    // 抑制上下文必须在 setSubInput 注册之前置位：uTools 可能在注册瞬间同步回调（方案 v1.2 复核必改 2）
+    if (restoreValue !== undefined) {
+        subInputSuppress = { until: Date.now() + 250, value: restoreValue };
+    }
+
     utools.setSubInput(({ text }) => {
+        if (subInputSuppress) {
+            const suppress = subInputSuppress;
+            subInputSuppress = null;
+            if (Date.now() < suppress.until && (text === '' || text === suppress.value)) {
+                return;
+            }
+        }
         // 打字路径走 120ms 防抖：筛选管道（搜索/排序）不再每键全量重算
         scheduleSubInputKeyword(text);
     }, '搜索仓库...', isFocus);
+
+    // 无条件回填（含空串）：子输入框显示值与 store 保持一致，不赌 uTools 重挂载是否残留旧值（A1）
+    if (restoreValue !== undefined) {
+        utools.setSubInputValue(restoreValue);
+    }
 }
 
 function releaseRepositorySearchSubInput(): void {
@@ -53,14 +77,6 @@ function releaseRepositorySearchSubInput(): void {
     utools.subInputBlur?.();
     utools.removeSubInput();
 }
-
-/**
- * 入口带词进入标志：onPluginEnter 程序化写入搜索关键词时置位。
- * 下方 [currentPage] effect 在页面切到 home 时默认会清空关键词（方案B：返回首页清空上次搜索词），
- * 若不跳过一次，后台驻留 + 上次停留非 home 页时，入口刚写入的关键词会被该 effect 静默吞掉。
- * 标志在 effect 每次运行时读取并复位，不会残留到后续导航。
- */
-let enterKeywordApplied = false;
 
 const App: React.FC = () => {
     // 精确订阅（阶段2 性能重构）：根组件只订阅页面路由与设置，进度类状态在 useProgressStore
@@ -151,7 +167,7 @@ const App: React.FC = () => {
             if (useProgressStore.getState().isAnalyzing) return;
 
             if (currentSettings?.autoAnalyzeOnOpen && currentToken) {
-                // 筛选需要分析的仓库（与 startAutoAnalyze 使用同一判断，含失败 24h 冷却）
+                // 筛选需要分析的仓库（与 startAutoAnalyze 使用同一判断，含失败 5 分钟冷却）
                 const toAnalyze = currentRepos.filter(r => checkAnalysisNeeded(r).needsAnalyze);
 
                 if (toAnalyze.length > 0) {
@@ -236,12 +252,7 @@ const App: React.FC = () => {
                             // 程序化路径：立即生效并取消挂起的防抖写入
                             cancelPendingSubInputKeyword();
                             useStore.getState().setSearchFilter({ keyword: payload });
-                            setupRepositorySearchSubInput(true);
-                            if (payload) {
-                                // 标记入口带词：阻止 [currentPage] effect 清掉刚写入的关键词
-                                enterKeywordApplied = true;
-                                utools.setSubInputValue(payload);
-                            }
+                            setupRepositorySearchSubInput(true, payload);
                         }
                         break;
                     case 'github-stars-repo':
@@ -256,12 +267,7 @@ const App: React.FC = () => {
                                 // 程序化路径：立即生效并取消挂起的防抖写入
                                 cancelPendingSubInputKeyword();
                                 useStore.getState().setSearchFilter({ keyword: payload });
-                                setupRepositorySearchSubInput(true);
-                                if (payload) {
-                                    // 与 github-stars-search 分支对齐：过滤词同步进子输入框 + 跳过一次清空
-                                    enterKeywordApplied = true;
-                                    utools.setSubInputValue(payload);
-                                }
+                                setupRepositorySearchSubInput(true, payload);
                             }
                         }
                         break;
@@ -277,19 +283,10 @@ const App: React.FC = () => {
     }, []);
 
     useEffect(() => {
-        // 🆕 v1.6.4 双向管理子输入框：进入 home 时挂载，离开 home 时移除
-        // 入口带词进入时跳过一次清空（onPluginEnter 写入的关键词只在页面切换时会被这里误清）
-        const skipKeywordClear = enterKeywordApplied;
-        enterKeywordApplied = false;
-
+        // 子输入框双向管理：进入 home 时挂载并回填 store 当前关键词（搜索状态恢复，方案 v1.2 A1——推翻 v1.6.4 方案B 的清空语义），
+        // 离开 home 时移除。全新进入（onPluginEnter 'github-stars' 分支）已先行清空关键词，此处回填空串即无操作。
         if (currentPage === 'home') {
-            if (!skipKeywordClear) {
-                // 返回首页时清空上次搜索词，与空子输入框保持一致（方案B 语义）
-                // 程序化清空：取消挂起的防抖定时器，避免旧关键词复活
-                cancelPendingSubInputKeyword();
-                useStore.getState().setSearchFilter({ keyword: '' });
-            }
-            setupRepositorySearchSubInput(true);
+            setupRepositorySearchSubInput(true, useStore.getState().searchFilter.keyword);
         } else {
             releaseRepositorySearchSubInput();
         }

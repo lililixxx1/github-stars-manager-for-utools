@@ -100,6 +100,15 @@ function flushAiPatches(): void {
     storageService.patchReposBatch(updates);
 }
 
+/** 首页滚动位置记忆（方案 SEARCH-RESTORE-BACKSPACE-PLAN v1.2 B1）：offset + 恢复指纹（会话级，不持久化） */
+export interface HomeScrollMemory {
+    offset: number;
+    keyword: string;
+    page: number;
+    viewMode: ViewMode;
+    itemsPerPage: number;
+}
+
 interface AppState {
     // 页面导航
     currentPage: PageName;
@@ -144,6 +153,10 @@ interface AppState {
     // 分页
     currentPageNum: number;
     setCurrentPageNum: (page: number) => void;
+
+    // 首页滚动位置记忆：HomePage 卸载时写入，重新挂载时按指纹恢复（方案 v1.2 B1）
+    homeScrollMemory: HomeScrollMemory | null;
+    setHomeScrollMemory: (memory: HomeScrollMemory | null) => void;
 
     // ========== 🆕 v1.1.0 标签管理 ==========
     tags: Tag[];
@@ -703,6 +716,10 @@ export const useStore = create<AppState>((set, get) => ({
     // 分页
     currentPageNum: 1,
     setCurrentPageNum: (page) => set({ currentPageNum: page }),
+
+    // 首页滚动位置记忆
+    homeScrollMemory: null,
+    setHomeScrollMemory: (memory) => set({ homeScrollMemory: memory }),
 
     // ========== 🆕 v1.1.0 标签管理 ==========
     tags: [],

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Box, ArrowLeft, Loader2, RefreshCw, Inbox, Bell, Star } from 'lucide-react';
+import { Box, Loader2, RefreshCw, Inbox, Bell, Star } from 'lucide-react';
 import { useStore } from '../stores/useStore';
 import { useProgressStore } from '../stores/useProgressStore';
 import { ReleaseCard } from '../components/ReleaseCard';
@@ -14,6 +14,7 @@ import { t } from '../locales';
 import type { Language } from '../locales';
 import type { Release, Repository } from '../types';
 import { useBackShortcut } from '../hooks/useBackShortcut';
+import { BackHintChip } from '../components/BackHintChip';
 
 type TabType = 'updates' | 'subscriptions';
 
@@ -217,10 +218,7 @@ export function ReleasesPage() {
                 padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)',
             }}>
-                <button className="btn btn-ghost btn-sm" onClick={handleBack}>
-                    <ArrowLeft size={16} />
-                    {t('back', lang)}
-                </button>
+                <BackHintChip label={t('back', lang)} onClick={handleBack} />
                 <h2 style={{ fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>
                     {t('releases', lang)}
                 </h2>

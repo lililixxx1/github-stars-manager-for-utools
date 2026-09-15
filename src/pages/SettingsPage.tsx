@@ -10,9 +10,10 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { toast } from '../components/Toast';
 import { logger } from '../utils/logger';
 import { useBackShortcut } from '../hooks/useBackShortcut';
+import { BackHintChip } from '../components/BackHintChip';
 import type { Repository, Settings } from '../types';
 import {
-    ArrowLeft, Key, Check, X, Loader2, Download, Upload,
+    Key, Check, X, Loader2, Download, Upload,
     Sun, Moon, Monitor, Globe, Sparkles, Play, StopCircle, Zap, Bell,
     AlertTriangle, Link2, BrainCircuit, Rss, Palette, Database
 } from 'lucide-react';
@@ -302,10 +303,7 @@ export const SettingsPage: React.FC = () => {
                 padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)',
             }}>
-                <button className="btn btn-ghost btn-sm" onClick={handleBack}>
-                    <ArrowLeft size={16} />
-                    {t('back', lang)}
-                </button>
+                <BackHintChip label={t('back', lang)} onClick={handleBack} />
                 <h2 style={{ fontSize: 16, fontWeight: 600 }}>{t('settings', lang)}</h2>
             </div>
 

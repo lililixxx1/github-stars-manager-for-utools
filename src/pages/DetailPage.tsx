@@ -11,8 +11,9 @@ import { checkAnalysisNeeded, getCooldownMinutes } from '../utils/analysis';
 import { useBackShortcut } from '../hooks/useBackShortcut';
 import { useRovingControls } from '../hooks/useRovingControls';
 import type { RovingControl } from '../hooks/useRovingControls';
+import { BackHintChip } from '../components/BackHintChip';
 import {
-    ArrowLeft, ExternalLink, Star, GitFork, Sparkles,
+    ExternalLink, Star, GitFork, Sparkles,
     Bell, BellOff, Loader2, CheckCircle2, XCircle,
     Edit2, Save, X, Plus, FileText, Tag, Copy
 } from 'lucide-react';
@@ -321,7 +322,6 @@ export const DetailPage: React.FC = () => {
         if (!repo) return [];
 
         const controls: RovingControl[] = [
-            { id: 'back', group: 'topbar', ref: getControlRef('back'), action: handleBack },
             { id: 'alias', group: 'topbar', ref: getControlRef('alias'), action: handleStartEditAlias },
             { id: 'subscribe', group: 'topbar', ref: getControlRef('subscribe'), action: handleToggleSubscribe },
             { id: 'releases', group: 'topbar', ref: getControlRef('releases'), action: handleViewReleases, visible: isSubscribed },
@@ -418,7 +418,6 @@ export const DetailPage: React.FC = () => {
         editingNote,
         getControlRef,
         handleAIAnalyze,
-        handleBack,
         handleCancelNote,
         handleCopyRepoUrl,
         handleDeleteNote,
@@ -442,7 +441,7 @@ export const DetailPage: React.FC = () => {
     const roving = useRovingControls({
         enabled: Boolean(repo) && !editingAlias && !showDeleteConfirm && !showReanalyzeConfirm,
         controls: rovingControls,
-        initialId: 'back',
+        initialId: 'alias',
         deps: [
             editingAlias,
             showDeleteConfirm,
@@ -492,17 +491,8 @@ export const DetailPage: React.FC = () => {
                 padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)',
             }}>
-                <button
-                    ref={bindControlRef('back')}
-                    className="btn btn-ghost btn-sm"
-                    style={getControlStyle('back')}
-                    tabIndex={roving.getTabIndex('back')}
-                    onFocus={() => roving.setActiveId('back')}
-                    onClick={handleBack}
-                >
-                    <ArrowLeft size={16} />
-                    {t('back', lang)}
-                </button>
+                {/* ⌫ 返回 chip：tabIndex=-1——roving 全局 Enter/Space 处理器会劫持未注册的可聚焦按钮（方案 v1.2 C1） */}
+                <BackHintChip label={t('back', lang)} onClick={handleBack} tabIndex={-1} />
                 <div style={{ flex: 1 }} />
                 {/* 别名按钮 */}
                 <button

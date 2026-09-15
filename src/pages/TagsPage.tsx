@@ -3,7 +3,7 @@ import { useStore } from '../stores/useStore';
 import { TagManager } from '../components/TagManager';
 import { t } from '../locales';
 import { useBackShortcut } from '../hooks/useBackShortcut';
-import { ArrowLeft } from 'lucide-react';
+import { BackHintChip } from '../components/BackHintChip';
 
 export const TagsPage: React.FC = () => {
     // 精确订阅（阶段2 性能重构）
@@ -34,13 +34,7 @@ export const TagsPage: React.FC = () => {
                 padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)',
             }}>
-                <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={handleBack}
-                >
-                    <ArrowLeft size={16} />
-                    {t('back', lang)}
-                </button>
+                <BackHintChip label={t('back', lang)} onClick={handleBack} />
                 <h2 style={{ fontSize: 16, fontWeight: 600 }}>{t('manageTags', lang)}</h2>
             </div>
 

@@ -67,6 +67,18 @@ export const HomePage: React.FC = () => {
             (currentPageNum - 1) * itemsPerPage,
             currentPageNum * itemsPerPage
         );
+    // B3/B4（方案 v1.2）：挂载期一次性恢复——仅在 HomePage 重新挂载（从子页返回）时取记忆快照；
+    // 指纹四项 + 页码在界全匹配才恢复，否则 offset=0。render 期计算以喂给 virtualizer 的 initialOffset（首帧窗口）
+    const initialMemoryRef = useRef(useStore.getState().homeScrollMemory);
+    const initialMemory = initialMemoryRef.current;
+    const restoreOffset = initialMemory
+        && initialMemory.keyword === searchFilter.keyword
+        && initialMemory.page === currentPageNum
+        && initialMemory.viewMode === viewMode
+        && initialMemory.itemsPerPage === itemsPerPageSetting
+        && currentPageNum <= totalPages
+        ? initialMemory.offset
+        : 0;
     const [activeRepoIndex, setActiveRepoIndex] = useState<number | null>(null);
     const [keyboardArea, setKeyboardArea] = useState<'toolbar' | 'list'>('list');
     const itemRefs = useRef<Record<number, HTMLDivElement | null>>({});
@@ -86,7 +98,52 @@ export const HomePage: React.FC = () => {
         getItemKey: (index) => currentRepos[index]?.id ?? index,
         overscan: 5,
         enabled: isShowAllMode,
+        // B4：与 B3 的 scrollTop 恢复同源取值，首帧即渲染正确窗口（估算行高下为近似恢复，方案 R6）
+        initialOffset: restoreOffset,
     });
+
+    // B2：滚动位置持续追踪（方案 v1.3 修正——passive cleanup 运行时元素已脱离文档，
+    // 此时读 el.scrollTop 恒为 0，卸载时刻读取不可用；改为滚动时写入 ref，卸载只读追踪值，不触碰 DOM）
+    const lastScrollTopRef = useRef(0);
+
+    // B2：卸载时保存滚动位置记忆（[] 依赖＝仅真实卸载。
+    // 当前未启用 StrictMode；若未来启用，双挂载的假卸载会以追踪值覆盖记忆，届时需改为滚动时节流写 store）
+    useEffect(() => {
+        return () => {
+            const s = useStore.getState();
+            s.setHomeScrollMemory({
+                offset: lastScrollTopRef.current,
+                keyword: s.searchFilter.keyword,
+                page: s.currentPageNum,
+                viewMode: s.viewMode,
+                itemsPerPage: s.settings.itemsPerPage ?? 20,
+            });
+        };
+    }, []);
+
+    // B3：挂载恢复滚动位置。立即赋值（不依赖 rAF——页面不可见时渲染循环暂停、rAF 永不触发，
+    // 立即赋值强制同步布局同样生效）+ rAF 复校一次（可见页面的首帧时机），分页模式精确，虚拟模式近似
+    useEffect(() => {
+        if (!restoreOffset) return;
+        const offset = restoreOffset;
+        const apply = () => {
+            const el = listContainerRef.current;
+            if (el) el.scrollTop = offset;
+            // 恢复赋值同步追踪值：程序化赋值不保证派发 scroll 事件（页面不可见时浏览器不派发），
+            // 不能依赖 onScroll 回填，否则下一次卸载保存会用旧值覆盖
+            lastScrollTopRef.current = offset;
+        };
+        apply();
+        requestAnimationFrame(apply);
+    }, []);
+
+    // B6：页码越界收敛——设置页改每页数量/导入备份/后台同步使 totalPages 变小时，
+    // 避免"越界页码 slice 出空列表 + 分页条显示 3/2"的死角（方案 v1.2 P1-2）
+    useEffect(() => {
+        if (!isShowAllMode && filteredRepos.length > 0 && currentPageNum > totalPages) {
+            setCurrentPageNum(totalPages);
+        }
+    }, [isShowAllMode, filteredRepos.length, currentPageNum, totalPages, setCurrentPageNum]);
 
     // 获取所有语言
     const allLanguages = useMemo(() => {
@@ -127,8 +184,16 @@ export const HomePage: React.FC = () => {
         }
     }, [viewMode, isShowAllMode, listVirtualizer]);
 
+    // 键盘跟随跳过一次的标志：挂载恢复滚动后，不让"activeRepo 从 null 变 0"的首次跟随把列表拉回顶部
+    const restorePendingRef = useRef(restoreOffset > 0);
+
     useEffect(() => {
         if (!activeRepo) return;
+
+        if (restorePendingRef.current) {
+            restorePendingRef.current = false;
+            return;
+        }
 
         if (isShowAllMode) {
             // 虚拟模式下未挂载行没有 DOM ref，统一走 scrollToIndex 跟随；
@@ -142,6 +207,13 @@ export const HomePage: React.FC = () => {
             inline: 'nearest',
         });
     }, [activeRepo?.id, activeRepoIndex, isShowAllMode, listVirtualizer]);
+
+    // 翻页后同步追踪值：键盘翻页的 scrollIntoView/鼠标翻页的高度钳制都可能改变滚动位置，
+    // 事件派发存在次帧延迟，若在事件派发前卸载会保存旧值——翻页落地时直接回读容器一次
+    useEffect(() => {
+        const el = listContainerRef.current;
+        if (el) lastScrollTopRef.current = el.scrollTop;
+    }, [currentPageNum]);
 
     const handleSync = useCallback(async () => {
         const result = await useStore.getState().syncRepositories();
@@ -369,6 +441,7 @@ export const HomePage: React.FC = () => {
             {/* 仓库列表 */}
             <div
                 ref={listContainerRef}
+                onScroll={(e) => { lastScrollTopRef.current = e.currentTarget.scrollTop; }}
                 style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'card' ? '6px 16px' : '0' }}
                 role="listbox"
                 aria-label={t('repositories', lang)}
