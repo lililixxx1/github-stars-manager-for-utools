@@ -232,7 +232,7 @@ export const aiService = {
                 }
 
                 if (failed && !signal?.aborted) {
-                    // 失败标记（R-熔断）：analyzedAt 记录本次尝试时间，供 24 小时冷却判断使用；
+                    // 失败标记（R-熔断）：analyzedAt 记录本次尝试时间，供 5 分钟冷却判断使用；
                     // spread 保留旧 aiSummary/aiTags（详情页失败三态显示依赖旧摘要）
                     outcome = {
                         ...repo,

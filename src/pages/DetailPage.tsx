@@ -7,7 +7,7 @@ import { TagChip } from '../components/TagChip';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { toast } from '../components/Toast';
-import { checkAnalysisNeeded, getCooldownHours } from '../utils/analysis';
+import { checkAnalysisNeeded, getCooldownMinutes } from '../utils/analysis';
 import { useBackShortcut } from '../hooks/useBackShortcut';
 import { useRovingControls } from '../hooks/useRovingControls';
 import type { RovingControl } from '../hooks/useRovingControls';
@@ -22,7 +22,7 @@ import type { RepositoryNote } from '../types';
 export const DetailPage: React.FC = () => {
     // 精确订阅（阶段2 性能重构）：顺带清理了未使用的 repositories/setRepositories/saveRepositories
     // F1：仓库对象由 store 派生（单一数据源）。旧 selectedRepo 快照会让 checkAnalysisNeeded
-    // 读到过期的 analyzedAt/analysisFailed，分析失败后可立即重发 AI 调用，绕过 R1 的 24h 失败冷却
+    // 读到过期的 analyzedAt/analysisFailed，分析失败后可立即重发 AI 调用，绕过 R1 的 5 分钟失败冷却
     const selectedRepoId = useStore((s) => s.selectedRepoId);
     const setSelectedRepoId = useStore((s) => s.setSelectedRepoId);
     const repo = useStore((s) =>
@@ -108,7 +108,7 @@ export const DetailPage: React.FC = () => {
     }, [repo?.id, subscribedRepoIds]);
 
     // F1 三态显示：成功 / 曾成功但最近失败（保留旧摘要 + 失败冷却横幅）/ 未分析（含首次失败）
-    const failedCooldownHours = repo?.analysisFailed ? getCooldownHours(repo) : 0;
+    const failedCooldownMinutes = repo?.analysisFailed ? getCooldownMinutes(repo) : 0;
 
     // F1 兜底：选中仓库已不在列表（如被同步移除）时复位并返回首页，不显示幽灵详情页
     useEffect(() => {
@@ -185,11 +185,11 @@ export const DetailPage: React.FC = () => {
                 return;
             } else if (reason === 'failed_cooldown') {
                 // 冷却中：显示提示
-                const cooldownHours = getCooldownHours(repo);
+                const cooldownMinutes = getCooldownMinutes(repo);
                 window.githubStarsAPI.showNotification(
                     lang === 'zh'
-                        ? `请等待 ${cooldownHours} 小时后重试`
-                        : `Please retry after ${cooldownHours} hours`
+                        ? `请等待 ${cooldownMinutes} 分钟后重试`
+                        : `Please retry after ${cooldownMinutes} minutes`
                 );
                 return;
             }
@@ -203,7 +203,7 @@ export const DetailPage: React.FC = () => {
         if (!repo || !token || analyzing) return;
         setAnalyzing(true);
 
-        // 失败标记（P-15）：记录失败时间进入 24 小时冷却，避免反复重试消耗额度
+        // 失败标记（P-15）：记录失败时间进入 5 分钟冷却，避免反复重试消耗额度
         const markFailure = () => {
             updateRepository(repo.id, {
                 analysisFailed: true,
@@ -229,7 +229,7 @@ export const DetailPage: React.FC = () => {
             }
         } catch (error) {
             console.error('AI analyze failed:', error);
-            // 失败反馈：toast 报错 + analysisFailed 回写（与 aiService 24h 冷却策略一致）
+            // 失败反馈：toast 报错 + analysisFailed 回写（与 aiService 5 分钟冷却策略一致）
             toast.show(
                 error instanceof Error ? error.message : t('analysisFailed', lang),
                 { type: 'error', duration: 5000 }
@@ -843,10 +843,10 @@ export const DetailPage: React.FC = () => {
 
                             <div style={{ fontSize: 12, color: 'var(--color-error)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
                                 <XCircle size={12} style={{ color: 'var(--color-error)' }} />
-                                {failedCooldownHours > 0
+                                {failedCooldownMinutes > 0
                                     ? (lang === 'zh'
-                                        ? `最近一次分析失败，${failedCooldownHours} 小时后可重试`
-                                        : `Last analysis failed. Retry in ${failedCooldownHours}h`)
+                                        ? `最近一次分析失败，${failedCooldownMinutes} 分钟后可重试`
+                                        : `Last analysis failed. Retry in ${failedCooldownMinutes}min`)
                                     : (lang === 'zh' ? '最近一次分析失败，可重试' : 'Last analysis failed. You can retry now')}
                             </div>
                         </div>
