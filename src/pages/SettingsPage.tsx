@@ -413,6 +413,18 @@ export const SettingsPage: React.FC = () => {
                             aria-label={t('autoAnalyzeOnOpen', lang)}
                         />
                     </div>
+                    {/* 🆕 v1.8.0 深度思考模式（uTools 8.0 reasoning_effort）：默认关 = 快速模式 */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+                        <div>
+                            <div style={{ fontSize: 13, fontWeight: 500 }}>{t('aiThinking', lang)}</div>
+                            <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{t('aiThinkingHint', lang)}</div>
+                        </div>
+                        <Toggle
+                            checked={!!settings.aiThinking}
+                            onChange={(checked) => saveSettings({ aiThinking: checked })}
+                            aria-label={t('aiThinking', lang)}
+                        />
+                    </div>
                     <div style={{ marginBottom: 12 }}>
                         <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>{t('concurrency', lang)}</div>
                         {/* 阶段8：等宽数字按钮收敛为分段控件 */}

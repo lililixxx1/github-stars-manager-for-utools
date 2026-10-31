@@ -428,6 +428,7 @@ export function ReleasesPage() {
                     onClose={() => setSelectedRelease(null)}
                     token={token || undefined}
                     aiModel={settings.aiModel}
+                    aiThinking={!!settings.aiThinking}
                 />
             )}
 

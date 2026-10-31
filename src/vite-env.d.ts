@@ -16,7 +16,7 @@ declare const utools: {
     setSubInputValue: (text: string) => boolean;
     removeSubInput: () => boolean;
     subInputBlur?: () => boolean;
-    setExpendHeight: (height: number) => boolean;
+    setExpandHeight: (height: number) => boolean;
     hideMainWindow: (isRestorePreWindow?: boolean) => boolean;
     showMainWindow: () => boolean;
     outPlugin: (isKill?: boolean) => boolean;
@@ -24,7 +24,7 @@ declare const utools: {
     showNotification: (body: string, clickFeatureCode?: string) => void;
     copyText: (text: string) => boolean;
     isDarkColors: () => boolean;
-    getWindowType: () => 'main' | 'detach' | 'browser';
+    getWindowType: () => 'main' | 'detach' | 'custom';
     showOpenDialog: (options: any) => string[] | undefined;
     showSaveDialog: (options: any) => string | undefined;
     redirect: (label: string | [string, string], payload?: any) => boolean;
@@ -38,6 +38,6 @@ declare const utools: {
         getItem: (key: string) => any;
         removeItem: (key: string) => void;
     };
-    ai: (option: { model?: string; messages: any[]; tools?: any[] }, streamCallback?: (chunk: any) => void) => Promise<any> & { abort: () => void };
+    ai: (option: { model?: string; messages: any[]; tools?: any[]; reasoning_effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" }, streamCallback?: (chunk: any) => void) => Promise<any> & { abort: () => void };
     allAiModels: () => Promise<any[]>;
 };

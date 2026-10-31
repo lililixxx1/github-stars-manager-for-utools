@@ -601,6 +601,7 @@ export const useStore = create<AppState>((set, get) => ({
                 language,
                 concurrency,
                 settings.aiModel || undefined,
+                !!settings.aiThinking,
                 controller.signal
             );
 

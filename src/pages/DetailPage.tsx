@@ -213,7 +213,7 @@ export const DetailPage: React.FC = () => {
         };
 
         try {
-            const result = await aiService.analyzeRepository(repo, token, lang, settings.aiModel || undefined);
+            const result = await aiService.analyzeRepository(repo, token, lang, settings.aiModel || undefined, !!settings.aiThinking);
             if (result) {
                 // F1：只写 store（updateRepository 内部不可变更新 + patchRepo 增量落盘），
                 // 页面读派生值自动刷新

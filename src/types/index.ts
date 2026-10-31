@@ -116,6 +116,7 @@ export interface Settings {
     aiCustomPrompt?: string;
     useCustomPrompt?: boolean;
     aiConcurrency?: number;
+    aiThinking?: boolean;               // 🆕 v1.8.0 深度思考模式（uTools 8.0 reasoning_effort）；默认关 = 发送 'none' 快速模式
     theme: 'light' | 'dark' | 'auto';
     defaultView: ViewMode;
     itemsPerPage: number;                // 每页条数；0 = 全部展示（阶段6 首页虚拟滚动，不 slice 不分页）
@@ -245,7 +246,8 @@ export interface GithubStarsAPI {
         readmeContent: string,
         repoInfo: { fullName: string; description: string | null; language: string | null },
         language?: string,
-        model?: string
+        model?: string,
+        thinking?: boolean
     ) => Promise<{ summary: string; tags: string[]; platforms: string[] } | null>;
     /** 中止所有进行中的 AI 分析调用（utools.ai PromiseLike.abort()） */
     abortAiCall: () => void;

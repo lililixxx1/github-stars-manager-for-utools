@@ -1,5 +1,5 @@
 {
-    "version": "1.7.0",
+    "version": "1.8.0",
     "main": "dist/index.html",
     "logo": "logo.png",
     "preload": "preload.js",
@@ -11,6 +11,7 @@
         {
             "code": "github-stars",
             "explain": "GitHub Stars Manager For uTools",
+            "description": "GitHub Stars Manager For uTools",
             "icon": "logo.png",
             "cmds": [
                 "github stars",
@@ -22,6 +23,7 @@
         {
             "code": "github-stars-search",
             "explain": "搜索 GitHub 星标仓库",
+            "description": "搜索 GitHub 星标仓库",
             "cmds": [
                 {
                     "type": "over",
@@ -34,6 +36,7 @@
         {
             "code": "github-stars-repo",
             "explain": "打开指定仓库",
+            "description": "打开指定仓库",
             "cmds": [
                 {
                     "type": "regex",

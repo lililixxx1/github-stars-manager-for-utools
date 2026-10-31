@@ -133,6 +133,9 @@ export const i18n = {
         aiAnalysisSettings: 'AI 分析设置',
         autoAnalyzeOnOpen: '启动时自动分析',
         autoAnalyzeOnOpenHint: '打开插件时自动分析未分析的仓库，每次分析消耗AI能量',
+        // 🆕 v1.8.0 深度思考模式（uTools 8.0 reasoning_effort）
+        aiThinking: '深度思考模式',
+        aiThinkingHint: '默认快速模式（关闭思考，更快）；开启后使用模型默认思考，更慢但推理可能更细',
         concurrency: '并发数',
         concurrencyHint: '并发数越高分析越快，但可能触发限流',
         analyzeNow: '立即分析',
@@ -410,6 +413,9 @@ export const i18n = {
         aiAnalysisSettings: 'AI Analysis Settings',
         autoAnalyzeOnOpen: 'Auto-analyze on startup',
         autoAnalyzeOnOpenHint: 'Analyze unanalyzed repos when plugin opens',
+        // 🆕 v1.8.0 Thinking mode (uTools 8.0 reasoning_effort)
+        aiThinking: 'Deep Thinking Mode',
+        aiThinkingHint: 'Fast mode by default (thinking off, faster); enable to use model default thinking — slower but possibly more thorough',
         concurrency: 'Concurrency',
         concurrencyHint: 'Higher concurrency is faster but may trigger rate limits',
         analyzeNow: 'Analyze Now',

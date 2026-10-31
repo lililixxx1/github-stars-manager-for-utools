@@ -125,6 +125,7 @@ export const aiService = {
         token: string,
         language: 'zh' | 'en' = 'zh',
         model?: string,
+        thinking?: boolean,
         signal?: AbortSignal
     ): Promise<{ summary: string; tags: string[]; platforms: string[] } | null> {
         const readme = await window.githubStarsAPI.getReadme(
@@ -158,7 +159,8 @@ export const aiService = {
                 language: repo.language,
             },
             language,
-            model
+            model,
+            thinking
         );
     },
 
@@ -184,6 +186,7 @@ export const aiService = {
         language: 'zh' | 'en' = 'zh',
         concurrency: number = 1,
         model?: string,
+        thinking?: boolean,
         signal?: AbortSignal
     ): Promise<Repository[]> {
         const queue = [...repos];
@@ -207,7 +210,7 @@ export const aiService = {
                 let failed = false;
 
                 try {
-                    const result = await aiService.analyzeRepository(repo, token, language, model, signal);
+                    const result = await aiService.analyzeRepository(repo, token, language, model, thinking, signal);
                     if (!signal?.aborted) {
                         if (result) {
                             // 构造新对象，不触碰传入引用（搜索索引 WeakMap 依赖引用不可变语义）
@@ -282,6 +285,7 @@ export const aiService = {
         content: string,
         language: 'zh' | 'en' = 'zh',
         model?: string,
+        thinking?: boolean,
         forceRefresh: boolean = false
     ): Promise<{ translatedContent: string; fromCache: boolean } | null> {
         // 1. 语言检测：如果内容已是目标语言，无需翻译
@@ -349,9 +353,11 @@ ${isTruncated ? '6. 内容已被截断，在末尾有省略号，请正常翻译
                 logger.log('[translateRelease] 准备翻译，进入队列等待', { releaseId });
 
                 const result = await translationQueue.add(async () => {
-                    logger.log('[translateRelease] 开始执行翻译请求', { releaseId, model, contentLength: truncatedContent.length });
+                    // 🆕 v1.8.0：thinking 为真走模型默认思考；否则发 'none' 关思考提速（实机核对以 reasoning_effort 字段为准）
+                    logger.log('[translateRelease] 开始执行翻译请求', { releaseId, model, reasoning_effort: thinking ? '(model-default)' : 'none', contentLength: truncatedContent.length });
                     const aiOptions: any = { messages };
                     if (model) aiOptions.model = model;
+                    if (!thinking) aiOptions.reasoning_effort = 'none';
                     return await utools.ai(aiOptions);
                 });
 

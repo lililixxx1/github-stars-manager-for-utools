@@ -796,7 +796,9 @@ window.githubStarsAPI = {
     showNotification: (body, clickFeatureCode) => utools.showNotification(body, clickFeatureCode),
 
     // ========== AI 分析 ==========
-    analyzeRepo: async (readmeContent, repoInfo, language = 'zh', model) => {
+    // thinking（🆕 v1.8.0，uTools 8.0）：默认（falsy）发送 reasoning_effort:'none' 关闭思考模式提速
+    // （官方口径：默认模型通常开思考模式，简单提取/翻译任务建议非思考模式）；true 时不发送该字段，走模型默认思考
+    analyzeRepo: async (readmeContent, repoInfo, language = 'zh', model, thinking) => {
         const systemPrompt = language === 'zh'
             ? `你是一个 GitHub 仓库分析专家。请分析以下仓库信息，生成：
 1. 一个简洁的中文概述（不超过50字）
@@ -822,7 +824,8 @@ Return in JSON format: {"summary": "...", "tags": [...], "platforms": [...]}`;
         try {
             const aiOptions = { messages };
             if (model) aiOptions.model = model;
-            console.log('[AI分析] 开始调用 utools.ai，能量消耗中...', { repo: repoInfo.fullName, model });
+            if (!thinking) aiOptions.reasoning_effort = 'none';
+            console.log('[AI分析] 开始调用 utools.ai，能量消耗中...', { repo: repoInfo.fullName, model, reasoning_effort: thinking ? '(model-default)' : 'none' });
             // 保留 PromiseLike 句柄，支持"停止分析"时立即中止进行中的调用（R1/H1）
             const request = utools.ai(aiOptions);
             inFlightAiCalls.add(request);

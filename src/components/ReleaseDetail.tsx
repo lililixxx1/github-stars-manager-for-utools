@@ -12,13 +12,14 @@ interface ReleaseDetailProps {
     release: Release;
     lang: Language;
     onClose: () => void;
-    token?: string;      // 🆕 v1.6.0 用于翻译
-    aiModel?: string;    // 🆕 v1.6.0 AI 模型
+    token?: string;        // 🆕 v1.6.0 用于翻译
+    aiModel?: string;      // 🆕 v1.6.0 AI 模型
+    aiThinking?: boolean;  // 🆕 v1.8.0 深度思考模式（false = 发 reasoning_effort:'none' 快速模式）
 }
 
 type TranslationState = 'idle' | 'translating' | 'success' | 'error';
 
-export function ReleaseDetail({ release, lang, onClose, token, aiModel }: ReleaseDetailProps) {
+export function ReleaseDetail({ release, lang, onClose, token, aiModel, aiThinking }: ReleaseDetailProps) {
     // 支持标准化字段名和 GitHub API 原始字段名
     const htmlUrl = release.htmlUrl || release.html_url;
     const tagName = release.tagName || release.tag_name;
@@ -69,7 +70,8 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel }: Releas
                 release.id,
                 release.body,
                 lang,
-                aiModel
+                aiModel,
+                aiThinking
             );
 
             // 检查组件是否已卸载
