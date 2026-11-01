@@ -2,6 +2,7 @@ import React, { memo, useCallback, useMemo } from 'react';
 import type { Repository } from '../types';
 import { RepoRow } from './RepoRow';
 import { getLanguageColor } from '../constants/languages';
+import { useStore } from '../stores/useStore';
 
 interface RepositoryCardProps {
     repo: Repository;
@@ -34,13 +35,20 @@ function timeAgo(dateStr: string, lang: 'zh' | 'en'): string {
  * <RepositoryCard repo={repo} onClick={handleClick} language="zh" />
  */
 export const RepositoryCard = memo<RepositoryCardProps>(({ repo, onClick, language, isActive = false }) => {
+    // 组件层订阅标签定义（先例：TagManager）——customTags 存的是标签 ID，渲染前需映射为名称
+    const tags = useStore((s) => s.tags);
+
     // 使用 useMemo 缓存计算结果
     const displayName = useMemo(() => repo.alias || repo.name, [repo.alias, repo.name]);
 
-    const allTags = useMemo(() => [
-        ...(repo.aiTags || []),
-        ...(repo.customTags || []),
-    ].slice(0, 4), [repo.aiTags, repo.customTags]);
+    const allTags = useMemo(() => {
+        const tagNameById = new Map(tags.map(t => [t.id, t.name]));
+        return [
+            ...(repo.aiTags || []),
+            // 未知 id 丢弃（不渲染死 ID）；先映射/过滤后截断，避免未知 id 白占名额
+            ...(repo.customTags || []).map(id => tagNameById.get(id)).filter(Boolean),
+        ].slice(0, 4);
+    }, [repo.aiTags, repo.customTags, tags]);
 
     const description = useMemo(() =>
         repo.aiSummary || repo.description || (language === 'zh' ? '暂无描述' : 'No description'),

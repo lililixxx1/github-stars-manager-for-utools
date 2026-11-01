@@ -86,6 +86,7 @@ const REPOS_FORMAT_VERSION = 2;
 const REPOS_CACHE_FLAT_KEY = 'flat';
 const NOTE_INDEX_KEY = 'gh:noteIndex';
 const GITHUB_HTTP_RETRY_LIMIT = 3;
+const GITHUB_HTTP_REDIRECT_LIMIT = 2;
 
 // 模块级复用的 HTTPS Agent（keep-alive 连接池）
 const githubHttpAgent = new https.Agent({ keepAlive: true });
@@ -149,12 +150,22 @@ function parseRetryDelayMs(headerValue) {
     return null;
 }
 
-function requestGitHubRaw(path, token, options = {}, attempt = 0) {
+/**
+ * 发起 GitHub API 请求（薄入口：path 形式）
+ * 主体逻辑在 requestGitHubUrl——仓库改名/转移后 GitHub 返回 301/302/307/308 +
+ * /repositories/<id>，需要跟随重定向（location 保留子路径与 query）
+ */
+function requestGitHubRaw(path, token, options = {}) {
+    return requestGitHubUrl(new URL(path, 'https://api.github.com'), token, options);
+}
+
+function requestGitHubUrl(url, token, options = {}, attempt = 0, redirectsLeft = GITHUB_HTTP_REDIRECT_LIMIT) {
     return new Promise((resolve, reject) => {
-        console.log('[GitHub API] Request:', path);
+        const requestPath = url.pathname + url.search;
+        console.log('[GitHub API] Request:', requestPath);
         const reqOptions = {
-            hostname: 'api.github.com',
-            path: path,
+            hostname: url.hostname,
+            path: requestPath,
             method: 'GET',
             agent: githubHttpAgent,
             headers: {
@@ -169,6 +180,51 @@ function requestGitHubRaw(path, token, options = {}, attempt = 0) {
         const req = https.request(reqOptions, (res) => {
             const encoding = res.headers['content-encoding'];
             console.log('[GitHub API] Response status:', res.statusCode, 'encoding:', encoding || 'none');
+
+            const status = res.statusCode;
+
+            // 3xx 重定向跟随：判定位于响应回调入口（gzip 管道与 JSON.parse 之前），
+            // 不依赖 3xx 响应体内容。resume() 排空响应体保证 keep-alive 连接可复用。
+            if (status === 301 || status === 302 || status === 307 || status === 308) {
+                res.resume();
+                const location = res.headers['location'];
+                const hops = GITHUB_HTTP_REDIRECT_LIMIT - redirectsLeft + 1; // 已跳数（含本次）
+
+                // 无/坏 location、或超出跳数上限：按 HTTP 错误 reject（带 status，不落入 JSON 解析）
+                const rejectRedirect = (message) => {
+                    console.error('[GitHub API] Redirect rejected:', message);
+                    const err = new Error(message);
+                    err.status = status;
+                    reject(err);
+                };
+
+                if (!location) {
+                    rejectRedirect(`Redirect ${status} without location for: ${requestPath} (hops: ${hops})`);
+                    return;
+                }
+                if (redirectsLeft <= 0) {
+                    rejectRedirect(`Redirect limit (${GITHUB_HTTP_REDIRECT_LIMIT}) exceeded for: ${requestPath} (hops: ${hops})`);
+                    return;
+                }
+
+                let nextUrl;
+                try {
+                    nextUrl = new URL(location, url); // 绝对/相对两种形态都覆盖
+                } catch {
+                    rejectRedirect(`Redirect ${status} with invalid location "${location}" for: ${requestPath} (hops: ${hops})`);
+                    return;
+                }
+
+                // 同域校验：origin 一并校验协议与端口，防 Authorization 头泄漏到外部域
+                if (nextUrl.origin !== 'https://api.github.com') {
+                    rejectRedirect(`Redirect ${status} to cross-origin ${nextUrl.origin} rejected for: ${requestPath} (hops: ${hops})`);
+                    return;
+                }
+
+                console.log('[GitHub API] Redirect', status, '->', nextUrl.pathname + nextUrl.search);
+                requestGitHubUrl(nextUrl, token, options, attempt, redirectsLeft - 1).then(resolve, reject);
+                return;
+            }
 
             let stream = res;
             if (encoding === 'gzip') {
@@ -191,15 +247,14 @@ function requestGitHubRaw(path, token, options = {}, attempt = 0) {
                         return;
                     }
 
-                    const status = res.statusCode;
-
                     // 403/429 限流：读 retry-after 头（秒数或 HTTP 日期），指数退避重试最多 3 次
+                    // （重试重发当前 URL——若已跟随过重定向，即重定向后的最终地址）
                     if ((status === 403 || status === 429) && attempt < GITHUB_HTTP_RETRY_LIMIT) {
                         const headerDelay = parseRetryDelayMs(res.headers['retry-after']);
                         const delay = headerDelay !== null ? headerDelay : 1000 * Math.pow(2, attempt);
-                        console.warn(`[GitHub API] ${status} limited, retry ${attempt + 1}/${GITHUB_HTTP_RETRY_LIMIT} in ${delay}ms for:`, path);
+                        console.warn(`[GitHub API] ${status} limited, retry ${attempt + 1}/${GITHUB_HTTP_RETRY_LIMIT} in ${delay}ms for:`, requestPath);
                         setTimeout(() => {
-                            requestGitHubRaw(path, token, options, attempt + 1).then(resolve, reject);
+                            requestGitHubUrl(url, token, options, attempt + 1, redirectsLeft).then(resolve, reject);
                         }, delay);
                         return;
                     }
@@ -226,7 +281,7 @@ function requestGitHubRaw(path, token, options = {}, attempt = 0) {
             reject(err);
         });
         req.setTimeout(30000, () => {
-            console.error('[GitHub API] Request timeout after 30s for:', path);
+            console.error('[GitHub API] Request timeout after 30s for:', requestPath);
             req.destroy();
             reject(new Error('Request timeout'));
         });

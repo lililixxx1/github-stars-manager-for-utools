@@ -56,11 +56,14 @@ export const createSorter = (sortBy: SortBy, sortOrder: SortOrder): SortFn => {
         const decorated = repos.map(repo => ({ repo, key: getSortKey(repo, sortBy) }));
 
         decorated.sort((a, b) => {
+            // 比较结果统一按升序语义产出（数值 a-b、字符串 localeCompare），
+            // 方向只在最后一行翻转——两分支方向必须一致，否则字符串/数值
+            // 的 asc/desc 会各自反转（v1.8.0 的 name 排序反向即此因）
             const comparison = typeof a.key === 'string' || typeof b.key === 'string'
                 ? String(a.key).localeCompare(String(b.key))
-                : (b.key as number) - (a.key as number);
+                : (a.key as number) - (b.key as number);
 
-            return sortOrder === 'desc' ? comparison : -comparison;
+            return sortOrder === 'desc' ? -comparison : comparison;
         });
 
         return decorated.map(item => item.repo);
