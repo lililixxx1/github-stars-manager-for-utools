@@ -119,6 +119,52 @@ const translationQueue = new PromiseQueue(3);
 // 正在进行中的翻译请求
 const pendingTranslations = new Map<number, Promise<{ translatedContent: string; fromCache: boolean } | null>>();
 
+// ==================== 冷启动模型就绪等待（AI-MODEL-READY-PLAN 改进 A） ====================
+
+// uTools 启动后模型注册表（含自定义模型）异步加载，插件冷启动即自动分析时 utools.ai({model})
+// 会抢跑报「自定义 AI 模型不存在」（真机日志：前波 9 仓失败、同 settings 后续 30+ 次全部成功）
+const MODEL_READY_TIMEOUT_MS = 8000;
+const MODEL_READY_POLL_INTERVAL_MS = 500;
+
+/** 探针 ID 提取：与 SettingsPage 写入 settings.aiModel 的口径对齐（string / AiModel 对象双形态） */
+const aiModelIdOf = (m: unknown): string | undefined =>
+    typeof m === 'string' ? m : ((m as { id?: string; name?: string } | null)?.id ?? (m as { name?: string } | null)?.name);
+
+/**
+ * 轮询 allAiModels 直到配置的模型出现。只读探针不计 AI 能量。
+ * 超时返回 false 后由调用方照常执行——真配错模型时仍走既有 5 连败熔断 + 冷却兜底。
+ */
+async function waitForModelReady(model: string, signal?: AbortSignal): Promise<boolean> {
+    const startAt = Date.now();
+    let startAtAnnounced = false; // 首探未命中时打一条「等待中」，就绪/超时各打一条
+    // 首探前先查中止（已停止则零 IPC 直接过，走调用方的 abort 收尾）
+    while (!signal?.aborted && Date.now() - startAt < MODEL_READY_TIMEOUT_MS) {
+        let models: unknown[] = [];
+        try {
+            // 自包 try/catch：contextBridge 级异常（桥未注入等）视为未命中继续轮询，
+            // 不能让探针把整个 batchAnalyze 掀进 useStore 的静默 catch
+            models = (await window.githubStarsAPI.getAIModels()) as unknown[];
+        } catch {
+            // 保持 [] 继续下一轮
+        }
+        if (Array.isArray(models) && models.some((m) => aiModelIdOf(m) === model)) {
+            // 仅在实际发生等待时留痕（暖启动首探命中则零日志零延迟）
+            if (startAtAnnounced) {
+                logger.log('[batchAnalyze] 模型已就绪', { model, waitedMs: Date.now() - startAt });
+            }
+            return true;
+        }
+        if (!startAtAnnounced) {
+            logger.log('[batchAnalyze] AI 模型未就绪，等待中', { model });
+            startAtAnnounced = true;
+        }
+        await new Promise((r) => setTimeout(r, MODEL_READY_POLL_INTERVAL_MS));
+    }
+    if (signal?.aborted) return false;
+    logger.warn('[batchAnalyze] 等待模型就绪超时，继续执行（模型可能不存在）', { model, timeoutMs: MODEL_READY_TIMEOUT_MS });
+    return false;
+}
+
 export const aiService = {
     async analyzeRepository(
         repo: Repository,
@@ -189,6 +235,13 @@ export const aiService = {
         thinking?: boolean,
         signal?: AbortSignal
     ): Promise<Repository[]> {
+        // 冷启动竞态防护（改进 A）：仅当指定了 model 才等待（未指定走默认模型，默认路径无此报错且无法以列表判定）
+        if (model) {
+            await waitForModelReady(model, signal);
+            // 等待期间用户已停止：显式早退返回原始数组，与批中途 abort 收尾一致（useStore 侧 abort 守卫整体丢弃）
+            if (signal?.aborted) return repos;
+        }
+
         const queue = [...repos];
         let completed = 0;
         // 连续失败熔断（R-熔断）：额度耗尽/服务异常时停止整批任务，避免无意义地继续消耗
@@ -255,8 +308,12 @@ export const aiService = {
                 onProgress(completed, repos.length, outcome);
 
                 if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && queue.length > 0) {
-                    circuitBroken = true;
-                    console.warn(`[batchAnalyze] 连续 ${MAX_CONSECUTIVE_FAILURES} 次失败，熔断剩余 ${queue.length} 个仓库的分析（多为 AI 额度耗尽或服务异常）`);
+                    // 转捩守卫（改进 B）：并发下多个在途 worker 会先后命中同一条件，
+                    // 仅首个到达者置位+打日志（其余直接 break 退出，语义不变，消除重复告警）
+                    if (!circuitBroken) {
+                        circuitBroken = true;
+                        console.warn(`[batchAnalyze] 连续 ${MAX_CONSECUTIVE_FAILURES} 次失败，熔断剩余 ${queue.length} 个仓库的分析（多为 AI 额度耗尽或服务异常）`);
+                    }
                     break;
                 }
             }
