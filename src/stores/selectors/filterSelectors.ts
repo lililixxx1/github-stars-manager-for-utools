@@ -115,6 +115,7 @@ export const createFilterByTags = (tags: string[]): FilterFn => {
  * @param platforms - 要筛选的平台列表
  *
  * @note 🔧 v1.6.2 使用 analyzedAt 判断"未分析"，aiPlatforms 判断"无平台"
+ * @note 🔧 v1.8.3 三个分支统一 isAnalyzed 口径：显式平台也要求已分析（脏数据归入 none）
  */
 export const createFilterByPlatforms = (platforms: string[]): FilterFn => {
     if (!platforms?.length) return (repos) => repos;
@@ -138,8 +139,9 @@ export const createFilterByPlatforms = (platforms: string[]): FilterFn => {
             );
         }
 
-        // 只选择具体平台
-        return hasPlatforms && realPlatforms.some(p => repo.aiPlatforms?.includes(p));
+        // 只选择具体平台（与 none 分支同口径：未分析/分析失败但有残留 aiPlatforms 的脏数据
+        // 不按残留平台命中，归入 none 语义——互斥筛选保持互斥）
+        return isAnalyzed && hasPlatforms && realPlatforms.some(p => repo.aiPlatforms?.includes(p));
     });
 };
 

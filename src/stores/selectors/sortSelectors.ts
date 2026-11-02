@@ -29,6 +29,10 @@ function getSortKey(repo: Repository, sortBy: SortBy): number | string {
             // 收藏时间排序，没有 starredAt 的（索引中为 0）排到 desc 末尾
             return getSearchIndex(repo).starredAt;
 
+        case 'pushedAt':
+            // 最近推送时间排序（仓库活跃度），索引预计算缺失时为 NaN（sort 当 0 处理，同 updated 非法值路径）
+            return getSearchIndex(repo).pushedAt;
+
         case 'name':
             // 优先使用别名，没有别名则使用仓库名
             return repo.alias || repo.name;
@@ -81,6 +85,7 @@ export const getSortByLabel = (sortBy: SortBy, lang: 'zh' | 'en'): string => {
         updated: { zh: '按更新时间排序', en: 'Sort by Updated' },
         starredAt: { zh: '按收藏时间排序', en: 'Sort by Starred Time' },
         name: { zh: '按名称排序', en: 'Sort by Name' },
+        pushedAt: { zh: '按推送时间排序', en: 'Sort by Pushed Time' },
     };
     return labels[sortBy]?.[lang] || sortBy;
 };

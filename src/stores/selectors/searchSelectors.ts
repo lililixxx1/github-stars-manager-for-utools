@@ -53,9 +53,10 @@ export const calculateRelevance = (keywords: string[], context: FilterContext = 
             for (const kw of keywords) {
                 let kwMatch = false;
 
-                // 别名匹配（高权重）
+                // 别名匹配（真正高权重：用户自定义别名是最强个人化信号，完全命中 30 压过 name 完全+fullName 连带的 23，
+                // 部分 20 压过 name 部分的 18。注：阶梯为单字段单关键词贡献值，跨字段累加可越位——既有累加语义）
                 if (fields.alias && fields.alias.includes(kw)) {
-                    score += fields.alias === kw ? 15 : 10;
+                    score += fields.alias === kw ? 30 : 20;
                     kwMatch = true;
                 }
 

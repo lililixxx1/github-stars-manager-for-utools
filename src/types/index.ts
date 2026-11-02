@@ -5,7 +5,7 @@
  * @note 'created' 和 'alias' 已在 v1.5.0 移除
  * @since v1.0.0
  */
-export type SortBy = 'stars' | 'updated' | 'name' | 'starredAt';
+export type SortBy = 'stars' | 'updated' | 'name' | 'starredAt' | 'pushedAt';
 
 /**
  * 排序方向

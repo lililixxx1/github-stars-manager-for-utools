@@ -60,11 +60,12 @@ interface ToolbarControl {
 /**
  * 排序选项
  */
-const SORT_OPTIONS: { value: SortBy; labelKey: string }[] = [
+const SORT_OPTIONS: { value: SortBy; labelKey: TranslationKey }[] = [
     { value: 'stars', labelKey: 'sortByStars' },
     { value: 'updated', labelKey: 'sortByUpdated' },
     { value: 'name', labelKey: 'sortByName' },
     { value: 'starredAt', labelKey: 'sortByStarredAt' },
+    { value: 'pushedAt', labelKey: 'sortByPushedAt' },
 ];
 
 /**
