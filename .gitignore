@@ -42,3 +42,10 @@ npm-debug.log*
 
 # Mimosa scan state
 .mimosa/
+
+# Local tool workspaces
+.v2c/
+.video_agent/
+
+# Dev-only browser preview entry (preload stub, not part of the plugin)
+browser-preview.html
