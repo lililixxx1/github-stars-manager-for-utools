@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import React, { memo, useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useStore } from '../stores/useStore';
 import { useProgressStore } from '../stores/useProgressStore';
@@ -10,6 +10,7 @@ import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
 import { getTagTextColor } from '../utils/tagColor';
 import { FilterBar, type FilterBarHandle } from './home/components/FilterBar';
 import { EmptyState } from '../components/EmptyState';
+import type { Repository, Tag } from '../types';
 import {
     RefreshCw, ChevronLeft, ChevronRight,
     Star, Sparkles, FileText, Package, SearchX, AlertTriangle, X
@@ -23,6 +24,65 @@ import {
 const CARD_ROW_ESTIMATE = 122;
 const LIST_ROW_ESTIMATE = 60;
 
+interface ListRepoRowContentProps {
+    repo: Repository;
+    hasNote: boolean;
+    tagById: Map<string, Tag>;
+    lang: 'zh' | 'en';
+}
+
+/** 列表视图纯内容组件（memo 化）：hover/键盘切换 activeRepoIndex 时不重渲染行内部内容与标签查找 */
+const ListRepoRowContent = memo<ListRepoRowContentProps>(({ repo, hasNote, tagById, lang }) => (
+    <>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 500 }}>
+                {repo.alias || repo.name}
+            </span>
+            {repo.alias && (
+                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                    ({repo.fullName})
+                </span>
+            )}
+            <span style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 'auto', fontSize: 12, color: 'var(--color-text-secondary)' }}>
+                <Star size={12} style={{ color: 'var(--color-accent)' }} />
+                {repo.stargazersCount.toLocaleString()}
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
+                {repo.language}
+            </span>
+            {hasNote && (
+                <FileText size={12} style={{ color: 'var(--color-primary)' }} />
+            )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+            <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {repo.description || t('noDescription', lang)}
+            </span>
+            {(repo.customTags || []).slice(0, 3).map((tagId) => {
+                const tag = tagById.get(tagId);
+                if (!tag) return null;
+                const tagBg = tag.color
+                    ? (/^#[0-9a-fA-F]{6}$/.test(tag.color) ? `${tag.color}20` : tag.color)
+                    : 'color-mix(in srgb, var(--color-primary) 12%, transparent)';
+                return (
+                    <span
+                        key={tag.id}
+                        style={{
+                            fontSize: 10, padding: '1px 6px', borderRadius: 999,
+                            background: tagBg,
+                            color: getTagTextColor(tag.color),
+                            border: `1px solid ${tag.color || 'var(--color-primary)'}`,
+                        }}
+                    >
+                        {tag.icon} {tag.name}
+                    </span>
+                );
+            })}
+        </div>
+    </>
+));
+ListRepoRowContent.displayName = 'ListRepoRowContent';
+
 export const HomePage: React.FC = () => {
     // 精确订阅（阶段2 性能重构）：每个字段单独 selector，避免全量订阅
     const repositories = useStore((state) => state.repositories);
@@ -35,12 +95,11 @@ export const HomePage: React.FC = () => {
     const currentPageNum = useStore((state) => state.currentPageNum);
     const setCurrentPageNum = useStore((state) => state.setCurrentPageNum);
     const tags = useStore((state) => state.tags);
-    const loadTags = useStore((state) => state.loadTags);
+    const tagById = useStore((state) => state.tagById);
     const viewMode = useStore((state) => state.viewMode);
     const setViewMode = useStore((state) => state.setViewMode);
     const noteRepoIds = useStore((state) => state.noteRepoIds);
     const noteContentByRepoId = useStore((state) => state.noteContentByRepoId);
-    const hasRepoNote = useStore((state) => state.hasRepoNote);
 
     // 同步进度来自独立的 progress store（高频 set 不再触发本组件）
     const syncStatus = useProgressStore((state) => state.syncStatus);
@@ -56,7 +115,7 @@ export const HomePage: React.FC = () => {
     const itemsPerPage = isShowAllMode ? 20 : itemsPerPageSetting;
     const filteredRepos = useMemo(
         () => getFilteredRepos(),
-        [repositories, searchFilter, tags, noteRepoIds, noteContentByRepoId]
+        [repositories, searchFilter, noteRepoIds, noteContentByRepoId, getFilteredRepos]
     );
     // "全部"模式恒为单页（分页条自然隐藏：totalPages > 1 不成立）
     const totalPages = isShowAllMode ? 1 : Math.max(1, Math.ceil(filteredRepos.length / itemsPerPage));
@@ -145,17 +204,18 @@ export const HomePage: React.FC = () => {
         }
     }, [isShowAllMode, filteredRepos.length, currentPageNum, totalPages, setCurrentPageNum]);
 
-    // 获取所有语言
+    // 获取所有语言（按仓库数量降序排列，保证高频语言优先展示；数量相同时按字母序）
     const allLanguages = useMemo(() => {
-        const langs = new Set<string>();
-        repositories.forEach((r) => r.language && langs.add(r.language));
-        return Array.from(langs).sort();
+        const langCounts = new Map<string, number>();
+        for (const r of repositories) {
+            if (r.language) {
+                langCounts.set(r.language, (langCounts.get(r.language) || 0) + 1);
+            }
+        }
+        return Array.from(langCounts.entries())
+            .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+            .map(([language]) => language);
     }, [repositories]);
-
-    // 加载标签
-    useEffect(() => {
-        loadTags();
-    }, [loadTags]);
 
     useEffect(() => {
         if (currentRepos.length === 0) {
@@ -299,60 +359,22 @@ export const HomePage: React.FC = () => {
         setViewMode(viewMode === 'card' ? 'list' : 'card');
     }, [viewMode, setViewMode]);
 
-    // 🆕 阶段6：列表视图行内容（分页/虚拟两种模式共用同一份 JSX，保证 DOM 输出一致）
-    const renderListRowContent = (repo: typeof repositories[0]) => (
-        <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 14, fontWeight: 500 }}>
-                    {repo.alias || repo.name}
-                </span>
-                {repo.alias && (
-                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                        ({repo.fullName})
-                    </span>
-                )}
-                <span style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 'auto', fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                    <Star size={12} style={{ color: 'var(--color-accent)' }} />
-                    {repo.stargazersCount.toLocaleString()}
-                </span>
-                <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                    {repo.language}
-                </span>
-                {/* 笔记标识 */}
-                {hasRepoNote(repo.id) && (
-                    <FileText size={12} style={{ color: 'var(--color-primary)' }} />
-                )}
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {repo.description || t('noDescription', lang)}
-                </span>
-                {/* 标签 */}
-                {(repo.customTags || []).slice(0, 3).map((tagId) => {
-                    const tag = tags.find(t => t.id === tagId);
-                    if (!tag) return null;
-                    // 有自定义色：6 位 hex 追加 alpha（如 #3b82f6 → #3b82f620）；无色：color-mix 调出的 primary 软底
-                    const tagBg = tag.color
-                        ? (/^#[0-9a-fA-F]{6}$/.test(tag.color) ? `${tag.color}20` : tag.color)
-                        : 'color-mix(in srgb, var(--color-primary) 12%, transparent)';
-                    return (
-                        <span
-                            key={tag.id}
-                            style={{
-                                fontSize: 10, padding: '1px 6px', borderRadius: 999,
-                                background: tagBg,
-                                // 文字色走安全换算（light 深色变体 / dark 原色，未知色回退文字主色），描边保留原色
-                                color: getTagTextColor(tag.color),
-                                border: `1px solid ${tag.color || 'var(--color-primary)'}`,
-                            }}
-                        >
-                            {tag.icon} {tag.name}
-                        </span>
-                    );
-                })}
-            </div>
-        </>
-    );
+    // 稳定 FilterBar 回调引用（避免 activeRepoIndex 变更时击穿 FilterBar 的 memo）
+    const currentReposLengthRef = useRef(0);
+    currentReposLengthRef.current = currentRepos.length;
+
+    const handleRequestListArea = useCallback(() => {
+        if (currentReposLengthRef.current === 0) return;
+        setKeyboardArea('list');
+        setActiveRepoIndex((prev) => prev ?? 0);
+        requestAnimationFrame(() => {
+            listContainerRef.current?.focus();
+        });
+    }, []);
+
+    const handleRequestToolbarArea = useCallback(() => {
+        setKeyboardArea('toolbar');
+    }, []);
 
     // 首次使用引导
     if (!token) {
@@ -397,15 +419,8 @@ export const HomePage: React.FC = () => {
                 viewMode={viewMode}
                 onViewModeToggle={toggleViewMode}
                 keyboardArea={keyboardArea}
-                onRequestListArea={() => {
-                    if (currentRepos.length === 0) return;
-                    setKeyboardArea('list');
-                    setActiveRepoIndex((prev) => prev ?? 0);
-                    requestAnimationFrame(() => {
-                        listContainerRef.current?.focus();
-                    });
-                }}
-                onRequestToolbarArea={() => setKeyboardArea('toolbar')}
+                onRequestListArea={handleRequestListArea}
+                onRequestToolbarArea={handleRequestToolbarArea}
                 hasListResults={currentRepos.length > 0}
             />
 
@@ -441,6 +456,7 @@ export const HomePage: React.FC = () => {
             {/* 仓库列表 */}
             <div
                 ref={listContainerRef}
+                className="repo-listbox"
                 onScroll={(e) => { lastScrollTopRef.current = e.currentTarget.scrollTop; }}
                 style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'card' ? '6px 16px' : '0' }}
                 role="listbox"
@@ -514,14 +530,19 @@ export const HomePage: React.FC = () => {
                                             isActive={isActive}
                                         />
                                     ) : (
-                                        renderListRowContent(repo)
+                                        <ListRepoRowContent
+                                            repo={repo}
+                                            hasNote={noteRepoIds.has(repo.id)}
+                                            tagById={tagById}
+                                            lang={lang}
+                                        />
                                     )}
                                 </div>
                             );
                         })}
                     </div>
                 ) : viewMode === 'card' ? (
-                    // 卡片视图（阶段8 密度：行距 8→6）
+                    // 卡片视图（阶段8 密度：行距 8→6；分页模式挂 .list-card-cv 跳过视口外绘制）
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         {currentRepos.map((repo, index) => {
                             const isActive = activeRepoIndex === index;
@@ -529,6 +550,7 @@ export const HomePage: React.FC = () => {
                                 <div
                                     key={repo.id}
                                     id={`repo-option-${repo.id}`}
+                                    className="list-card-cv"
                                     role="option"
                                     aria-selected={isActive}
                                     ref={(element) => { itemRefs.current[repo.id] = element; }}
@@ -548,7 +570,7 @@ export const HomePage: React.FC = () => {
                         })}
                     </div>
                 ) : (
-                    // 列表视图（分页模式，行为与阶段6 前一致）
+                    // 列表视图（分页模式，行内容 memo 化 + .list-row-cv）
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
                         {currentRepos.map((repo, index) => {
                             const isActive = activeRepoIndex === index;
@@ -556,6 +578,7 @@ export const HomePage: React.FC = () => {
                             <div
                                 key={repo.id}
                                 id={`repo-option-${repo.id}`}
+                                className="list-row-cv"
                                 role="option"
                                 aria-selected={isActive}
                                 ref={(element) => { itemRefs.current[repo.id] = element; }}
@@ -573,7 +596,12 @@ export const HomePage: React.FC = () => {
                                     borderLeft: isActive ? '3px solid var(--color-primary)' : '3px solid transparent',
                                 }}
                             >
-                                {renderListRowContent(repo)}
+                                <ListRepoRowContent
+                                    repo={repo}
+                                    hasNote={noteRepoIds.has(repo.id)}
+                                    tagById={tagById}
+                                    lang={lang}
+                                />
                             </div>
                             );
                         })}

@@ -160,6 +160,7 @@ interface AppState {
 
     // ========== 🆕 v1.1.0 标签管理 ==========
     tags: Tag[];
+    tagById: Map<string, Tag>;
     loadTags: () => void;
     setTags: (tags: Tag[]) => void;
     addTag: (tag: Omit<Tag, 'id' | 'createdAt' | 'updatedAt'>) => Tag;
@@ -304,6 +305,10 @@ function mergeIncrementalRepositories(
     });
 
     return [...newRepos, ...mergedExisting];
+}
+
+function buildTagMap(tags: Tag[]): Map<string, Tag> {
+    return new Map(tags.map((tag) => [tag.id, tag]));
 }
 
 function buildNoteIndex(repositories: Repository[]): {
@@ -724,25 +729,30 @@ export const useStore = create<AppState>((set, get) => ({
 
     // ========== 🆕 v1.1.0 标签管理 ==========
     tags: [],
+    tagById: new Map<string, Tag>(),
     loadTags: () => {
         const tags = storageService.getTags();
-        set({ tags });
+        set({ tags, tagById: buildTagMap(tags) });
     },
     setTags: (tags) => {
         storageService.setTags(tags);
-        set({ tags });
+        set({ tags, tagById: buildTagMap(tags) });
     },
     addTag: (tagData) => {
         const newTag = storageService.addTag(tagData);
-        set((state) => ({ tags: [...state.tags, newTag] }));
+        set((state) => {
+            const tags = [...state.tags, newTag];
+            return { tags, tagById: buildTagMap(tags) };
+        });
         return newTag;
     },
     updateTag: (id, updates) => {
         const updated = storageService.updateTag(id, updates);
         if (updated) {
-            set((state) => ({
-                tags: state.tags.map((t) => (t.id === id ? updated : t)),
-            }));
+            set((state) => {
+                const tags = state.tags.map((t) => (t.id === id ? updated : t));
+                return { tags, tagById: buildTagMap(tags) };
+            });
         }
         return updated;
     },
@@ -751,14 +761,18 @@ export const useStore = create<AppState>((set, get) => ({
         storageService.deleteTag(id).catch((error) => {
             console.error('[deleteTag] 删除标签失败:', error);
         });
-        set((state) => ({
-            tags: state.tags.filter((t) => t.id !== id),
-            // 直接更新仓库中的 customTags，避免重新加载导致页面闪烁
-            repositories: state.repositories.map((r) => ({
-                ...r,
-                customTags: (r.customTags || []).filter((t) => t !== id),
-            })),
-        }));
+        set((state) => {
+            const tags = state.tags.filter((t) => t.id !== id);
+            return {
+                tags,
+                tagById: buildTagMap(tags),
+                // 直接更新仓库中的 customTags，避免重新加载导致页面闪烁
+                repositories: state.repositories.map((r) => ({
+                    ...r,
+                    customTags: (r.customTags || []).filter((t) => t !== id),
+                })),
+            };
+        });
     },
     reorderTags: (tagIds) => {
         storageService.reorderTags(tagIds);

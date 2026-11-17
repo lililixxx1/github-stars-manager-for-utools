@@ -121,9 +121,12 @@ export class Benchmark {
 
     /**
      * 单次一次性计时（不预热、不重跑）
-     * 用于启动加载/同步等一次性副作用操作的基线测量
+     * 用于启动加载/同步等一次性副作用操作的基线测量（仅开发环境生效）
      */
     static timeOnce<T>(name: string, fn: () => T): T {
+        if (!import.meta.env.DEV) {
+            return fn();
+        }
         const start = performance.now();
         try {
             return fn();
@@ -133,9 +136,12 @@ export class Benchmark {
     }
 
     /**
-     * 单次一次性异步计时（不预热、不重跑）
+     * 单次一次性异步计时（不预热、不重跑，仅开发环境生效）
      */
     static async timeOnceAsync<T>(name: string, fn: () => Promise<T>): Promise<T> {
+        if (!import.meta.env.DEV) {
+            return fn();
+        }
         const start = performance.now();
         try {
             return await fn();

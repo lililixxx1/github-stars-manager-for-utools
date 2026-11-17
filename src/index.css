@@ -6,6 +6,10 @@
 /* ==================== 主题变量 ==================== */
 
 /* 浅色主题 (默认) */
+:root {
+  color-scheme: light;
+}
+
 @theme {
   --color-primary: #6366f1;
   --color-primary-light: #818cf8;
@@ -57,6 +61,7 @@
 
 /* 深色主题 - 通过 class 切换 (用户手动选择) */
 :root.dark {
+  color-scheme: dark;
   --color-primary: #818cf8;
   --color-primary-light: #a5b4fc;
   --color-primary-dark: #6366f1;
@@ -1128,4 +1133,38 @@ button.tag:hover {
 :focus-visible {
     outline: 2px solid var(--color-primary);
     outline-offset: 2px;
+}
+
+/* 首页全宽列表容器：焦点环内缩，避免左右边缘被视口裁切 */
+.repo-listbox:focus-visible {
+    outline-offset: -2px;
+}
+
+/* 分页模式视口外跳过布局/绘制（虚拟化模式不使用，避免影响 measureElement） */
+.list-card-cv {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 122px;
+}
+
+.list-row-cv {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 60px;
+}
+
+/* 语言筛选条横向细滚动条 */
+.lang-filter-bar {
+    scrollbar-width: thin;
+}
+
+.lang-filter-bar::-webkit-scrollbar {
+    height: 4px;
+}
+
+/* 尊重系统减少动态效果偏好（含 !important 覆盖 ReleaseCard 内联 badge-pulse） */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }

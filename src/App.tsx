@@ -1,17 +1,37 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { useStore } from './stores/useStore';
 import { useProgressStore } from './stores/useProgressStore';
 import { HomePage } from './pages/HomePage';
-import { DetailPage } from './pages/DetailPage';
-import { SettingsPage } from './pages/SettingsPage';
-import { TagsPage } from './pages/TagsPage';
-import { ReleasesPage } from './pages/ReleasesPage';
 import { AnalyzeProgress } from './components/AnalyzeProgress';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { Skeleton, SkeletonCard } from './components/Skeleton';
 import { ToastHost, toast } from './components/Toast';
 import { t } from './locales';
 import { logger } from './utils/logger';
 import { checkAnalysisNeeded } from './utils/analysis';
+
+const DetailPage = lazy(() => import('./pages/DetailPage').then((m) => ({ default: m.DetailPage })));
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const TagsPage = lazy(() => import('./pages/TagsPage').then((m) => ({ default: m.TagsPage })));
+const ReleasesPage = lazy(() => import('./pages/ReleasesPage').then((m) => ({ default: m.ReleasesPage })));
+
+const PageLoadingFallback: React.FC = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div style={{
+            display: 'flex', alignItems: 'center', gap: 12,
+            padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
+            background: 'var(--color-surface)',
+        }}>
+            <Skeleton width={64} height={24} />
+            <Skeleton width={120} height={18} />
+        </div>
+        <div style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+        </div>
+    </div>
+);
 
 // ==================== 子输入框关键词防抖（阶段3 性能重构） ====================
 
@@ -87,6 +107,7 @@ const App: React.FC = () => {
     const loadRepositories = useStore((state) => state.loadRepositories);
     const loadSettings = useStore((state) => state.loadSettings);
     const loadToken = useStore((state) => state.loadToken);
+    const loadTags = useStore((state) => state.loadTags);
     const loadReleases = useStore((state) => state.loadReleases);
 
     // AI 分析确认弹窗状态 🆕 v1.6.0
@@ -134,6 +155,7 @@ const App: React.FC = () => {
     useEffect(() => {
         loadSettings();
         loadToken();
+        loadTags();
         loadRepositories();
         loadReleases(); // 🆕 v1.4.0 加载版本数据
 
@@ -318,10 +340,12 @@ const App: React.FC = () => {
             <AnalyzeProgress />
             <ToastHost />
             {/* 阶段8：页面级进入动画统一挂在容器上（替代逐卡片动画）；首页轻播避免与首屏争抢 */}
-            {currentPage === 'detail' && <div className="page-enter"><DetailPage /></div>}
-            {currentPage === 'settings' && <div className="page-enter"><SettingsPage /></div>}
-            {currentPage === 'tags' && <div className="page-enter"><TagsPage /></div>}
-            {currentPage === 'releases' && <div className="page-enter"><ReleasesPage /></div>}
+            <Suspense fallback={<PageLoadingFallback />}>
+                {currentPage === 'detail' && <div className="page-enter"><DetailPage /></div>}
+                {currentPage === 'settings' && <div className="page-enter"><SettingsPage /></div>}
+                {currentPage === 'tags' && <div className="page-enter"><TagsPage /></div>}
+                {currentPage === 'releases' && <div className="page-enter"><ReleasesPage /></div>}
+            </Suspense>
             {currentPage !== 'detail' && currentPage !== 'settings' && currentPage !== 'tags' && currentPage !== 'releases' && (
                 <div className="page-enter page-enter-light"><HomePage /></div>
             )}

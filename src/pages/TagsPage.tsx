@@ -8,7 +8,6 @@ import { BackHintChip } from '../components/BackHintChip';
 export const TagsPage: React.FC = () => {
     // 精确订阅（阶段2 性能重构）
     const settings = useStore((state) => state.settings);
-    const loadTags = useStore((state) => state.loadTags);
     const loadRepositories = useStore((state) => state.loadRepositories);
     const setCurrentPage = useStore((state) => state.setCurrentPage);
     const lang = (settings.language || 'zh') as 'zh' | 'en';
@@ -17,9 +16,11 @@ export const TagsPage: React.FC = () => {
     }, [setCurrentPage]);
 
     useEffect(() => {
-        loadTags();
-        loadRepositories();  // TagManager 需要统计标签关联的仓库数量
-    }, [loadRepositories, loadTags]);
+        // 仅当仓库尚未装载时按需兜底，避免重复加载重建 repositories 引用导致 WeakMap 搜索索引全量失效
+        if (useStore.getState().repositories.length === 0) {
+            loadRepositories();
+        }
+    }, [loadRepositories]);
 
     useBackShortcut({
         onBack: handleBack,

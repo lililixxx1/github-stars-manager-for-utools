@@ -14,34 +14,56 @@ function getSafeExternalUrl(url: string): string | null {
 }
 
 /**
- * 解析行内元素（图片、加粗、内联代码、链接）
+ * 解析行内元素（图片、加粗、删除线、斜体、内联代码、链接）
  */
 function parseInline(line: string, keyPrefix: string): React.ReactNode[] {
-    const parts = line.split(/(!\[.*?\]\(.*?\)|\*\*.*?\*\*|`[^`]+`|\[.*?\]\(.*?\))/g);
+    const parts = line.split(/(!\[.*?\]\(.*?\)|\*\*.*?\*\*|~~.*?~~|\*[^\s*](?:[^*]*[^\s*])?\*|`[^`]+`|\[.*?\]\(.*?\))/g);
     return parts.filter(Boolean).map((part, i) => {
-        // 图片
+        // 图片（校验 http/https 安全协议，拦截 javascript:/data: 等非安全来源）
         const imgMatch = part.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
         if (imgMatch) {
             const urlAndTitle = imgMatch[2].split(/\s+["']/);
             const url = urlAndTitle[0];
+            const safeImgUrl = getSafeExternalUrl(url);
+            if (!safeImgUrl) {
+                return <span key={`${keyPrefix}-${i}`}>{imgMatch[1] ? `[${imgMatch[1]}]` : part}</span>;
+            }
             const title = urlAndTitle.length > 1 ? urlAndTitle[1].replace(/["']$/, '') : undefined;
             return (
                 <img
                     key={`${keyPrefix}-${i}`}
-                    src={url}
+                    src={safeImgUrl}
                     alt={imgMatch[1]}
                     title={title}
+                    loading="lazy"
+                    decoding="async"
                     style={{ maxWidth: '100%', borderRadius: '4px', verticalAlign: 'middle' }}
                 />
             );
         }
 
-        // 加粗
-        if (part.startsWith('**') && part.endsWith('**')) {
+        // 加粗（优先于斜体匹配）
+        if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
             return (
                 <strong key={`${keyPrefix}-${i}`} style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>
                     {part.slice(2, -2)}
                 </strong>
+            );
+        }
+        // 删除线
+        if (part.startsWith('~~') && part.endsWith('~~') && part.length > 4) {
+            return (
+                <del key={`${keyPrefix}-${i}`} style={{ color: 'var(--color-text-muted)' }}>
+                    {part.slice(2, -2)}
+                </del>
+            );
+        }
+        // 斜体
+        if (part.startsWith('*') && part.endsWith('*') && part.length > 2 && !part.startsWith('**')) {
+            return (
+                <em key={`${keyPrefix}-${i}`}>
+                    {part.slice(1, -1)}
+                </em>
             );
         }
         // 内联代码
@@ -183,6 +205,31 @@ export function renderMarkdown(text: string): React.ReactNode[] {
                     <span style={{ color: 'var(--color-text-muted)' }}>•</span>
                     <div style={{ flex: 1, lineHeight: 1.6 }}>
                         {parseInline(line.replace(/^[-*]\s+/, ''), `li-${i}`)}
+                    </div>
+                </div>
+            );
+            continue;
+        }
+
+        // 有序列表项
+        const orderedMatch = line.match(/^(\d+\.)\s+(.*)$/);
+        if (orderedMatch) {
+            elements.push(
+                <div
+                    key={i}
+                    style={{
+                        display: 'flex',
+                        gap: '8px',
+                        marginLeft: '12px',
+                        marginTop: '6px',
+                        marginBottom: '6px',
+                        color: 'var(--color-text-secondary)',
+                        fontSize: '14px',
+                    }}
+                >
+                    <span style={{ color: 'var(--color-text-muted)', minWidth: 18 }}>{orderedMatch[1]}</span>
+                    <div style={{ flex: 1, lineHeight: 1.6 }}>
+                        {parseInline(orderedMatch[2], `oli-${i}`)}
                     </div>
                 </div>
             );

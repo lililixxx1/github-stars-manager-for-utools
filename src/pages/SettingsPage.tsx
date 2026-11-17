@@ -183,7 +183,7 @@ export const SettingsPage: React.FC = () => {
         a.href = url;
         a.download = `github-stars-backup-${Date.now()}.json`;
         a.click();
-        URL.revokeObjectURL(url);
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
 
     const handleImport = () => {
@@ -290,8 +290,15 @@ export const SettingsPage: React.FC = () => {
 
     // AI 分析进度统计（阶段8：文字 + .progress-bar 进度条）
     const analyzedStats = useMemo(() => {
-        const analyzed = repositories.filter(r => r.analyzedAt && !r.analysisFailed).length;
-        const failed = repositories.filter(r => r.analysisFailed).length;
+        let analyzed = 0;
+        let failed = 0;
+        for (const r of repositories) {
+            if (r.analysisFailed) {
+                failed++;
+            } else if (r.analyzedAt) {
+                analyzed++;
+            }
+        }
         const pct = repositories.length > 0 ? Math.round((analyzed / repositories.length) * 100) : 0;
         return { analyzed, failed, pct };
     }, [repositories]);

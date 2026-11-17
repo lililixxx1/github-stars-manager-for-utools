@@ -111,6 +111,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     const [activeControlIndex, setActiveControlIndex] = useState(0);
     const [activeSortMenuIndex, setActiveSortMenuIndex] = useState(0);
     const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+    const sortMenuContainerRef = useRef<HTMLDivElement | null>(null);
 
     const showUnreadBadge = unreadCount > 0 || releaseCheckStatus.checking;
     // 订阅数从 store 派生（repositories.isSubscribed 由 loadRepositories/toggle/clear 维护）
@@ -324,6 +325,21 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [showPlatformFilter, showSortMenu, showTagFilter]);
 
+    // 点击排序菜单外部自动关闭
+    useEffect(() => {
+        if (!showSortMenu) return;
+
+        const handleMouseDown = (event: MouseEvent) => {
+            const container = sortMenuContainerRef.current;
+            if (container && !container.contains(event.target as Node)) {
+                setShowSortMenu(false);
+            }
+        };
+
+        document.addEventListener('mousedown', handleMouseDown);
+        return () => document.removeEventListener('mousedown', handleMouseDown);
+    }, [showSortMenu]);
+
     useEffect(() => {
         if (keyboardArea !== 'toolbar') return;
 
@@ -431,6 +447,20 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         outline: 'none',
     }), [activeControlIndex, keyboardArea]);
 
+    const hasActiveFilter =
+        searchFilter.languages.length > 0
+        || searchFilter.customTags.length > 0
+        || searchFilter.platforms.length > 0;
+
+    // 语言条最多展示高频前 20 个，且始终保留已选中但不在前 20 内的语言
+    const visibleLanguages = useMemo(() => {
+        const top = allLanguages.slice(0, 20);
+        if (searchFilter.languages.length === 0) return top;
+        const topSet = new Set(top);
+        const extras = searchFilter.languages.filter((l) => !topSet.has(l) && allLanguages.includes(l));
+        return extras.length > 0 ? [...top, ...extras] : top;
+    }, [allLanguages, searchFilter.languages]);
+
     return (
         <>
             {/* 顶部栏 */}
@@ -439,9 +469,21 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                 padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)',
             }}>
-                <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>
-                    {t('totalRepos', lang, { count: filteredCount })}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    <span style={{ fontSize: 14, color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>
+                        {t('totalRepos', lang, { count: filteredCount })}
+                    </span>
+                    {hasActiveFilter && (
+                        <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            style={{ padding: '2px 8px', fontSize: 12, color: 'var(--color-primary)' }}
+                            onClick={() => setSearchFilter({ languages: [], customTags: [], platforms: [] })}
+                        >
+                            {t('clearFilter', lang)}
+                        </button>
+                    )}
+                </div>
                 <div style={{ display: 'flex', gap: 4, position: 'relative' }} role="toolbar" aria-label={lang === 'zh' ? '首页工具栏' : 'Home toolbar'}>
                     {toolbarControls.map((control, index) => {
                         const button = (
@@ -468,7 +510,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                         }
 
                         return (
-                            <div key={control.key} style={{ position: 'relative' }}>
+                            <div key={control.key} ref={sortMenuContainerRef} style={{ position: 'relative' }}>
                                 {button}
                                 {showSortMenu && (
                                     <SortMenu
@@ -524,23 +566,28 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             )}
 
             {/* 语言筛选标签 */}
-            {allLanguages.length > 0 && (
-                <div style={{
-                    display: 'flex', gap: 4, padding: '6px 16px', overflowX: 'auto',
-                    borderBottom: '1px solid var(--color-border)',
-                    background: 'var(--color-surface)',
-                    flexShrink: 0,
-                }}>
+            {visibleLanguages.length > 0 && (
+                <div
+                    className="lang-filter-bar"
+                    style={{
+                        display: 'flex', gap: 4, padding: '6px 16px', overflowX: 'auto',
+                        borderBottom: '1px solid var(--color-border)',
+                        background: 'var(--color-surface)',
+                        flexShrink: 0,
+                    }}
+                >
                     <button
                         className={`tag ${searchFilter.languages.length === 0 ? 'tag-active' : ''}`}
+                        style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
                         onClick={() => setSearchFilter({ languages: [] })}
                     >
                         {t('allCategories', lang)}
                     </button>
-                    {allLanguages.slice(0, 12).map((langItem) => (
+                    {visibleLanguages.map((langItem) => (
                         <button
                             key={langItem}
                             className={`tag ${searchFilter.languages.includes(langItem) ? 'tag-active' : ''}`}
+                            style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
                             onClick={() => {
                                 const langs = searchFilter.languages.includes(langItem)
                                     ? searchFilter.languages.filter((l) => l !== langItem)

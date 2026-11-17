@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Star, GitFork, Box } from 'lucide-react';
 
 function formatNumber(num: number): string {
@@ -51,61 +51,73 @@ export const RepoRow: React.FC<RepoRowProps> = ({
     stars,
     forks,
     children,
-}) => (
-    <div style={{ display: 'flex', gap: 12 }}>
-        {avatarUrl ? (
-            <img
-                src={avatarUrl}
-                alt={ownerLogin}
-                style={{
-                    width: 40, height: 40, borderRadius: 8, flexShrink: 0,
-                    border: '1px solid var(--color-border)',
-                }}
-                loading="lazy"
-            />
-        ) : (
-            <div style={{
-                width: 40, height: 40, borderRadius: 8, flexShrink: 0,
-                background: 'var(--color-surface-secondary)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-                <Box size={20} style={{ color: 'var(--color-text-muted)' }} />
-            </div>
-        )}
+}) => {
+    const [imgError, setImgError] = useState(false);
 
-        <div style={{ flex: 1, minWidth: 0 }}>
-            {/* 标题行：名称 + 副标题 + 统计 */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                    <h3 style={{
-                        fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
-                        {displayName}
-                    </h3>
-                    {secondaryName && (
-                        <span style={{
-                            fontSize: 11, color: 'var(--color-text-muted)',
+    useEffect(() => {
+        setImgError(false);
+    }, [avatarUrl]);
+
+    return (
+        <div style={{ display: 'flex', gap: 12 }}>
+            {avatarUrl && !imgError ? (
+                <img
+                    src={avatarUrl}
+                    alt={ownerLogin}
+                    width={40}
+                    height={40}
+                    style={{
+                        width: 40, height: 40, borderRadius: 8, flexShrink: 0,
+                        border: '1px solid var(--color-border)',
+                    }}
+                    loading="lazy"
+                    decoding="async"
+                    onError={() => setImgError(true)}
+                />
+            ) : (
+                <div style={{
+                    width: 40, height: 40, borderRadius: 8, flexShrink: 0,
+                    background: 'var(--color-surface-secondary)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                    <Box size={20} style={{ color: 'var(--color-text-muted)' }} />
+                </div>
+            )}
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+                {/* 标题行：名称 + 副标题 + 统计 */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                        <h3 style={{
+                            fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)',
                             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}>
-                            {secondaryName}
-                        </span>
+                            {displayName}
+                        </h3>
+                        {secondaryName && (
+                            <span style={{
+                                fontSize: 11, color: 'var(--color-text-muted)',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>
+                                {secondaryName}
+                            </span>
+                        )}
+                    </div>
+                    {stars !== undefined && forks !== undefined && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0, marginLeft: 8 }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 13, color: 'var(--color-text-secondary)' }}>
+                                <Star size={14} style={{ color: 'var(--color-accent)' }} />
+                                {formatNumber(stars)}
+                            </span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 13, color: 'var(--color-text-secondary)' }}>
+                                <GitFork size={14} />
+                                {formatNumber(forks)}
+                            </span>
+                        </div>
                     )}
                 </div>
-                {stars !== undefined && forks !== undefined && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0, marginLeft: 8 }}>
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 13, color: 'var(--color-text-secondary)' }}>
-                            <Star size={14} style={{ color: 'var(--color-accent)' }} />
-                            {formatNumber(stars)}
-                        </span>
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 13, color: 'var(--color-text-secondary)' }}>
-                            <GitFork size={14} />
-                            {formatNumber(forks)}
-                        </span>
-                    </div>
-                )}
+                {children}
             </div>
-            {children}
         </div>
-    </div>
-);
+    );
+};

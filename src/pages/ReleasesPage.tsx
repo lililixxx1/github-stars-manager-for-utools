@@ -1,10 +1,13 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { Suspense, lazy, useState, useEffect, useMemo, useCallback } from 'react';
 import { Box, Loader2, RefreshCw, Inbox, Bell, Star } from 'lucide-react';
 import { useStore } from '../stores/useStore';
 import { useProgressStore } from '../stores/useProgressStore';
 import { ReleaseCard } from '../components/ReleaseCard';
-import { ReleaseDetail } from '../components/ReleaseDetail';
 import { EmptyState } from '../components/EmptyState';
+
+const ReleaseDetail = lazy(() =>
+    import('../components/ReleaseDetail').then((m) => ({ default: m.ReleaseDetail }))
+);
 import { Badge } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { toast } from '../components/Toast';
@@ -18,9 +21,8 @@ import { BackHintChip } from '../components/BackHintChip';
 
 type TabType = 'updates' | 'subscriptions';
 
-// 格式化 Star 数
+// 格式化 Star 数（与 RepoRow.formatNumber 两段式一致）
 export const formatStars = (count: number): string => {
-    if (count >= 10000) return `${(count / 10000).toFixed(1)}k`; // 也可以选择 w
     if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
     return count.toString();
 };
@@ -31,7 +33,6 @@ export function ReleasesPage() {
     const releaseFilter = useStore((state) => state.releaseFilter);
     const settings = useStore((state) => state.settings);
     const token = useStore((state) => state.token);  // 🆕 v1.6.0 用于翻译功能
-    const loadReleases = useStore((state) => state.loadReleases);
     const checkReleaseUpdates = useStore((state) => state.checkReleaseUpdates);
     const markReleaseRead = useStore((state) => state.markReleaseRead);
     const markAllReleasesRead = useStore((state) => state.markAllReleasesRead);
@@ -69,10 +70,6 @@ export function ReleasesPage() {
     const handleBack = useCallback(() => {
         setCurrentPage('home');
     }, [setCurrentPage]);
-
-    useEffect(() => {
-        loadReleases();
-    }, [loadReleases]);
 
     // 如果加载后 releases 为空但 newCount > 0，重置 badge 避免误导
     useEffect(() => {
@@ -263,7 +260,7 @@ export function ReleasesPage() {
             {/* 包含过滤器、统计信息以及主列表的滚动内容区 */}
             <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
                 {activeTab === 'updates' ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: sortedReleases.length === 0 ? '100%' : undefined }}>
                         {/* 筛选栏（恒显——含「检查更新」唯一页内入口，空态不再是死胡同；仅检查中让位 spinner） */}
                         {releaseCheckStatus.checking ? (
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-primary)' }}>
@@ -353,7 +350,7 @@ export function ReleasesPage() {
                         )}
                     </div>
                 ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, height: '100%' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: subscribedRepos.length === 0 ? '100%' : undefined }}>
                         {/* 订阅管理统计和操作 */}
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>
@@ -388,7 +385,15 @@ export function ReleasesPage() {
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                                 {subscribedRepos.map((repo) => (
                                     <div key={repo.id} className="card card-compact" style={{ display: 'flex', alignItems: 'center' }}>
-                                        <img src={repo.owner.avatarUrl} alt={repo.owner.login} style={{ width: 32, height: 32, borderRadius: 16, marginRight: 12 }} />
+                                        <img
+                                            src={repo.owner.avatarUrl}
+                                            alt={repo.owner.login}
+                                            width={32}
+                                            height={32}
+                                            loading="lazy"
+                                            decoding="async"
+                                            style={{ width: 32, height: 32, borderRadius: 16, marginRight: 12, flexShrink: 0 }}
+                                        />
                                         <div style={{ flex: 1, minWidth: 0 }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                                 <Box size={14} style={{ color: 'var(--color-text-muted)' }} />
@@ -422,14 +427,22 @@ export function ReleasesPage() {
 
             {/* 版本详情弹窗 */}
             {selectedRelease && (
-                <ReleaseDetail
-                    release={selectedRelease}
-                    lang={lang}
-                    onClose={() => setSelectedRelease(null)}
-                    token={token || undefined}
-                    aiModel={settings.aiModel}
-                    aiThinking={!!settings.aiThinking}
-                />
+                <Suspense
+                    fallback={
+                        <div className="modal-overlay">
+                            <Loader2 size={24} className="animate-spin" style={{ color: 'white' }} />
+                        </div>
+                    }
+                >
+                    <ReleaseDetail
+                        release={selectedRelease}
+                        lang={lang}
+                        onClose={() => setSelectedRelease(null)}
+                        token={token || undefined}
+                        aiModel={settings.aiModel}
+                        aiThinking={!!settings.aiThinking}
+                    />
+                </Suspense>
             )}
 
             {/* 确认弹窗（ConfirmDialog：danger 实底 + 统一遮罩/焦点圈定） */}

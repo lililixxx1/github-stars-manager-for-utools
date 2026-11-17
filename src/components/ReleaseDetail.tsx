@@ -104,6 +104,10 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel, aiThinki
 
     // 显示的内容
     const displayContent = (showTranslated && translatedContent) ? translatedContent : release.body;
+    const renderedMarkdown = useMemo(
+        () => (displayContent ? renderMarkdown(displayContent) : null),
+        [displayContent]
+    );
 
     // 判断内容是否已是目标语言
     // 🆕 v1.6.0 使用 useMemo 优化中文检测
@@ -228,7 +232,7 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel, aiThinki
                         {t('releaseNotes', lang)}
                     </h3>
                     <div style={{ backgroundColor: 'var(--color-surface)', borderRadius: '8px', lineHeight: 1.6 }}>
-                        {renderMarkdown(displayContent)}
+                        {renderedMarkdown}
                     </div>
                 </div>
             ) : (

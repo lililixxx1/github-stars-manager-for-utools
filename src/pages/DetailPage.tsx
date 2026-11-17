@@ -33,7 +33,7 @@ export const DetailPage: React.FC = () => {
     const settings = useStore((state) => state.settings);
     const token = useStore((state) => state.token);
     const tags = useStore((state) => state.tags);
-    const loadTags = useStore((state) => state.loadTags);
+    const tagById = useStore((state) => state.tagById);
     const updateRepository = useStore((state) => state.updateRepository);
     const toggleSubscription = useStore((state) => state.toggleSubscription);
     const currentNote = useStore((state) => state.currentNote);
@@ -73,10 +73,6 @@ export const DetailPage: React.FC = () => {
 
     // 订阅状态从 store 内存单源派生（阶段3：不渲染期直读存储表）
     const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
-
-    useEffect(() => {
-        loadTags();
-    }, []);
 
     useEffect(() => {
         if (selectedRepoId != null) {
@@ -487,7 +483,7 @@ export const DetailPage: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             {/* 顶部栏 */}
             <div style={{
-                display: 'flex', alignItems: 'center', gap: 8,
+                display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
                 padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)',
             }}>
@@ -498,7 +494,7 @@ export const DetailPage: React.FC = () => {
                 <button
                     ref={bindControlRef('alias')}
                     className="btn btn-ghost btn-sm"
-                    style={getControlStyle('alias')}
+                    style={getControlStyle('alias', { flexShrink: 0 })}
                     tabIndex={roving.getTabIndex('alias')}
                     onFocus={() => roving.setActiveId('alias')}
                     onClick={handleStartEditAlias}
@@ -510,7 +506,7 @@ export const DetailPage: React.FC = () => {
                 <button
                     ref={bindControlRef('subscribe')}
                     className="btn btn-ghost btn-sm"
-                    style={getControlStyle('subscribe')}
+                    style={getControlStyle('subscribe', { flexShrink: 0 })}
                     tabIndex={roving.getTabIndex('subscribe')}
                     onFocus={() => roving.setActiveId('subscribe')}
                     onClick={handleToggleSubscribe}
@@ -523,7 +519,7 @@ export const DetailPage: React.FC = () => {
                     <button
                         ref={bindControlRef('releases')}
                         className="btn btn-ghost btn-sm"
-                        style={getControlStyle('releases')}
+                        style={getControlStyle('releases', { flexShrink: 0 })}
                         tabIndex={roving.getTabIndex('releases')}
                         onFocus={() => roving.setActiveId('releases')}
                         onClick={handleViewReleases}
@@ -537,7 +533,7 @@ export const DetailPage: React.FC = () => {
                 <button
                     ref={bindControlRef('copy-url')}
                     className="btn btn-ghost btn-sm"
-                    style={getControlStyle('copy-url')}
+                    style={getControlStyle('copy-url', { flexShrink: 0 })}
                     tabIndex={roving.getTabIndex('copy-url')}
                     onFocus={() => roving.setActiveId('copy-url')}
                     onClick={handleCopyRepoUrl}
@@ -549,7 +545,7 @@ export const DetailPage: React.FC = () => {
                 <button
                     ref={bindControlRef('open-github')}
                     className="btn btn-primary btn-sm"
-                    style={getControlStyle('open-github')}
+                    style={getControlStyle('open-github', { flexShrink: 0 })}
                     tabIndex={roving.getTabIndex('open-github')}
                     onFocus={() => roving.setActiveId('open-github')}
                     onClick={handleOpenGithub}
@@ -566,10 +562,13 @@ export const DetailPage: React.FC = () => {
                     <img
                         src={repo.owner.avatarUrl}
                         alt={repo.owner.login}
-                        style={{ width: 56, height: 56, borderRadius: 12, border: '1px solid var(--color-border)' }}
+                        width={56}
+                        height={56}
+                        decoding="async"
+                        style={{ width: 56, height: 56, borderRadius: 12, border: '1px solid var(--color-border)', flexShrink: 0 }}
                     />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>
+                        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4, wordBreak: 'break-word' }}>
                             {repo.alias || repo.name}
                         </h1>
                         {repo.alias && (
@@ -676,7 +675,7 @@ export const DetailPage: React.FC = () => {
                         {/* 已选标签 */}
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: showTagSelector ? 12 : 0 }}>
                             {(repo.customTags || []).map((tagId) => {
-                                const tag = tags.find(t => t.id === tagId);
+                                const tag = tagById.get(tagId);
                                 if (!tag) return null;
                                 return (
                                     <TagBadge

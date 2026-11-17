@@ -35,20 +35,19 @@ function timeAgo(dateStr: string, lang: 'zh' | 'en'): string {
  * <RepositoryCard repo={repo} onClick={handleClick} language="zh" />
  */
 export const RepositoryCard = memo<RepositoryCardProps>(({ repo, onClick, language, isActive = false }) => {
-    // 组件层订阅标签定义（先例：TagManager）——customTags 存的是标签 ID，渲染前需映射为名称
-    const tags = useStore((s) => s.tags);
+    // 组件层订阅标签 O(1) 映射表（store 单源维护，避免每张卡片各自 new Map）
+    const tagById = useStore((s) => s.tagById);
 
     // 使用 useMemo 缓存计算结果
     const displayName = useMemo(() => repo.alias || repo.name, [repo.alias, repo.name]);
 
     const allTags = useMemo(() => {
-        const tagNameById = new Map(tags.map(t => [t.id, t.name]));
         return [
             ...(repo.aiTags || []),
             // 未知 id 丢弃（不渲染死 ID）；先映射/过滤后截断，避免未知 id 白占名额
-            ...(repo.customTags || []).map(id => tagNameById.get(id)).filter(Boolean),
+            ...(repo.customTags || []).map(id => tagById.get(id)?.name).filter(Boolean),
         ].slice(0, 4);
-    }, [repo.aiTags, repo.customTags, tags]);
+    }, [repo.aiTags, repo.customTags, tagById]);
 
     const description = useMemo(() =>
         repo.aiSummary || repo.description || (language === 'zh' ? '暂无描述' : 'No description'),
