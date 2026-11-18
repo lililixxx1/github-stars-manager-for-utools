@@ -15,6 +15,7 @@
 import type { Repository, SearchFilter } from '@/types';
 import type { FilterContext } from './filterSelectors';
 import {
+    createFilterBySmartView,
     createFilterByLanguages,
     createFilterByTags,
     createFilterByPlatforms,
@@ -59,6 +60,9 @@ export const createFilteredReposPipeline = (
         if (prefixFilters.length > 0) {
             result = applyPrefixFilters(result, prefixFilters, context);
         }
+
+        // 智能视图筛选
+        result = createFilterBySmartView(filter.smartView, context)(result);
 
         // 语言筛选
         result = createFilterByLanguages(filter.languages)(result);

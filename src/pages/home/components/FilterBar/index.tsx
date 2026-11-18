@@ -1,7 +1,6 @@
 /**
- * 筛选栏组件
+ * 首页筛选与工具栏组件
  * @module pages/home/components/FilterBar
- * @since v1.7.0
  */
 
 import React, {
@@ -12,31 +11,41 @@ import React, {
     useImperativeHandle,
     useMemo,
     useRef,
-    useState
+    useState,
 } from 'react';
 import { useStore } from '@/stores/useStore';
 import { useProgressStore } from '@/stores/useProgressStore';
 import { t, type TranslationKey } from '@/locales';
 import { PLATFORM_OPTIONS, PLATFORM_NONE } from '@/constants/platforms';
-import { getPlatformIcon } from '@/constants/platformIcons';
-import type { SortBy, SortOrder, Tag as TagType, Repository } from '@/types';
+import { getTagTextColor } from '@/utils/tagColor';
 import { shouldIgnoreGlobalKeydown } from '@/utils/keyboard';
+import type { SortBy, SmartView, Tag as TagType, Repository } from '@/types';
 import {
-    ArrowUpDown, Tag as TagIcon, Filter, RefreshCw, Settings,
-    LayoutGrid, List, Bell, Edit3, Plus, Check
+    ArrowUpDown,
+    Bell,
+    CheckSquare,
+    Filter,
+    LayoutGrid,
+    List,
+    RefreshCw,
+    Settings,
+    X,
 } from 'lucide-react';
-import { TagChip } from '@/components/TagChip';
+import { FilterPopover } from './FilterPopover';
+import { SORT_OPTIONS, SortMenu } from './SortMenu';
 
 interface FilterBarProps {
     lang: 'zh' | 'en';
     repositories: Repository[];
-    filteredCount: number;  // 筛选后的数量
+    filteredCount: number;
     tags: TagType[];
     allLanguages: string[];
     onRefresh: () => void;
     syncStatus: string;
     viewMode: 'card' | 'list';
     onViewModeToggle: () => void;
+    batchMode: boolean;
+    onToggleBatchMode: () => void;
     keyboardArea: 'toolbar' | 'list';
     onRequestListArea: () => void;
     onRequestToolbarArea: () => void;
@@ -52,75 +61,119 @@ interface ToolbarControl {
     title: string;
     action: () => void;
     disabled?: boolean;
-    /** 激活态（primary 实底，.btn-filter.active）；语义上可按压的按钮同步输出 aria-pressed */
     active?: boolean;
     content: React.ReactNode;
 }
 
-/**
- * 排序选项
- */
-const SORT_OPTIONS: { value: SortBy; labelKey: TranslationKey }[] = [
-    { value: 'stars', labelKey: 'sortByStars' },
-    { value: 'updated', labelKey: 'sortByUpdated' },
-    { value: 'name', labelKey: 'sortByName' },
-    { value: 'starredAt', labelKey: 'sortByStarredAt' },
-    { value: 'pushedAt', labelKey: 'sortByPushedAt' },
-];
+const QUICK_TAG_COLORS = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
 
-/**
- * 筛选栏组件
- * 包含：版本追踪、未读标识、视图切换、排序、标签筛选、平台筛选、同步、设置
- */
+const SORT_SHORT_LABEL_KEYS: Record<SortBy, TranslationKey> = {
+    stars: 'sortShortStars',
+    updated: 'sortShortUpdated',
+    name: 'sortShortName',
+    starredAt: 'sortShortStarredAt',
+    pushedAt: 'sortShortPushedAt',
+};
+
 const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     lang,
     repositories,
     filteredCount,
     tags,
-    allLanguages,
     onRefresh,
     syncStatus,
     viewMode,
     onViewModeToggle,
+    batchMode,
+    onToggleBatchMode,
     keyboardArea,
     onRequestListArea,
     onRequestToolbarArea,
-    hasListResults
+    hasListResults,
 }, ref) => {
-    // 精确订阅（阶段2 性能重构）
     const searchFilter = useStore((state) => state.searchFilter);
     const setSearchFilter = useStore((state) => state.setSearchFilter);
-    // 阶段3 排序收敛：排序菜单改用专用 action（原子写 settings + searchFilter）
     const setSortPreference = useStore((state) => state.setSortPreference);
     const setCurrentPage = useStore((state) => state.setCurrentPage);
-    // 订阅单源：内存 subscribedRepoIds（阶段3 起不再渲染期直读存储表/subscriptionVersion）
+    const addTag = useStore((state) => state.addTag);
+    const tagById = useStore((state) => state.tagById);
+    const noteRepoIds = useStore((state) => state.noteRepoIds);
     const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
-    // 未读数依赖 releases 与订阅数据，订阅二者保持角标响应式
     const releases = useStore((state) => state.releases);
     const getUnreadCount = useStore((state) => state.getUnreadCount);
+    const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
+
     const unreadCount = useMemo(
         () => getUnreadCount(),
         [getUnreadCount, releases, subscribedRepoIds]
     );
-    const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
 
-    // UI 状态
     const [showSortMenu, setShowSortMenu] = useState(false);
-    const [showTagFilter, setShowTagFilter] = useState(false);
-    const [showPlatformFilter, setShowPlatformFilter] = useState(false);
+    const [showFilterPopover, setShowFilterPopover] = useState(false);
     const [activeControlIndex, setActiveControlIndex] = useState(0);
     const [activeSortMenuIndex, setActiveSortMenuIndex] = useState(0);
+
     const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
     const sortMenuContainerRef = useRef<HTMLDivElement | null>(null);
+    const filterPopoverContainerRef = useRef<HTMLDivElement | null>(null);
 
-    const showUnreadBadge = unreadCount > 0 || releaseCheckStatus.checking;
-    // 订阅数从 store 派生（repositories.isSubscribed 由 loadRepositories/toggle/clear 维护）
-    const subscribedCount = useMemo(
-        () => repositories.reduce((count, r) => (r.isSubscribed ? count + 1 : count), 0),
-        [repositories]
-    );
+    const stats = useMemo(() => {
+        const languageCounts = new Map<string, number>();
+        const platformCounts = new Map<string, number>();
+        let untagged = 0;
+        let unanalyzed = 0;
+        let noted = 0;
+        let subscribed = 0;
 
-    // 排序操作（阶段3：走 setSortPreference，排序偏好原子持久化）
+        for (const repo of repositories) {
+            if (!repo.customTags || repo.customTags.length === 0) untagged++;
+            if (!repo.analyzedAt || repo.analysisFailed) unanalyzed++;
+            if (noteRepoIds.has(repo.id)) noted++;
+            if (repo.isSubscribed) subscribed++;
+            if (repo.language) {
+                languageCounts.set(repo.language, (languageCounts.get(repo.language) || 0) + 1);
+            }
+            if (repo.aiPlatforms) {
+                for (const p of repo.aiPlatforms) {
+                    platformCounts.set(p, (platformCounts.get(p) || 0) + 1);
+                }
+            }
+        }
+
+        const sortedLanguages = Array.from(languageCounts.entries())
+            .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]));
+
+        return {
+            total: repositories.length,
+            untagged,
+            unanalyzed,
+            noted,
+            subscribed,
+            sortedLanguages,
+            platformCounts,
+        };
+    }, [repositories, noteRepoIds]);
+
+    const currentSmartView: SmartView = searchFilter.smartView || 'all';
+
+    const smartViewItems = useMemo<Array<{ id: SmartView; label: string; count: number }>>(() => [
+        { id: 'all', label: t('smartViewAll', lang), count: stats.total },
+        { id: 'untagged', label: t('smartViewUntagged', lang), count: stats.untagged },
+        { id: 'unanalyzed', label: t('smartViewUnanalyzed', lang), count: stats.unanalyzed },
+        { id: 'noted', label: t('smartViewNoted', lang), count: stats.noted },
+        { id: 'subscribed', label: t('smartViewSubscribed', lang), count: stats.subscribed },
+    ], [lang, stats.noted, stats.subscribed, stats.total, stats.unanalyzed, stats.untagged]);
+
+    const activeFilterCount =
+        searchFilter.languages.length
+        + searchFilter.customTags.length
+        + searchFilter.platforms.length
+        + (searchFilter.hasNotes ? 1 : 0)
+        + (searchFilter.hasAlias ? 1 : 0)
+        + (searchFilter.hasReleases ? 1 : 0);
+
+    const hasFacetFilter = activeFilterCount > 0;
+
     const handleSortChange = useCallback((sortBy: SortBy) => {
         setSortPreference({ sortBy });
         setShowSortMenu(false);
@@ -137,49 +190,82 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     const openSortMenu = useCallback(() => {
         const currentSortIndex = SORT_OPTIONS.findIndex((option) => option.value === searchFilter.sortBy);
         setActiveSortMenuIndex(currentSortIndex >= 0 ? currentSortIndex : 0);
+        setShowFilterPopover(false);
         setShowSortMenu(true);
     }, [searchFilter.sortBy]);
 
-    const closeSortMenu = useCallback(() => {
-        setShowSortMenu(false);
-    }, []);
+    const closeSortMenu = useCallback(() => setShowSortMenu(false), []);
 
     const onToggleOrderAndClose = useCallback(() => {
         toggleSortOrder();
         closeSortMenu();
     }, [closeSortMenu, toggleSortOrder]);
 
+    const toggleFilterPopover = useCallback(() => {
+        setShowSortMenu(false);
+        setShowFilterPopover((prev) => !prev);
+    }, []);
+
     const toolbarControls = useMemo<ToolbarControl[]>(() => [
+        {
+            key: 'filter',
+            title: t('addFilter', lang),
+            action: toggleFilterPopover,
+            active: showFilterPopover || hasFacetFilter,
+            content: (
+                <>
+                    <Filter size={13} />
+                    <span>{t('addFilter', lang)}</span>
+                    {activeFilterCount > 0 && (
+                        <span
+                            className={`count-pill ${showFilterPopover || hasFacetFilter ? 'count-pill-on-solid' : 'count-pill-soft'}`}
+                            style={{ marginLeft: 0 }}
+                        >
+                            {activeFilterCount}
+                        </span>
+                    )}
+                </>
+            ),
+        },
         {
             key: 'releases',
             title: t('releases', lang),
             action: handleOpenReleases,
             content: (
+                <span
+                    className="inline-flex items-center gap-1"
+                    style={unreadCount > 0 ? { color: 'var(--color-primary-dark)' } : undefined}
+                >
+                    <Bell
+                        size={14}
+                        className={releaseCheckStatus.checking ? 'animate-spin' : ''}
+                        style={unreadCount > 0 ? { color: 'var(--color-primary)' } : undefined}
+                    />
+                    {unreadCount > 0 ? (
+                        <>
+                            <span style={{ fontSize: 11, fontWeight: 600 }}>{unreadCount}</span>
+                            <span className="unread-dot" />
+                        </>
+                    ) : stats.subscribed > 0 ? (
+                        <span style={{ fontSize: 11 }}>{stats.subscribed}</span>
+                    ) : null}
+                </span>
+            ),
+        },
+        {
+            key: 'sort',
+            title: t(SORT_OPTIONS.find(s => s.value === searchFilter.sortBy)?.labelKey || 'sortByStars', lang),
+            action: () => (showSortMenu ? closeSortMenu() : openSortMenu()),
+            content: (
                 <>
-                    <Bell size={14} />
-                    {subscribedCount > 0 && (
-                        <span style={{ fontSize: 11, marginLeft: 2 }}>{subscribedCount}</span>
-                    )}
+                    <ArrowUpDown size={13} />
+                    <span style={{ fontSize: 12 }}>
+                        {t(SORT_SHORT_LABEL_KEYS[searchFilter.sortBy] || 'sortShortStars', lang)}
+                        {searchFilter.sortOrder === 'asc' ? '↑' : '↓'}
+                    </span>
                 </>
             ),
         },
-        ...(showUnreadBadge ? [{
-            key: 'unread',
-            title: t('releases', lang),
-            action: handleOpenReleases,
-            active: true,
-            content: (
-                <>
-                    <Bell size={14} />
-                    {unreadCount > 0 && (
-                        <span style={{ fontSize: 11, marginLeft: 2 }}>{unreadCount}</span>
-                    )}
-                    {releaseCheckStatus.checking && (
-                        <span style={{ fontSize: 11, marginLeft: 2 }}>{t('checkingUpdates', lang)}</span>
-                    )}
-                </>
-            ),
-        }] : []),
         {
             key: 'view',
             title: t('viewMode', lang),
@@ -187,55 +273,15 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             content: viewMode === 'card' ? <LayoutGrid size={14} /> : <List size={14} />,
         },
         {
-            key: 'sort',
-            title: t((SORT_OPTIONS.find(s => s.value === searchFilter.sortBy)?.labelKey || 'sortByStars') as TranslationKey, lang),
-            action: () => {
-                if (showSortMenu) {
-                    closeSortMenu();
-                    return;
-                }
-                openSortMenu();
-            },
-            content: (
-                <>
-                    <ArrowUpDown size={14} />
-                    <span style={{ fontSize: 12, marginLeft: 2 }}>
-                        {searchFilter.sortOrder === 'asc' ? '↑' : '↓'}
-                    </span>
-                </>
-            ),
-        },
-        {
-            key: 'tags',
-            title: t('tags', lang),
-            action: () => setShowTagFilter((prev) => !prev),
-            active: searchFilter.customTags.length > 0,
-            content: (
-                <>
-                    <TagIcon size={14} />
-                    {searchFilter.customTags.length > 0 && (
-                        <span style={{ fontSize: 11, marginLeft: 2 }}>{searchFilter.customTags.length}</span>
-                    )}
-                </>
-            ),
-        },
-        {
-            key: 'platforms',
-            title: t('platformFilter', lang),
-            action: () => setShowPlatformFilter((prev) => !prev),
-            active: searchFilter.platforms.length > 0,
-            content: (
-                <>
-                    <Filter size={14} />
-                    {searchFilter.platforms.length > 0 && (
-                        <span style={{ fontSize: 11, marginLeft: 2 }}>{searchFilter.platforms.length}</span>
-                    )}
-                </>
-            ),
+            key: 'batch',
+            title: t('batchMode', lang),
+            action: onToggleBatchMode,
+            active: batchMode,
+            content: <CheckSquare size={14} />,
         },
         {
             key: 'refresh',
-            title: lang === 'zh' ? '同步' : 'Sync',
+            title: t('syncNow', lang),
             action: onRefresh,
             disabled: syncStatus === 'syncing',
             content: <RefreshCw size={14} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />,
@@ -247,98 +293,93 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             content: <Settings size={14} />,
         },
     ], [
+        activeFilterCount,
+        batchMode,
         closeSortMenu,
         handleOpenReleases,
+        hasFacetFilter,
         lang,
         onRefresh,
+        onToggleBatchMode,
         onViewModeToggle,
         openSortMenu,
         releaseCheckStatus.checking,
-        searchFilter.customTags.length,
-        searchFilter.platforms.length,
         searchFilter.sortBy,
         searchFilter.sortOrder,
         setCurrentPage,
+        showFilterPopover,
         showSortMenu,
-        showUnreadBadge,
-        subscribedCount,
+        stats.subscribed,
         syncStatus,
+        toggleFilterPopover,
         unreadCount,
         viewMode,
     ]);
 
     const focusControl = useCallback((index: number) => {
-        requestAnimationFrame(() => {
-            buttonRefs.current[index]?.focus();
-        });
+        requestAnimationFrame(() => buttonRefs.current[index]?.focus());
     }, []);
 
     const activateControl = useCallback((index: number, shouldFocus = false) => {
         setActiveControlIndex(index);
         onRequestToolbarArea();
-        if (shouldFocus) {
-            focusControl(index);
-        }
+        if (shouldFocus) focusControl(index);
     }, [focusControl, onRequestToolbarArea]);
 
     const findNextEnabledIndex = useCallback((startIndex: number, direction: 1 | -1) => {
         if (toolbarControls.length === 0) return 0;
-
         let nextIndex = startIndex;
         for (let i = 0; i < toolbarControls.length; i++) {
             nextIndex = (nextIndex + direction + toolbarControls.length) % toolbarControls.length;
-            if (!toolbarControls[nextIndex]?.disabled) {
-                return nextIndex;
-            }
+            if (!toolbarControls[nextIndex]?.disabled) return nextIndex;
         }
-
         return startIndex;
     }, [toolbarControls]);
 
     useImperativeHandle(ref, () => ({
-        focusActiveControl: () => {
-            focusControl(activeControlIndex);
-        },
+        focusActiveControl: () => focusControl(activeControlIndex),
     }), [activeControlIndex, focusControl]);
 
     useEffect(() => {
         setActiveControlIndex((prev) => {
             const next = Math.min(prev, toolbarControls.length - 1);
-            if (!toolbarControls[next]?.disabled) return next;
-            return findNextEnabledIndex(next, 1);
+            return !toolbarControls[next]?.disabled ? next : findNextEnabledIndex(next, 1);
         });
     }, [findNextEnabledIndex, toolbarControls]);
 
     useEffect(() => {
+        if (!showSortMenu && !showFilterPopover) return;
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (shouldIgnoreGlobalKeydown(event)) return;
             if (event.key !== 'Escape') return;
-            if (!showSortMenu && !showTagFilter && !showPlatformFilter) return;
-
             event.preventDefault();
             setShowSortMenu(false);
-            setShowTagFilter(false);
-            setShowPlatformFilter(false);
+            setShowFilterPopover(false);
         };
-
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [showPlatformFilter, showSortMenu, showTagFilter]);
+    }, [showFilterPopover, showSortMenu]);
 
-    // 点击排序菜单外部自动关闭
     useEffect(() => {
         if (!showSortMenu) return;
-
         const handleMouseDown = (event: MouseEvent) => {
-            const container = sortMenuContainerRef.current;
-            if (container && !container.contains(event.target as Node)) {
+            if (sortMenuContainerRef.current && !sortMenuContainerRef.current.contains(event.target as Node)) {
                 setShowSortMenu(false);
             }
         };
-
         document.addEventListener('mousedown', handleMouseDown);
         return () => document.removeEventListener('mousedown', handleMouseDown);
     }, [showSortMenu]);
+
+    useEffect(() => {
+        if (!showFilterPopover) return;
+        const handleMouseDown = (event: MouseEvent) => {
+            if (filterPopoverContainerRef.current && !filterPopoverContainerRef.current.contains(event.target as Node)) {
+                setShowFilterPopover(false);
+            }
+        };
+        document.addEventListener('mousedown', handleMouseDown);
+        return () => document.removeEventListener('mousedown', handleMouseDown);
+    }, [showFilterPopover]);
 
     useEffect(() => {
         if (keyboardArea !== 'toolbar') return;
@@ -350,72 +391,42 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                 if (event.key === 'ArrowDown') {
                     event.preventDefault();
                     setActiveSortMenuIndex((prev) => Math.min(prev + 1, SORT_OPTIONS.length));
-                    return;
-                }
-
-                if (event.key === 'ArrowUp') {
+                } else if (event.key === 'ArrowUp') {
                     event.preventDefault();
                     setActiveSortMenuIndex((prev) => Math.max(prev - 1, 0));
-                    return;
-                }
-
-                if (event.key === 'Enter' || event.key === ' ') {
+                } else if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
                     if (activeSortMenuIndex < SORT_OPTIONS.length) {
                         handleSortChange(SORT_OPTIONS[activeSortMenuIndex].value);
-                        return;
+                    } else {
+                        onToggleOrderAndClose();
                     }
-
-                    onToggleOrderAndClose();
-                    return;
-                }
-
-                if (event.key === 'Escape') {
+                } else if (event.key === 'Escape') {
                     event.preventDefault();
                     closeSortMenu();
                     focusControl(activeControlIndex);
-                    return;
-                }
-
-                if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
                     event.preventDefault();
                 }
-
                 return;
             }
 
-            // 🆕 v1.6.4 标签/平台筛选区展开时，方向键交给筛选区处理，工具栏让位
-            if (showTagFilter || showPlatformFilter) {
-                return;
-            }
+            if (showFilterPopover) return;
 
             if (event.key === 'ArrowRight') {
                 event.preventDefault();
-                const nextIndex = findNextEnabledIndex(activeControlIndex, 1);
-                activateControl(nextIndex, true);
-                return;
-            }
-
-            if (event.key === 'ArrowLeft') {
+                activateControl(findNextEnabledIndex(activeControlIndex, 1), true);
+            } else if (event.key === 'ArrowLeft') {
                 event.preventDefault();
-                const nextIndex = findNextEnabledIndex(activeControlIndex, -1);
-                activateControl(nextIndex, true);
-                return;
-            }
-
-            if (event.key === 'ArrowDown') {
+                activateControl(findNextEnabledIndex(activeControlIndex, -1), true);
+            } else if (event.key === 'ArrowDown') {
                 if (!hasListResults) return;
                 event.preventDefault();
                 onRequestListArea();
-                return;
-            }
-
-            if (event.key === 'Enter' || event.key === ' ') {
+            } else if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
                 const control = toolbarControls[activeControlIndex];
-                if (!control?.disabled) {
-                    control?.action();
-                }
+                if (!control?.disabled) control?.action();
             }
         };
 
@@ -433,13 +444,11 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         keyboardArea,
         onRequestListArea,
         onToggleOrderAndClose,
-        showPlatformFilter,
+        showFilterPopover,
         showSortMenu,
-        showTagFilter,
-        toolbarControls
+        toolbarControls,
     ]);
 
-    // 仅产出 roving 激活焦点环（颜色由 primary token 调出，激活/悬浮配色交由 .btn-filter 类）
     const getToolbarButtonStyle = useCallback((index: number): React.CSSProperties => ({
         boxShadow: keyboardArea === 'toolbar' && activeControlIndex === index
             ? '0 0 0 2px color-mix(in srgb, var(--color-primary) 40%, transparent)'
@@ -447,49 +456,100 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         outline: 'none',
     }), [activeControlIndex, keyboardArea]);
 
-    const hasActiveFilter =
-        searchFilter.languages.length > 0
-        || searchFilter.customTags.length > 0
-        || searchFilter.platforms.length > 0;
+    const handleClearAllFilters = useCallback(() => {
+        setSearchFilter({
+            smartView: 'all',
+            languages: [],
+            customTags: [],
+            platforms: [],
+            hasNotes: null,
+            hasAlias: null,
+            hasReleases: null,
+        });
+    }, [setSearchFilter]);
 
-    // 语言条最多展示高频前 20 个，且始终保留已选中但不在前 20 内的语言
-    const visibleLanguages = useMemo(() => {
-        const top = allLanguages.slice(0, 20);
-        if (searchFilter.languages.length === 0) return top;
-        const topSet = new Set(top);
-        const extras = searchFilter.languages.filter((l) => !topSet.has(l) && allLanguages.includes(l));
-        return extras.length > 0 ? [...top, ...extras] : top;
-    }, [allLanguages, searchFilter.languages]);
+    const handleQuickCreateTag = useCallback((name: string) => {
+        const color = QUICK_TAG_COLORS[tags.length % QUICK_TAG_COLORS.length];
+        const created = addTag({ name, color, icon: '🏷️', order: tags.length });
+        setSearchFilter({ customTags: [...searchFilter.customTags, created.id] });
+    }, [addTag, searchFilter.customTags, setSearchFilter, tags.length]);
+
+    const toggleLanguage = useCallback((langItem: string) => {
+        const next = searchFilter.languages.includes(langItem)
+            ? searchFilter.languages.filter((l) => l !== langItem)
+            : [...searchFilter.languages, langItem];
+        setSearchFilter({ languages: next });
+    }, [searchFilter.languages, setSearchFilter]);
+
+    const toggleTag = useCallback((tagId: string) => {
+        const next = searchFilter.customTags.includes(tagId)
+            ? searchFilter.customTags.filter((id) => id !== tagId)
+            : [...searchFilter.customTags, tagId];
+        setSearchFilter({ customTags: next });
+    }, [searchFilter.customTags, setSearchFilter]);
+
+    const togglePlatform = useCallback((platform: string) => {
+        const next = searchFilter.platforms.includes(platform)
+            ? searchFilter.platforms.filter((p) => p !== platform)
+            : [...searchFilter.platforms.filter((p) => p !== PLATFORM_NONE), platform];
+        setSearchFilter({ platforms: next });
+    }, [searchFilter.platforms, setSearchFilter]);
+
+    const toggleUnanalyzedPlatform = useCallback(() => {
+        const hasNone = searchFilter.platforms.includes(PLATFORM_NONE);
+        setSearchFilter({ platforms: hasNone ? [] : [PLATFORM_NONE] });
+    }, [searchFilter.platforms, setSearchFilter]);
+
+    const toggleStatus = useCallback((key: 'hasNotes' | 'hasAlias' | 'hasReleases') => {
+        setSearchFilter({ [key]: searchFilter[key] === true ? null : true });
+    }, [searchFilter, setSearchFilter]);
+
+    const handleManageTags = useCallback(() => {
+        setShowFilterPopover(false);
+        setCurrentPage('tags');
+    }, [setCurrentPage]);
 
     return (
         <>
-            {/* 顶部栏 */}
-            <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
-                background: 'var(--color-surface)',
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                    <span style={{ fontSize: 14, color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>
-                        {t('totalRepos', lang, { count: filteredCount })}
-                    </span>
-                    {hasActiveFilter && (
-                        <button
-                            type="button"
-                            className="btn btn-ghost btn-sm"
-                            style={{ padding: '2px 8px', fontSize: 12, color: 'var(--color-primary)' }}
-                            onClick={() => setSearchFilter({ languages: [], customTags: [], platforms: [] })}
-                        >
-                            {t('clearFilter', lang)}
-                        </button>
-                    )}
+            {/* 主工具栏 */}
+            <div className="flex items-center justify-between gap-2 px-5 py-2.5 border-b border-[var(--color-border)] bg-[var(--color-surface)] shrink-0">
+                <div className="smart-view-strip" role="tablist" aria-label={t('repositories', lang)}>
+                    {smartViewItems.map((item) => {
+                        const isActive = currentSmartView === item.id;
+                        return (
+                            <button
+                                key={item.id}
+                                type="button"
+                                role="tab"
+                                aria-selected={isActive}
+                                className={`smart-view-pill${isActive ? ' active' : ''}`}
+                                onClick={() => setSearchFilter({ smartView: item.id })}
+                            >
+                                <span>{item.label}</span>
+                                <span className="text-[11px] opacity-70">{item.count}</span>
+                            </button>
+                        );
+                    })}
                 </div>
-                <div style={{ display: 'flex', gap: 4, position: 'relative' }} role="toolbar" aria-label={lang === 'zh' ? '首页工具栏' : 'Home toolbar'}>
+
+                <div
+                    className="flex items-center gap-1 shrink-0 relative"
+                    role="toolbar"
+                    aria-label={t('repositories', lang)}
+                >
                     {toolbarControls.map((control, index) => {
+                        const divider = control.key === 'view' ? (
+                            <span
+                                key="toolbar-divider"
+                                className="w-px h-4 bg-[var(--color-border)] mx-0.5 shrink-0"
+                                aria-hidden="true"
+                            />
+                        ) : null;
                         const button = (
                             <button
                                 key={control.key}
                                 ref={(element) => { buttonRefs.current[index] = element; }}
+                                type="button"
                                 className={`btn btn-filter btn-sm${control.active ? ' active' : ''}`}
                                 tabIndex={activeControlIndex === index ? 0 : -1}
                                 onClick={control.action}
@@ -505,99 +565,169 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                             </button>
                         );
 
-                        if (control.key !== 'sort') {
-                            return button;
+                        if (control.key === 'filter') {
+                            return (
+                                <div key={control.key} ref={filterPopoverContainerRef} className="relative">
+                                    {button}
+                                    {showFilterPopover && (
+                                        <FilterPopover
+                                            lang={lang}
+                                            searchFilter={searchFilter}
+                                            tags={tags}
+                                            sortedLanguages={stats.sortedLanguages}
+                                            platformCounts={stats.platformCounts}
+                                            unanalyzedCount={stats.unanalyzed}
+                                            notedCount={stats.noted}
+                                            subscribedCount={stats.subscribed}
+                                            hasFacetFilter={hasFacetFilter}
+                                            onToggleLanguage={toggleLanguage}
+                                            onToggleTag={toggleTag}
+                                            onTogglePlatform={togglePlatform}
+                                            onToggleUnanalyzedPlatform={toggleUnanalyzedPlatform}
+                                            onToggleStatus={toggleStatus}
+                                            onQuickCreateTag={handleQuickCreateTag}
+                                            onManageTags={handleManageTags}
+                                            onClearAll={handleClearAllFilters}
+                                        />
+                                    )}
+                                </div>
+                            );
+                        }
+
+                        if (control.key === 'sort') {
+                            return (
+                                <div key={control.key} ref={sortMenuContainerRef} className="relative">
+                                    {button}
+                                    {showSortMenu && (
+                                        <SortMenu
+                                            sortBy={searchFilter.sortBy}
+                                            sortOrder={searchFilter.sortOrder}
+                                            activeIndex={activeSortMenuIndex}
+                                            lang={lang}
+                                            onSortChange={handleSortChange}
+                                            onToggleOrder={onToggleOrderAndClose}
+                                            onHoverItem={setActiveSortMenuIndex}
+                                        />
+                                    )}
+                                </div>
+                            );
                         }
 
                         return (
-                            <div key={control.key} ref={sortMenuContainerRef} style={{ position: 'relative' }}>
+                            <React.Fragment key={control.key}>
+                                {divider}
                                 {button}
-                                {showSortMenu && (
-                                    <SortMenu
-                                        sortBy={searchFilter.sortBy}
-                                        sortOrder={searchFilter.sortOrder}
-                                        activeIndex={activeSortMenuIndex}
-                                        lang={lang}
-                                        onSortChange={handleSortChange}
-                                        onToggleOrder={onToggleOrderAndClose}
-                                        onClose={closeSortMenu}
-                                        onHoverItem={setActiveSortMenuIndex}
-                                    />
-                                )}
-                            </div>
+                            </React.Fragment>
                         );
                     })}
                 </div>
             </div>
 
-            {/* 标签筛选区 */}
-            {showTagFilter && (
-                <TagFilterBar
-                    tags={tags}
-                    selectedTags={searchFilter.customTags}
-                    lang={lang}
-                    onClose={() => setShowTagFilter(false)}
-                    onTagToggle={(tagId) => {
-                        const newTags = searchFilter.customTags.includes(tagId)
-                            ? searchFilter.customTags.filter(id => id !== tagId)
-                            : [...searchFilter.customTags, tagId];
-                        setSearchFilter({ customTags: newTags });
-                    }}
-                    onClear={() => setSearchFilter({ customTags: [] })}
-                    onManage={() => setCurrentPage('tags')}
-                />
-            )}
-
-            {/* 平台筛选区 */}
-            {showPlatformFilter && (
-                <PlatformFilterBar
-                    repositories={repositories}
-                    selectedPlatforms={searchFilter.platforms}
-                    lang={lang}
-                    onClose={() => setShowPlatformFilter(false)}
-                    onPlatformToggle={(platform) => {
-                        const newPlatforms = searchFilter.platforms.includes(platform)
-                            ? searchFilter.platforms.filter(p => p !== platform)
-                            : [...searchFilter.platforms.filter(p => p !== PLATFORM_NONE), platform];
-                        setSearchFilter({ platforms: newPlatforms });
-                    }}
-                    onClear={() => setSearchFilter({ platforms: [] })}
-                />
-            )}
-
-            {/* 语言筛选标签 */}
-            {visibleLanguages.length > 0 && (
-                <div
-                    className="lang-filter-bar"
-                    style={{
-                        display: 'flex', gap: 4, padding: '6px 16px', overflowX: 'auto',
-                        borderBottom: '1px solid var(--color-border)',
-                        background: 'var(--color-surface)',
-                        flexShrink: 0,
-                    }}
-                >
-                    <button
-                        className={`tag ${searchFilter.languages.length === 0 ? 'tag-active' : ''}`}
-                        style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
-                        onClick={() => setSearchFilter({ languages: [] })}
-                    >
-                        {t('allCategories', lang)}
-                    </button>
-                    {visibleLanguages.map((langItem) => (
+            {/* 激活筛选条件胶囊条 */}
+            {hasFacetFilter && (
+                <div className="active-filter-strip">
+                    {searchFilter.languages.map((langItem) => (
                         <button
-                            key={langItem}
-                            className={`tag ${searchFilter.languages.includes(langItem) ? 'tag-active' : ''}`}
-                            style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
-                            onClick={() => {
-                                const langs = searchFilter.languages.includes(langItem)
-                                    ? searchFilter.languages.filter((l) => l !== langItem)
-                                    : [...searchFilter.languages, langItem];
-                                setSearchFilter({ languages: langs });
-                            }}
+                            key={`lang:${langItem}`}
+                            type="button"
+                            className="chip active"
+                            style={{ padding: '1px 8px', fontSize: 11 }}
+                            onClick={() => toggleLanguage(langItem)}
                         >
-                            {langItem}
+                            <span>{langItem}</span>
+                            <X size={11} />
                         </button>
                     ))}
+
+                    {searchFilter.customTags.map((tagId) => {
+                        const tag = tagById.get(tagId);
+                        if (!tag) return null;
+                        const bg = tag.color
+                            ? (/^#[0-9a-fA-F]{6}$/.test(tag.color) ? `${tag.color}22` : tag.color)
+                            : 'var(--color-surface)';
+                        return (
+                            <button
+                                key={`tag:${tag.id}`}
+                                type="button"
+                                className="chip"
+                                style={{
+                                    padding: '1px 8px',
+                                    fontSize: 11,
+                                    background: bg,
+                                    borderColor: tag.color || 'var(--color-border)',
+                                    color: getTagTextColor(tag.color),
+                                }}
+                                onClick={() => toggleTag(tag.id)}
+                            >
+                                {tag.icon && <span>{tag.icon}</span>}
+                                <span>{tag.name}</span>
+                                <X size={11} />
+                            </button>
+                        );
+                    })}
+
+                    {searchFilter.platforms.map((platformId) => {
+                        const label = platformId === PLATFORM_NONE
+                            ? t('platformUnanalyzed', lang)
+                            : (PLATFORM_OPTIONS.find((p) => p.id === platformId)?.label || platformId);
+                        return (
+                            <button
+                                key={`platform:${platformId}`}
+                                type="button"
+                                className="chip active"
+                                style={{ padding: '1px 8px', fontSize: 11 }}
+                                onClick={() => togglePlatform(platformId)}
+                            >
+                                <span>{label}</span>
+                                <X size={11} />
+                            </button>
+                        );
+                    })}
+
+                    {searchFilter.hasNotes === true && (
+                        <button
+                            type="button"
+                            className="chip active"
+                            style={{ padding: '1px 8px', fontSize: 11 }}
+                            onClick={() => setSearchFilter({ hasNotes: null })}
+                        >
+                            <span>{t('hasNotesFilter', lang)}</span>
+                            <X size={11} />
+                        </button>
+                    )}
+
+                    {searchFilter.hasAlias === true && (
+                        <button
+                            type="button"
+                            className="chip active"
+                            style={{ padding: '1px 8px', fontSize: 11 }}
+                            onClick={() => setSearchFilter({ hasAlias: null })}
+                        >
+                            <span>{t('hasAliasFilter', lang)}</span>
+                            <X size={11} />
+                        </button>
+                    )}
+
+                    {searchFilter.hasReleases === true && (
+                        <button
+                            type="button"
+                            className="chip active"
+                            style={{ padding: '1px 8px', fontSize: 11 }}
+                            onClick={() => setSearchFilter({ hasReleases: null })}
+                        >
+                            <span>{t('statusFilterSubscribed', lang)}</span>
+                            <X size={11} />
+                        </button>
+                    )}
+
+                    <button
+                        type="button"
+                        className="btn btn-ghost btn-sm ml-auto whitespace-nowrap"
+                        style={{ padding: '1px 8px', fontSize: 11, color: 'var(--color-primary)' }}
+                        onClick={handleClearAllFilters}
+                    >
+                        {t('clearFilter', lang)}
+                    </button>
                 </div>
             )}
         </>
@@ -608,331 +738,5 @@ FilterBarComponent.displayName = 'FilterBar';
 
 export const FilterBar = memo(FilterBarComponent);
 FilterBar.displayName = 'FilterBar';
-
-// ==================== 子组件 ====================
-
-/**
- * 筛选面板横向键盘导航
- * @since v1.6.4
- *
- * 为标签/平台筛选面板提供左右键移动、Enter/Space 触发、Escape 关闭的键盘支持。
- * 收集容器内所有可聚焦按钮（非 disabled），用 roving tabindex 模式管理焦点。
- *
- * 实现：keydown 同时挂在 window（捕获阶段，确保优先于工具栏监听）和容器上，
- * 不依赖"工具栏让位"逻辑，任何环境下都能稳定响应方向键。
- */
-function useFilterPanelNav(options: {
-    enabled: boolean;
-    onClose: () => void;
-}) {
-    const { enabled, onClose } = options;
-    const containerRef = useRef<HTMLDivElement | null>(null);
-    const activeIndexRef = useRef(0);
-
-    // 收集容器内可聚焦的按钮
-    const getButtons = useCallback((): HTMLButtonElement[] => {
-        const container = containerRef.current;
-        if (!container) return [];
-        return Array.from(container.querySelectorAll<HTMLButtonElement>('button:not([disabled])'));
-    }, []);
-
-    const focusButton = useCallback((index: number) => {
-        const buttons = getButtons();
-        if (buttons.length === 0) return;
-        const wrapped = ((index % buttons.length) + buttons.length) % buttons.length;
-        activeIndexRef.current = wrapped;
-        buttons[wrapped]?.focus();
-    }, [getButtons]);
-
-    // 同步当前焦点对应的 index（鼠标点击/Tab 聚焦时校正）
-    const syncActiveIndex = useCallback(() => {
-        const buttons = getButtons();
-        const focused = document.activeElement as HTMLButtonElement | null;
-        const idx = buttons.findIndex(b => b === focused);
-        if (idx >= 0) activeIndexRef.current = idx;
-    }, [getButtons]);
-
-    // 捕获阶段优先拦截方向键，避免被工具栏/列表监听抢走
-    useEffect(() => {
-        if (!enabled) return;
-
-        const handleKeyDown = (event: KeyboardEvent) => {
-            // 仅当焦点在本容器内时响应（避免影响工具栏/列表的其它操作）
-            const container = containerRef.current;
-            if (!container) return;
-            if (!container.contains(document.activeElement)) return;
-
-            const key = event.key;
-            if (key !== 'ArrowRight' && key !== 'ArrowLeft' && key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Escape') {
-                return;
-            }
-
-            if (key === 'Escape') {
-                event.preventDefault();
-                event.stopPropagation();
-                onClose();
-                return;
-            }
-
-            const buttons = getButtons();
-            if (buttons.length === 0) return;
-
-            event.preventDefault();
-            event.stopPropagation();
-
-            if (key === 'ArrowRight' || key === 'ArrowDown') {
-                focusButton(activeIndexRef.current + 1);
-            } else if (key === 'ArrowLeft' || key === 'ArrowUp') {
-                focusButton(activeIndexRef.current - 1);
-            }
-        };
-
-        window.addEventListener('keydown', handleKeyDown, true);
-        return () => window.removeEventListener('keydown', handleKeyDown, true);
-    }, [enabled, focusButton, getButtons, onClose]);
-
-    // 面板打开时自动聚焦第一个按钮
-    // 用 setTimeout 延迟到点击事件之后，避免被点击按钮的默认聚焦覆盖
-    useEffect(() => {
-        if (!enabled) return;
-        activeIndexRef.current = 0;
-        const timer = setTimeout(() => focusButton(0), 0);
-        return () => clearTimeout(timer);
-    }, [enabled, focusButton]);
-
-    return { containerRef, syncActiveIndex };
-}
-
-/** 排序菜单 */
-const SortMenu = memo<{
-    sortBy: SortBy;
-    sortOrder: SortOrder;
-    activeIndex: number;
-    lang: 'zh' | 'en';
-    onSortChange: (sortBy: SortBy) => void;
-    onToggleOrder: () => void;
-    onClose: () => void;
-    onHoverItem: (index: number) => void;
-}>(({ sortBy, sortOrder, activeIndex, lang, onSortChange, onToggleOrder, onClose, onHoverItem }) => (
-    <div
-        className="panel-enter"
-        style={{
-            position: 'absolute', top: '100%', right: 0, marginTop: 4,
-            background: 'var(--color-surface)', border: '1px solid var(--color-border)',
-            borderRadius: 8, boxShadow: 'var(--shadow-md)',
-            minWidth: 160, zIndex: 100, overflow: 'hidden',
-        }}
-    >
-        {SORT_OPTIONS.map((opt, index) => (
-            <button
-                key={opt.value}
-                className="btn btn-ghost btn-sm"
-                style={{
-                    width: '100%', justifyContent: 'flex-start',
-                    background: activeIndex === index
-                        ? 'var(--color-surface-hover)'
-                        : sortBy === opt.value ? 'var(--color-surface-secondary)' : 'transparent',
-                    fontWeight: sortBy === opt.value ? 600 : undefined,
-                }}
-                onClick={() => onSortChange(opt.value)}
-                onMouseEnter={() => onHoverItem(index)}
-            >
-                <span style={{
-                    width: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    color: 'var(--color-primary)',
-                    opacity: sortBy === opt.value ? 1 : 0,
-                }}>
-                    <Check size={14} />
-                </span>
-                <span style={{ marginLeft: 4 }}>{t(opt.labelKey as TranslationKey, lang)}</span>
-            </button>
-        ))}
-        <div style={{ height: 1, background: 'var(--color-border)' }} />
-        <button
-            className="btn btn-ghost btn-sm"
-            style={{
-                width: '100%',
-                justifyContent: 'flex-start',
-                background: activeIndex === SORT_OPTIONS.length ? 'var(--color-surface-hover)' : 'transparent',
-            }}
-            onClick={onToggleOrder}
-            onMouseEnter={() => onHoverItem(SORT_OPTIONS.length)}
-        >
-            <span style={{ width: 20, display: 'inline-block' }} />
-            {sortOrder === 'asc' ? t('sortAsc', lang) : t('sortDesc', lang)}
-        </button>
-    </div>
-));
-
-SortMenu.displayName = 'SortMenu';
-
-/** 标签筛选栏 */
-const TagFilterBar = memo<{
-    tags: TagType[];
-    selectedTags: string[];
-    lang: 'zh' | 'en';
-    onClose: () => void;
-    onTagToggle: (tagId: string) => void;
-    onClear: () => void;
-    onManage: () => void;
-}>(({ tags, selectedTags, lang, onClose, onTagToggle, onClear, onManage }) => {
-    const { containerRef, syncActiveIndex } = useFilterPanelNav({ enabled: true, onClose });
-
-    return (
-        <div
-            ref={containerRef}
-            className="panel-enter"
-            style={{
-                padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
-                background: 'var(--color-surface)', display: 'flex', flexWrap: 'wrap', gap: 6,
-                alignItems: 'center',
-            }}
-        >
-            {tags.length > 0 ? (
-                <>
-                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{t('tags', lang)}:</span>
-                    {tags.map((tag) => (
-                        <TagChip
-                            key={tag.id}
-                            tag={tag}
-                            selected={selectedTags.includes(tag.id)}
-                            onClick={() => onTagToggle(tag.id)}
-                            onFocus={syncActiveIndex}
-                        />
-                    ))}
-                    {selectedTags.length > 0 && (
-                        <button
-                            className="btn btn-ghost btn-sm"
-                            style={{ padding: '2px 8px', fontSize: 12 }}
-                            onClick={onClear}
-                            onFocus={syncActiveIndex}
-                        >
-                            {t('clearFilter', lang)}
-                        </button>
-                    )}
-                    <button
-                        className="btn btn-ghost btn-sm"
-                        style={{ padding: '2px 8px', fontSize: 12 }}
-                        onClick={onManage}
-                        onFocus={syncActiveIndex}
-                    >
-                        <Edit3 size={12} />
-                        {t('manageTags', lang)}
-                    </button>
-                </>
-            ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', justifyContent: 'center' }}>
-                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                        {t('noTagsHint', lang)}
-                    </span>
-                    <button className="btn btn-primary btn-sm" onClick={onManage} onFocus={syncActiveIndex}>
-                        <Plus size={12} />
-                        {t('createTag', lang)}
-                    </button>
-                </div>
-            )}
-        </div>
-    );
-});
-
-TagFilterBar.displayName = 'TagFilterBar';
-
-/** 平台筛选栏 */
-const PlatformFilterBar = memo<{
-    repositories: Repository[];
-    selectedPlatforms: string[];
-    lang: 'zh' | 'en';
-    onClose: () => void;
-    onPlatformToggle: (platform: string) => void;
-    onClear: () => void;
-}>(({ repositories, selectedPlatforms, lang, onClose, onPlatformToggle, onClear }) => {
-    const { containerRef, syncActiveIndex } = useFilterPanelNav({ enabled: true, onClose });
-
-    // 阶段3 派生统计 memo 化：一次遍历生成平台计数 Map + 未分析计数
-    // （原实现每个平台选项各做一次全量 filter，约 9 次遍历）
-    const { platformCounts, unanalyzedCount } = useMemo(() => {
-        const counts = new Map<string, number>();
-        let unanalyzed = 0;
-        for (const repo of repositories) {
-            if (!repo.analyzedAt && !repo.analysisFailed) {
-                unanalyzed++;
-            }
-            if (repo.aiPlatforms) {
-                for (const platform of repo.aiPlatforms) {
-                    counts.set(platform, (counts.get(platform) || 0) + 1);
-                }
-            }
-        }
-        return { platformCounts: counts, unanalyzedCount: unanalyzed };
-    }, [repositories]);
-
-    return (
-        <div
-            ref={containerRef}
-            className="panel-enter"
-            style={{
-                padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
-                background: 'var(--color-surface)', display: 'flex', flexWrap: 'wrap', gap: 6,
-                alignItems: 'center',
-            }}
-        >
-            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                {lang === 'zh' ? '平台:' : 'Platform:'}
-            </span>
-
-            {/* 未分析选项 */}
-            <button
-                className={`chip${selectedPlatforms.includes(PLATFORM_NONE) ? ' active' : ''}`}
-                style={{ opacity: unanalyzedCount === 0 ? 0.5 : 1 }}
-                onClick={() => onPlatformToggle(PLATFORM_NONE)}
-                onFocus={syncActiveIndex}
-                disabled={unanalyzedCount === 0}
-                aria-pressed={selectedPlatforms.includes(PLATFORM_NONE)}
-            >
-                {t('platformUnanalyzed', lang)}
-                {unanalyzedCount > 0 && <span style={{ marginLeft: 4, opacity: 0.7 }}>({unanalyzedCount})</span>}
-            </button>
-
-            {/* 平台选项 */}
-            {PLATFORM_OPTIONS.map((platform) => {
-                const count = platformCounts.get(platform.id) || 0;
-                const isSelected = selectedPlatforms.includes(platform.id);
-                const PlatformIcon = getPlatformIcon(platform.id);
-                return (
-                    <button
-                        key={platform.id}
-                        className={`chip${isSelected ? ' active' : ''}`}
-                        style={{
-                            // 未选中态保留 primary 描边/文字的强调语义；选中态配色交由 .chip.active
-                            borderColor: 'var(--color-primary)',
-                            color: isSelected ? undefined : 'var(--color-primary)',
-                            opacity: count === 0 ? 0.5 : 1,
-                        }}
-                        onClick={() => onPlatformToggle(platform.id)}
-                        onFocus={syncActiveIndex}
-                        disabled={count === 0}
-                        aria-pressed={isSelected}
-                    >
-                        <PlatformIcon size={12} /> {platform.label}
-                        {count > 0 && <span style={{ marginLeft: 4, opacity: 0.7 }}>({count})</span>}
-                    </button>
-                );
-            })}
-
-            {selectedPlatforms.length > 0 && (
-                <button
-                    className="btn btn-ghost btn-sm"
-                    style={{ padding: '2px 8px', fontSize: 12 }}
-                    onClick={onClear}
-                    onFocus={syncActiveIndex}
-                >
-                    {t('clearFilter', lang)}
-                </button>
-            )}
-        </div>
-    );
-});
-
-PlatformFilterBar.displayName = 'PlatformFilterBar';
 
 export default FilterBar;

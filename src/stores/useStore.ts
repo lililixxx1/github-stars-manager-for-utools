@@ -4,12 +4,26 @@ import { storageService } from '../services/storageService';
 import { githubService } from '../services/githubService';
 import { aiService } from '../services/aiService';
 import { releaseService } from '../services/releaseService';
-import { PLATFORM_NONE } from '../constants/platforms';
 import { checkAnalysisNeeded } from '../utils/analysis';
 import { createFilteredReposPipeline } from './selectors';
 import { useProgressStore } from './useProgressStore';
 import { logger } from '../utils/logger';
 import { Benchmark } from '../utils/benchmark';
+import {
+    mergeFullSyncedRepositories,
+    mergeIncrementalRepositories,
+    buildTagMap,
+    buildNoteIndex,
+} from './helpers/repoMerge';
+import {
+    clearAutoAnalyzeRetry,
+    scheduleAutoAnalyzeRetry,
+    clearPendingSyncIdle,
+    scheduleSyncIdle,
+    markAiBatchStart,
+    flushAiPatches,
+    queueAiPatch,
+} from './helpers/jobTimers';
 
 /**
  * syncRepositories / startAutoAnalyze 的触发结果：
@@ -18,87 +32,6 @@ import { Benchmark } from '../utils/benchmark';
  * - 'no-token'：缺 Token，未执行
  */
 export type JobTriggerResult = 'ok' | 'busy' | 'no-token';
-
-// ==================== 自动分析互斥重试 ====================
-// 启动自动分析可能撞上同步/版本检查的 isJobBusy 互斥（典型：启动时版本检查未跑完，3s 后的自动分析被挡）。
-// 自动任务是"迟早要跑"而非"用户当下要结果"，静默丢弃会让 autoAnalyzeOnOpen 时灵时不灵，
-// 故用单例定时器延时重试直到互斥释放；真正开始分析时清除，重试次数设上限防呆。
-
-let autoAnalyzeRetryTimer: ReturnType<typeof setTimeout> | null = null;
-let autoAnalyzeRetryCount = 0;
-const AUTO_ANALYZE_RETRY_MS = 15_000;
-const AUTO_ANALYZE_RETRY_MAX = 20;
-
-function clearAutoAnalyzeRetry(): void {
-    if (autoAnalyzeRetryTimer !== null) {
-        clearTimeout(autoAnalyzeRetryTimer);
-        autoAnalyzeRetryTimer = null;
-    }
-    autoAnalyzeRetryCount = 0;
-}
-
-function scheduleAutoAnalyzeRetry(isAutoTriggered: boolean): void {
-    if (autoAnalyzeRetryTimer !== null) return; // 已有挂起重试
-    if (autoAnalyzeRetryCount >= AUTO_ANALYZE_RETRY_MAX) {
-        logger.log('[startAutoAnalyze] 互斥等待超时，放弃本次自动分析');
-        return;
-    }
-    autoAnalyzeRetryCount++;
-    autoAnalyzeRetryTimer = setTimeout(() => {
-        autoAnalyzeRetryTimer = null;
-        // 自动触发的重试需复核开关仍开启（等待期间用户可能关闭了 autoAnalyzeOnOpen）
-        if (isAutoTriggered && !useStore.getState().settings?.autoAnalyzeOnOpen) {
-            autoAnalyzeRetryCount = 0;
-            return;
-        }
-        useStore.getState().startAutoAnalyze(isAutoTriggered).then((result) => {
-            // Token 已被清除等早退场景：复位熔断预算，避免后续触发被无意义消耗
-            if (result === 'no-token') {
-                autoAnalyzeRetryCount = 0;
-            }
-        });
-    }, AUTO_ANALYZE_RETRY_MS);
-}
-
-// ==================== 同步状态回 idle 定时器 ====================
-// completed(3s)/error(5s) 限时收敛回 idle 的模块级单例 timer。
-// 集中管理防竞态：error 态不拦二次同步（isJobBusy 只看 'syncing'），
-// 若旧 timer 挂起时用户立刻再同步，到期的旧 timer 会把进行中的 syncStatus 误置 idle，
-// 故 setSyncStatus('syncing') 前必须先清挂起值（顺带消除 completed 3s timer 的同型竞态）。
-
-let syncResetTimer: number | null = null;
-
-function clearPendingSyncIdle(): void {
-    if (syncResetTimer !== null) {
-        window.clearTimeout(syncResetTimer);
-        syncResetTimer = null;
-    }
-}
-
-function scheduleSyncIdle(delay: number): void {
-    clearPendingSyncIdle();
-    syncResetTimer = window.setTimeout(() => {
-        syncResetTimer = null;
-        useProgressStore.getState().setSyncStatus('idle');
-    }, delay);
-}
-
-// ==================== 批量分析增量落盘缓冲（R7/C4） ====================
-// 跨 onProgress 窗口累积 AI 字段 patch，≥20s 以 patchReposBatch 冲刷一次（崩溃最多丢最近
-// 20s 的结果，避免整批期间零落盘——已消耗的能量对应的分析结果不能因崩溃丢失）。
-// 模块级：stopAnalyze 与 startAutoAnalyze 都要能冲刷（H1：官方不保证 abort 后 promise
-// 会 settle，中止落盘不能依赖批次的 finally）；批次正常收尾同样冲刷剩余缓冲。
-
-const AI_PERSIST_INTERVAL_MS = 20_000;
-const pendingAiPatches = new Map<number, Partial<Repository>>();
-let lastAiPersistAt = 0;
-
-function flushAiPatches(): void {
-    if (pendingAiPatches.size === 0) return;
-    const updates = [...pendingAiPatches.entries()].map(([id, patch]) => ({ id, patch }));
-    pendingAiPatches.clear();
-    storageService.patchReposBatch(updates);
-}
 
 /** 首页滚动位置记忆（方案 SEARCH-RESTORE-BACKSPACE-PLAN v1.2 B1）：offset + 恢复指纹（会话级，不持久化） */
 export interface HomeScrollMemory {
@@ -188,6 +121,11 @@ interface AppState {
     // 更新仓库（用于别名、标签等）
     updateRepository: (id: number, updates: Partial<Repository>) => void;
 
+    // 批量整理操作
+    batchAddTag: (repoIds: number[], tagId: string) => void;
+    batchRemoveTag: (repoIds: number[], tagId: string) => void;
+    batchSetSubscription: (repoIds: number[], subscribed: boolean) => void;
+
     // ========== 🆕 v1.4.0 版本追踪 ==========
     releases: Release[];
     releaseFilter: ReleaseFilter; // releaseCheckStatus 已迁至 useProgressStore
@@ -211,6 +149,7 @@ interface AppState {
 
 const defaultFilter: SearchFilter = {
     keyword: '',
+    smartView: 'all',
     languages: [],
     topics: [],
     aiTags: [],
@@ -241,93 +180,6 @@ const defaultReleaseFilter: ReleaseFilter = {
     showUnreadOnly: false,
     platform: null,
 };
-
-function mergeRepoWithExistingData(
-    newRepo: Repository,
-    existing: Repository | undefined,
-    isSubscribed: boolean,
-): Repository {
-    if (!existing) {
-        return {
-            ...newRepo,
-            customTags: newRepo.customTags || [],
-            isSubscribed,
-        };
-    }
-
-    return {
-        ...newRepo,
-        aiSummary: existing.aiSummary,
-        aiTags: existing.aiTags,
-        aiPlatforms: existing.aiPlatforms,
-        analyzedAt: existing.analyzedAt,
-        analysisFailed: existing.analysisFailed,
-        alias: existing.alias,
-        customTags: existing.customTags || [],
-        customDescription: existing.customDescription,
-        isSubscribed,
-    };
-}
-
-function mergeFullSyncedRepositories(
-    fetchedRepos: Repository[],
-    existingRepos: Repository[],
-    subscriptionIds: number[],
-): Repository[] {
-    const existingMap = new Map(existingRepos.map((repo) => [repo.id, repo]));
-    return fetchedRepos.map((repo) =>
-        mergeRepoWithExistingData(repo, existingMap.get(repo.id), subscriptionIds.includes(repo.id))
-    );
-}
-
-function mergeIncrementalRepositories(
-    fetchedRepos: Repository[],
-    existingRepos: Repository[],
-    subscriptionIds: number[],
-): Repository[] {
-    const existingMap = new Map(existingRepos.map((repo) => [repo.id, repo]));
-    const fetchedMap = new Map(fetchedRepos.map((repo) => [repo.id, repo]));
-
-    const newRepos = fetchedRepos
-        .filter((repo) => !existingMap.has(repo.id))
-        .map((repo) => mergeRepoWithExistingData(repo, undefined, subscriptionIds.includes(repo.id)));
-
-    const mergedExisting = existingRepos.map((repo) => {
-        const updatedRepo = fetchedMap.get(repo.id);
-        if (!updatedRepo) {
-            return {
-                ...repo,
-                isSubscribed: subscriptionIds.includes(repo.id),
-            };
-        }
-
-        return mergeRepoWithExistingData(updatedRepo, repo, subscriptionIds.includes(repo.id));
-    });
-
-    return [...newRepos, ...mergedExisting];
-}
-
-function buildTagMap(tags: Tag[]): Map<string, Tag> {
-    return new Map(tags.map((tag) => [tag.id, tag]));
-}
-
-function buildNoteIndex(repositories: Repository[]): {
-    noteRepoIds: Set<number>;
-    noteContentByRepoId: Map<number, string>;
-} {
-    const validRepoIds = new Set(repositories.map((repo) => repo.id));
-    const noteRepoIds = new Set<number>();
-    const noteContentByRepoId = new Map<number, string>();
-
-    for (const note of storageService.getAllNotes()) {
-        if (!validRepoIds.has(note.repoId)) continue;
-
-        noteRepoIds.add(note.repoId);
-        noteContentByRepoId.set(note.repoId, note.content || '');
-    }
-
-    return { noteRepoIds, noteContentByRepoId };
-}
 
 export const useStore = create<AppState>((set, get) => ({
     // 页面导航
@@ -482,13 +334,13 @@ export const useStore = create<AppState>((set, get) => ({
                 });
                 get().saveRepositories();
 
-                scheduleSyncIdle(3000);
+                scheduleSyncIdle(3000, () => useProgressStore.getState().setSyncStatus('idle'));
             } catch (error: any) {
                 console.error('Sync failed:', error);
                 useProgressStore.getState().setSyncError(error?.message || String(error));
                 useProgressStore.getState().setSyncStatus('error');
-                // error 态不可永驻：5s 后自动收敛回 idle（错误展示单源归 HomePage 可关闭横幅）
-                scheduleSyncIdle(5000);
+                // error 态不可永驻：5s 后自动收敛回 idle
+                scheduleSyncIdle(5000, () => useProgressStore.getState().setSyncStatus('idle'));
             }
         });
 
@@ -539,7 +391,10 @@ export const useStore = create<AppState>((set, get) => ({
         // 自动分析"迟早要跑"：排队延时重试而非静默丢弃，互斥释放后自动补跑
         if (progress.isJobBusy('analyze')) {
             logger.log('[startAutoAnalyze] 同步或版本检查进行中，已排队稍后重试');
-            scheduleAutoAnalyzeRetry(isAutoTriggered);
+            scheduleAutoAnalyzeRetry({
+                shouldContinue: () => !isAutoTriggered || Boolean(useStore.getState().settings?.autoAnalyzeOnOpen),
+                run: () => useStore.getState().startAutoAnalyze(isAutoTriggered),
+            });
             return 'busy';
         }
         clearAutoAnalyzeRetry(); // 真正开始分析，取消挂起的互斥重试
@@ -566,7 +421,7 @@ export const useStore = create<AppState>((set, get) => ({
         try {
             const concurrency = settings.aiConcurrency || 1;
             const language = (settings.language || 'zh') as 'zh' | 'en';
-            lastAiPersistAt = Date.now(); // 本批次计时起点
+            markAiBatchStart();
             const updated = await aiService.batchAnalyze(
                 toAnalyze,
                 token,
@@ -577,9 +432,6 @@ export const useStore = create<AppState>((set, get) => ({
                         currentRepo: repo.fullName,
                     });
 
-                    // R5 增量刷新：每个仓库分析完立即以新对象引用写入 store，
-                    // 让卡片实时显示摘要（否则整批结束前界面毫无产出，能量却在逐个消耗）。
-                    // 回调的 repo 是 batchAnalyze 构造的产出对象（含 AI 结果/失败标记）
                     const aiPatch = {
                         aiSummary: repo.aiSummary,
                         aiTags: repo.aiTags,
@@ -595,13 +447,7 @@ export const useStore = create<AppState>((set, get) => ({
                         set({ repositories: next });
                     }
 
-                    // C4 累积缓冲：跨窗口收集 patch，≥20s 冲刷一次
-                    pendingAiPatches.set(repo.id, aiPatch);
-                    const now = Date.now();
-                    if (now - lastAiPersistAt > AI_PERSIST_INTERVAL_MS) {
-                        lastAiPersistAt = now;
-                        flushAiPatches();
-                    }
+                    queueAiPatch(repo.id, aiPatch);
                 },
                 language,
                 concurrency,
@@ -830,6 +676,67 @@ export const useStore = create<AppState>((set, get) => ({
         }));
         // v2 单仓库增量落盘：只重写该仓库所在分片（替代全量 saveRepositories）
         storageService.patchRepo(id, updates);
+    },
+
+    // 批量加标签
+    batchAddTag: (repoIds, tagId) => {
+        if (repoIds.length === 0) return;
+        const targetIds = new Set(repoIds);
+        const updates: Array<{ id: number; patch: Partial<Repository> }> = [];
+        set((state) => ({
+            repositories: state.repositories.map((repo) => {
+                if (!targetIds.has(repo.id)) return repo;
+                const current = repo.customTags || [];
+                if (current.includes(tagId)) return repo;
+                const customTags = [...current, tagId];
+                updates.push({ id: repo.id, patch: { customTags } });
+                return { ...repo, customTags };
+            }),
+        }));
+        if (updates.length > 0) {
+            storageService.patchReposBatch(updates);
+        }
+    },
+
+    // 批量移除标签
+    batchRemoveTag: (repoIds, tagId) => {
+        if (repoIds.length === 0) return;
+        const targetIds = new Set(repoIds);
+        const updates: Array<{ id: number; patch: Partial<Repository> }> = [];
+        set((state) => ({
+            repositories: state.repositories.map((repo) => {
+                if (!targetIds.has(repo.id)) return repo;
+                const current = repo.customTags || [];
+                if (!current.includes(tagId)) return repo;
+                const customTags = current.filter((id) => id !== tagId);
+                updates.push({ id: repo.id, patch: { customTags } });
+                return { ...repo, customTags };
+            }),
+        }));
+        if (updates.length > 0) {
+            storageService.patchReposBatch(updates);
+        }
+    },
+
+    // 批量设置版本订阅状态
+    batchSetSubscription: (repoIds, subscribed) => {
+        if (repoIds.length === 0) return;
+        const targetIds = new Set(repoIds);
+        const nextSubscribedIds = new Set(get().subscribedRepoIds);
+        for (const id of repoIds) {
+            if (subscribed) {
+                nextSubscribedIds.add(id);
+            } else {
+                nextSubscribedIds.delete(id);
+            }
+        }
+        storageService.setReleaseSubscriptions(nextSubscribedIds);
+        set((state) => ({
+            subscribedRepoIds: nextSubscribedIds,
+            repositories: state.repositories.map((repo) =>
+                targetIds.has(repo.id) ? { ...repo, isSubscribed: subscribed } : repo
+            ),
+        }));
     },
 
     // 过滤后的仓库（使用优化后的筛选管道 v1.7.0）

@@ -6,7 +6,7 @@
  * 提供可组合的筛选函数，每个筛选器独立可测试
  */
 
-import type { Repository } from '@/types';
+import type { Repository, SmartView } from '@/types';
 
 /** 筛选函数类型 */
 export type FilterFn = (repos: Repository[]) => Repository[];
@@ -85,6 +85,40 @@ export function getSearchIndex(repo: Repository): RepoSearchIndex {
 const PLATFORM_NONE = 'none';
 
 // ==================== 基础筛选器 ====================
+
+/**
+ * 创建智能视图筛选器
+ */
+export const createFilterBySmartView = (
+    smartView: SmartView | undefined,
+    context: FilterContext = emptyFilterContext
+): FilterFn => {
+    if (!smartView || smartView === 'all') return (repos) => repos;
+
+    switch (smartView) {
+        case 'untagged':
+            return (repos) => repos.filter(repo => !repo.customTags || repo.customTags.length === 0);
+        case 'unanalyzed':
+            return (repos) => repos.filter(repo => !repo.analyzedAt || !!repo.analysisFailed);
+        case 'noted':
+            return (repos) => repos.filter(repo => context.hasNote(repo.id));
+        case 'subscribed':
+            return (repos) => repos.filter(repo => repo.isSubscribed === true);
+        case 'recent': {
+            const cutoff = Date.now() - 30 * 86_400_000;
+            return (repos) => {
+                const hasAnyStarredAt = repos.some(repo => getSearchIndex(repo).starredAt > 0);
+                return repos.filter(repo => {
+                    const idx = getSearchIndex(repo);
+                    const ts = hasAnyStarredAt ? idx.starredAt : idx.updatedAt;
+                    return Number.isFinite(ts) && ts >= cutoff;
+                });
+            };
+        }
+        default:
+            return (repos) => repos;
+    }
+};
 
 /**
  * 创建语言筛选器

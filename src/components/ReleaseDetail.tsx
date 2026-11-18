@@ -83,14 +83,14 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel, aiThinki
                 setShowTranslated(true);
                 setTranslationState('success');
             } else {
-                setErrorMessage(lang === 'zh' ? '翻译结果为空' : 'Translation result is empty');
+                setErrorMessage(t('translationEmpty', lang));
                 setTranslationState('error');
             }
         } catch (error: any) {
             if (!mountedRef.current) return;
 
             console.error('[ReleaseDetail] Translation failed:', error);
-            setErrorMessage(error?.message || (lang === 'zh' ? '翻译失败，请重试' : 'Translation failed, please retry'));
+            setErrorMessage(error?.message || t('translationFailedRetry', lang));
             setTranslationState('error');
         }
     };
@@ -153,7 +153,7 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel, aiThinki
                         )}
                         {showTranslateButton && translationState !== 'translating' && (
                             <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-                                ({lang === 'zh' ? '消耗 AI 能量' : 'Uses AI credits'})
+                                ({t('usesAiCredits', lang)})
                             </span>
                         )}
                     </div>

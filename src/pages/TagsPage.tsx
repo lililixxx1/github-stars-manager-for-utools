@@ -1,22 +1,20 @@
 import React, { useEffect, useCallback } from 'react';
 import { useStore } from '../stores/useStore';
 import { TagManager } from '../components/TagManager';
-import { t } from '../locales';
+import { useT } from '../hooks/useT';
 import { useBackShortcut } from '../hooks/useBackShortcut';
-import { BackHintChip } from '../components/BackHintChip';
+import { PageHeader } from '../components/ui/PageHeader';
 
 export const TagsPage: React.FC = () => {
-    // 精确订阅（阶段2 性能重构）
-    const settings = useStore((state) => state.settings);
+    const { t } = useT();
     const loadRepositories = useStore((state) => state.loadRepositories);
     const setCurrentPage = useStore((state) => state.setCurrentPage);
-    const lang = (settings.language || 'zh') as 'zh' | 'en';
+
     const handleBack = useCallback(() => {
         setCurrentPage('home');
     }, [setCurrentPage]);
 
     useEffect(() => {
-        // 仅当仓库尚未装载时按需兜底，避免重复加载重建 repositories 引用导致 WeakMap 搜索索引全量失效
         if (useStore.getState().repositories.length === 0) {
             loadRepositories();
         }
@@ -28,19 +26,10 @@ export const TagsPage: React.FC = () => {
     });
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* 顶部导航栏：与 Settings/Releases 页统一（返回 + 标题左对齐） */}
-            <div style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
-                background: 'var(--color-surface)',
-            }}>
-                <BackHintChip label={t('back', lang)} onClick={handleBack} />
-                <h2 style={{ fontSize: 16, fontWeight: 600 }}>{t('manageTags', lang)}</h2>
-            </div>
+        <div className="flex flex-col h-full">
+            <PageHeader title={t('manageTags')} backLabel={t('back')} onBack={handleBack} />
 
-            {/* 内容区 - 遵循 §4.3 */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+            <div className="flex-1 overflow-y-auto p-4">
                 <TagManager mode="manage" />
             </div>
         </div>

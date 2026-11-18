@@ -1,6 +1,7 @@
 import { Release, ReleaseAsset } from '../types';
 import { PLATFORM_OPTIONS } from '../constants/platforms';
 import { logger } from '../utils/logger';
+import { formatRelativeTime } from '../utils/format';
 
 // 平台识别正则
 const PLATFORM_PATTERNS: Record<string, RegExp[]> = {
@@ -223,27 +224,10 @@ export const releaseService = {
     },
 
     /**
-     * 格式化发布时间
+     * 格式化发布时间（复用全局相对时间格式）
      */
     formatDate(dateString: string, lang: 'zh' | 'en' = 'zh'): string {
-        const date = new Date(dateString);
-        const now = new Date();
-        const diffMs = now.getTime() - date.getTime();
-        const diffMins = Math.floor(diffMs / (1000 * 60));
-        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-        if (diffMins < 1) {
-            return lang === 'zh' ? '刚刚' : 'just now';
-        } else if (diffMins < 60) {
-            return lang === 'zh' ? `${diffMins} 分钟前` : `${diffMins} mins ago`;
-        } else if (diffHours < 24) {
-            return lang === 'zh' ? `${diffHours} 小时前` : `${diffHours} hours ago`;
-        } else if (diffDays < 7) {
-            return lang === 'zh' ? `${diffDays} 天前` : `${diffDays} days ago`;
-        } else {
-            return date.toLocaleDateString(lang === 'zh' ? 'zh-CN' : 'en-US');
-        }
+        return formatRelativeTime(dateString, lang);
     },
 
     /**

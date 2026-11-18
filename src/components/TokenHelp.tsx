@@ -65,12 +65,12 @@ export const TokenHelp: React.FC<TokenHelpProps> = ({ lang, expanded, onToggle }
                                     <div className="permission-item required">
                                         <CheckSquare size={14} className="check" />
                                         <span>{t('tokenFineGrainedStarring', lang)}</span>
-                                        <span className="badge required">{lang === 'zh' ? '必需' : 'Required'}</span>
+                                        <span className="badge required">{t('badgeRequired', lang)}</span>
                                     </div>
                                     <div className="permission-item required">
                                         <CheckSquare size={14} className="check" />
                                         <span>{t('tokenFineGrainedContents', lang)}</span>
-                                        <span className="badge required">{lang === 'zh' ? '必需' : 'Required'}</span>
+                                        <span className="badge required">{t('badgeRequired', lang)}</span>
                                     </div>
                                 </div>
 
@@ -81,12 +81,12 @@ export const TokenHelp: React.FC<TokenHelpProps> = ({ lang, expanded, onToggle }
                                     <div className="permission-item required">
                                         <CheckSquare size={14} className="check" />
                                         <span>{t('tokenPermissionPublicRepo', lang)}</span>
-                                        <span className="badge required">{lang === 'zh' ? '必需' : 'Required'}</span>
+                                        <span className="badge required">{t('badgeRequired', lang)}</span>
                                     </div>
                                     <div className="permission-item optional">
                                         <Square size={14} className="check" />
                                         <span>{t('tokenPermissionRepo', lang)}</span>
-                                        <span className="badge optional">{lang === 'zh' ? '可选' : 'Optional'}</span>
+                                        <span className="badge optional">{t('badgeOptional', lang)}</span>
                                     </div>
                                 </div>
 
@@ -146,7 +146,7 @@ export const TokenHelpHeaderButton: React.FC<{
             onClick={onToggle}
         >
             <HelpCircle size={14} />
-            {expanded ? t('tokenHelpCollapse', lang) : (lang === 'zh' ? '如何获取?' : 'How to get?')}
+            {expanded ? t('tokenHelpCollapse', lang) : t('howToGetQuestion', lang)}
         </button>
     );
 };

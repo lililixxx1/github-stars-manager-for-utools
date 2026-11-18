@@ -129,8 +129,8 @@ export const ReleaseCard = memo<ReleaseCardProps>(({ release, repository, lang, 
                                 boxShadow: '0 1px 3px color-mix(in srgb, var(--color-new-badge-end) 40%, transparent)',
                                 animation: 'badge-pulse 2s ease-in-out infinite',
                             }}
-                            aria-label={lang === 'zh' ? '未读新版本' : 'Unread new release'}
-                            title={lang === 'zh' ? '未读新版本' : 'Unread new release'}
+                            aria-label={t('unreadNewRelease', lang)}
+                            title={t('unreadNewRelease', lang)}
                         >
                             NEW
                         </span>

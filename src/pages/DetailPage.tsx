@@ -6,108 +6,156 @@ import { TagBadge } from '../components/TagBadge';
 import { TagChip } from '../components/TagChip';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { EmptyState } from '../components/EmptyState';
+import { Skeleton } from '../components/Skeleton';
 import { toast } from '../components/Toast';
 import { checkAnalysisNeeded, getCooldownMinutes } from '../utils/analysis';
+import { formatCompactNumber, formatRelativeTime } from '../utils/format';
+import { renderMarkdown } from '../utils/markdown';
+import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
 import { useBackShortcut } from '../hooks/useBackShortcut';
-import { useRovingControls } from '../hooks/useRovingControls';
-import type { RovingControl } from '../hooks/useRovingControls';
 import { BackHintChip } from '../components/BackHintChip';
-import {
-    ExternalLink, Star, GitFork, Sparkles,
-    Bell, BellOff, Loader2, CheckCircle2, XCircle,
-    Edit2, Save, X, Plus, FileText, Tag, Copy
-} from 'lucide-react';
+import { getLanguageColor } from '../constants/languages';
 import { getPlatformIcon } from '../constants/platformIcons';
-import type { RepositoryNote } from '../types';
+import {
+    ExternalLink,
+    Star,
+    GitFork,
+    Sparkles,
+    Bell,
+    BellOff,
+    Loader2,
+    CheckCircle2,
+    XCircle,
+    Edit2,
+    Save,
+    X,
+    Plus,
+    FileText,
+    Tag,
+    Copy,
+    ChevronLeft,
+    ChevronRight,
+    Globe,
+    BookOpen,
+    Box,
+    Clock,
+} from 'lucide-react';
+
+type DetailTab = 'overview' | 'readme' | 'notes';
+
+/** 模块级 README 缓存（避免同会话切回重复请求 GitHub API） */
+const readmeCache = new Map<number, string | null>();
+
+const QUICK_TAG_COLORS = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
 
 export const DetailPage: React.FC = () => {
-    // 精确订阅（阶段2 性能重构）：顺带清理了未使用的 repositories/setRepositories/saveRepositories
-    // F1：仓库对象由 store 派生（单一数据源）。旧 selectedRepo 快照会让 checkAnalysisNeeded
-    // 读到过期的 analyzedAt/analysisFailed，分析失败后可立即重发 AI 调用，绕过 R1 的 5 分钟失败冷却
     const selectedRepoId = useStore((s) => s.selectedRepoId);
     const setSelectedRepoId = useStore((s) => s.setSelectedRepoId);
+    const repositories = useStore((s) => s.repositories);
+    const searchFilter = useStore((s) => s.searchFilter);
+    const noteRepoIds = useStore((s) => s.noteRepoIds);
+    const noteContentByRepoId = useStore((s) => s.noteContentByRepoId);
+    const getFilteredRepos = useStore((s) => s.getFilteredRepos);
+
     const repo = useStore((s) =>
-        s.selectedRepoId == null ? null : (s.repositories.find(r => r.id === s.selectedRepoId) ?? null)
+        s.selectedRepoId == null ? null : (s.repositories.find((r) => r.id === s.selectedRepoId) ?? null)
     );
     const setCurrentPage = useStore((state) => state.setCurrentPage);
     const settings = useStore((state) => state.settings);
     const token = useStore((state) => state.token);
     const tags = useStore((state) => state.tags);
     const tagById = useStore((state) => state.tagById);
+    const addTag = useStore((state) => state.addTag);
     const updateRepository = useStore((state) => state.updateRepository);
     const toggleSubscription = useStore((state) => state.toggleSubscription);
     const currentNote = useStore((state) => state.currentNote);
     const loadNote = useStore((state) => state.loadNote);
     const saveNote = useStore((state) => state.saveNote);
     const deleteNote = useStore((state) => state.deleteNote);
+    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
 
+    const lang = (settings.language || 'zh') as 'zh' | 'en';
+
+    const [activeTab, setActiveTab] = useState<DetailTab>('overview');
     const [analyzing, setAnalyzing] = useState(false);
     const [editingAlias, setEditingAlias] = useState(false);
     const [aliasValue, setAliasValue] = useState('');
     const [editingNote, setEditingNote] = useState(false);
     const [noteValue, setNoteValue] = useState('');
     const [showTagSelector, setShowTagSelector] = useState(false);
-
-    // 🆕 v1.6.1 标签/笔记区块展开状态（智能初始化）
-    const hasTags = Boolean(repo && (repo.customTags?.length ?? 0) > 0);
-    const hasNotes = Boolean(currentNote?.content);
-    const [showTagsSection, setShowTagsSection] = useState(hasTags);
-    const [showNotesSection, setShowNotesSection] = useState(hasNotes);
+    const [quickTagName, setQuickTagName] = useState('');
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-
-    // 🆕 v1.6.2 重新分析确认弹窗
     const [showReanalyzeConfirm, setShowReanalyzeConfirm] = useState(false);
+    const [avatarError, setAvatarError] = useState(false);
 
-    const lang = (settings.language || 'zh') as 'zh' | 'en';
-    const controlRefs = useRef<Record<string, HTMLElement | null>>({});
+    // README 状态
+    const [readmeContent, setReadmeContent] = useState<string | null>(null);
+    const [readmeLoading, setReadmeLoading] = useState(false);
 
-    const getControlRef = useCallback((id: string) => ({
-        get current() {
-            return controlRefs.current[id] ?? null;
-        },
-    }), []);
-
-    const bindControlRef = useCallback((id: string) => (element: HTMLElement | null) => {
-        controlRefs.current[id] = element;
-    }, []);
-
-    // 订阅状态从 store 内存单源派生（阶段3：不渲染期直读存储表）
-    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
+    // 列表内上一个 / 下一个定位
+    const filteredRepos = useMemo(
+        () => getFilteredRepos(),
+        [repositories, searchFilter, noteRepoIds, noteContentByRepoId, getFilteredRepos]
+    );
+    const currentIndex = useMemo(
+        () => (repo ? filteredRepos.findIndex((r) => r.id === repo.id) : -1),
+        [filteredRepos, repo]
+    );
+    const hasPrev = currentIndex > 0;
+    const hasNext = currentIndex >= 0 && currentIndex < filteredRepos.length - 1;
 
     useEffect(() => {
         if (selectedRepoId != null) {
             loadNote(selectedRepoId);
         }
-    }, [selectedRepoId]);
+        setEditingAlias(false);
+        setEditingNote(false);
+        setShowTagSelector(false);
+        setShowDeleteConfirm(false);
+        setShowReanalyzeConfirm(false);
+        setAvatarError(false);
+    }, [selectedRepoId, loadNote]);
 
-    // 🆕 v1.6.1 仓库切换时重置标签展开状态
+    // 加载 README（切到 README tab 或切换仓库时按需拉取）
     useEffect(() => {
-        if (selectedRepoId == null) return;
-        const r = useStore.getState().repositories.find(x => x.id === selectedRepoId);
-        if (r) setShowTagsSection((r.customTags?.length ?? 0) > 0);
-    }, [selectedRepoId]);
+        if (activeTab !== 'readme' || !repo) return;
 
-    // 🆕 v1.6.1 仓库切换时重置笔记展开状态
-    useEffect(() => {
-        if (selectedRepoId != null) {
-            setShowNotesSection(!!currentNote?.content);
+        if (readmeCache.has(repo.id)) {
+            setReadmeContent(readmeCache.get(repo.id) ?? null);
+            setReadmeLoading(false);
+            return;
         }
-    }, [selectedRepoId, currentNote?.id]);
 
-    const handleBack = useCallback(() => {
-        setSelectedRepoId(null);
-        setCurrentPage('home');
-    }, [setCurrentPage, setSelectedRepoId]);
+        let cancelled = false;
+        setReadmeLoading(true);
+        setReadmeContent(null);
 
-    const isSubscribed = useMemo(() => {
-        if (!repo) return false;
-        return subscribedRepoIds.has(repo.id);
-    }, [repo?.id, subscribedRepoIds]);
+        window.githubStarsAPI
+            .getReadme(repo.owner.login, repo.name, token || '')
+            .then((content) => {
+                if (cancelled) return;
+                const normalized = content?.trim() ? content : null;
+                readmeCache.set(repo.id, normalized);
+                setReadmeContent(normalized);
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setReadmeContent(null);
+                }
+            })
+            .finally(() => {
+                if (!cancelled) {
+                    setReadmeLoading(false);
+                }
+            });
 
-    // F1 三态显示：成功 / 曾成功但最近失败（保留旧摘要 + 失败冷却横幅）/ 未分析（含首次失败）
-    const failedCooldownMinutes = repo?.analysisFailed ? getCooldownMinutes(repo) : 0;
+        return () => {
+            cancelled = true;
+        };
+    }, [activeTab, repo, token]);
 
-    // F1 兜底：选中仓库已不在列表（如被同步移除）时复位并返回首页，不显示幽灵详情页
+    // 幽灵详情页兜底
     useEffect(() => {
         if (selectedRepoId == null) {
             setCurrentPage('home');
@@ -118,25 +166,76 @@ export const DetailPage: React.FC = () => {
         }
     }, [selectedRepoId, repo, setCurrentPage, setSelectedRepoId]);
 
+    const handleBack = useCallback(() => {
+        setSelectedRepoId(null);
+        setCurrentPage('home');
+    }, [setCurrentPage, setSelectedRepoId]);
+
+    const handlePrevRepo = useCallback(() => {
+        if (!hasPrev) return;
+        setSelectedRepoId(filteredRepos[currentIndex - 1].id);
+    }, [currentIndex, filteredRepos, hasPrev, setSelectedRepoId]);
+
+    const handleNextRepo = useCallback(() => {
+        if (!hasNext) return;
+        setSelectedRepoId(filteredRepos[currentIndex + 1].id);
+    }, [currentIndex, filteredRepos, hasNext, setSelectedRepoId]);
+
+    // J / K / [ / ] 切换上下仓库
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (editingAlias || editingNote || showDeleteConfirm || showReanalyzeConfirm) return;
+            if (shouldIgnoreGlobalKeydown(event)) return;
+
+            if (event.key === 'j' || event.key === 'J' || event.key === ']') {
+                if (!hasNext) return;
+                event.preventDefault();
+                handleNextRepo();
+            } else if (event.key === 'k' || event.key === 'K' || event.key === '[') {
+                if (!hasPrev) return;
+                event.preventDefault();
+                handlePrevRepo();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [
+        editingAlias,
+        editingNote,
+        handleNextRepo,
+        handlePrevRepo,
+        hasNext,
+        hasPrev,
+        showDeleteConfirm,
+        showReanalyzeConfirm,
+    ]);
+
     const consumeDetailBackState = useCallback(() => {
         if (showDeleteConfirm) {
             setShowDeleteConfirm(false);
             return true;
         }
-
         if (showReanalyzeConfirm) {
             setShowReanalyzeConfirm(false);
             return true;
         }
-
         if (editingAlias) {
             setAliasValue('');
             setEditingAlias(false);
             return true;
         }
-
+        if (editingNote) {
+            setNoteValue('');
+            setEditingNote(false);
+            return true;
+        }
+        if (showTagSelector) {
+            setShowTagSelector(false);
+            return true;
+        }
         return false;
-    }, [editingAlias, showDeleteConfirm, showReanalyzeConfirm]);
+    }, [editingAlias, editingNote, showDeleteConfirm, showReanalyzeConfirm, showTagSelector]);
 
     useBackShortcut({
         enabled: !!repo,
@@ -147,60 +246,52 @@ export const DetailPage: React.FC = () => {
         deps: [consumeDetailBackState, handleBack, repo],
     });
 
+    const isSubscribed = useMemo(
+        () => (repo ? subscribedRepoIds.has(repo.id) : false),
+        [repo, subscribedRepoIds]
+    );
+
+    const failedCooldownMinutes = repo?.analysisFailed ? getCooldownMinutes(repo) : 0;
+
+    const renderedReadme = useMemo(
+        () => (readmeContent ? renderMarkdown(readmeContent) : null),
+        [readmeContent]
+    );
+
+    const renderedNote = useMemo(
+        () => (currentNote?.content ? renderMarkdown(currentNote.content) : null),
+        [currentNote?.content]
+    );
+
+    const aliasInputRef = useRef<HTMLInputElement | null>(null);
+    useEffect(() => {
+        if (editingAlias) {
+            window.requestAnimationFrame(() => aliasInputRef.current?.focus());
+        }
+    }, [editingAlias]);
+
     const handleOpenGithub = () => {
-        if (!repo) return;
-        window.githubStarsAPI.openExternal(repo.htmlUrl);
+        if (repo) window.githubStarsAPI.openExternal(repo.htmlUrl);
     };
 
-    // 🆕 v1.6.4 复制仓库地址
+    const handleOpenHomepage = () => {
+        if (repo?.homepage) window.githubStarsAPI.openExternal(repo.homepage);
+    };
+
     const handleCopyRepoUrl = useCallback(() => {
         if (!repo?.htmlUrl) return;
         if (typeof utools !== 'undefined' && utools.copyText) {
             utools.copyText(repo.htmlUrl);
-            window.githubStarsAPI.showNotification?.(
-                lang === 'zh' ? '已复制仓库地址' : 'Repository URL copied'
-            );
+        } else {
+            navigator.clipboard?.writeText(repo.htmlUrl).catch(() => {});
         }
+        toast.show(lang === 'zh' ? '已复制仓库地址' : 'Repository URL copied', { type: 'info' });
     }, [repo?.htmlUrl, lang]);
 
-    const handleAIAnalyze = async () => {
-        // 拆分守卫：无仓库/分析中静默返回；无 token 单独提示（避免分析中点击误弹 Token 提示）
-        if (!repo) return;
-        if (!token) {
-            toast.show(t('tokenRequired', lang), { type: 'error' });
-            return;
-        }
-        if (analyzing) return;
-
-        // 🆕 v1.6.2 使用公共函数检查分析状态
-        const { needsAnalyze, reason } = checkAnalysisNeeded(repo);
-
-        if (!needsAnalyze) {
-            if (reason === 'analyzed') {
-                // 已分析：显示确认弹窗
-                setShowReanalyzeConfirm(true);
-                return;
-            } else if (reason === 'failed_cooldown') {
-                // 冷却中：显示提示
-                const cooldownMinutes = getCooldownMinutes(repo);
-                window.githubStarsAPI.showNotification(
-                    lang === 'zh'
-                        ? `请等待 ${cooldownMinutes} 分钟后重试`
-                        : `Please retry after ${cooldownMinutes} minutes`
-                );
-                return;
-            }
-        }
-
-        await executeAnalyze();
-    };
-
-    // 🆕 v1.6.2 执行 AI 分析
     const executeAnalyze = async () => {
         if (!repo || !token || analyzing) return;
         setAnalyzing(true);
 
-        // 失败标记（P-15）：记录失败时间进入 5 分钟冷却，避免反复重试消耗额度
         const markFailure = () => {
             updateRepository(repo.id, {
                 analysisFailed: true,
@@ -209,10 +300,14 @@ export const DetailPage: React.FC = () => {
         };
 
         try {
-            const result = await aiService.analyzeRepository(repo, token, lang, settings.aiModel || undefined, !!settings.aiThinking);
+            const result = await aiService.analyzeRepository(
+                repo,
+                token,
+                lang,
+                settings.aiModel || undefined,
+                !!settings.aiThinking
+            );
             if (result) {
-                // F1：只写 store（updateRepository 内部不可变更新 + patchRepo 增量落盘），
-                // 页面读派生值自动刷新
                 updateRepository(repo.id, {
                     aiSummary: result.summary,
                     aiTags: result.tags,
@@ -221,12 +316,10 @@ export const DetailPage: React.FC = () => {
                     analysisFailed: false,
                 });
             } else {
-                // P-04/P-05 下 analyzeRepository 抛错上抛，null 仅剩理论路径；按失败处理进冷却
                 markFailure();
             }
         } catch (error) {
             console.error('AI analyze failed:', error);
-            // 失败反馈：toast 报错 + analysisFailed 回写（与 aiService 5 分钟冷却策略一致）
             toast.show(
                 error instanceof Error ? error.message : t('analysisFailed', lang),
                 { type: 'error', duration: 5000 }
@@ -237,12 +330,35 @@ export const DetailPage: React.FC = () => {
         }
     };
 
-    const handleToggleSubscribe = () => {
+    const handleAIAnalyze = async () => {
         if (!repo) return;
-        toggleSubscription(repo.id);
+        if (!token) {
+            toast.show(t('tokenRequired', lang), { type: 'error' });
+            return;
+        }
+        if (analyzing) return;
+
+        const { needsAnalyze, reason } = checkAnalysisNeeded(repo);
+        if (!needsAnalyze) {
+            if (reason === 'analyzed') {
+                setShowReanalyzeConfirm(true);
+                return;
+            }
+            if (reason === 'failed_cooldown') {
+                const cooldownMinutes = getCooldownMinutes(repo);
+                toast.show(
+                    lang === 'zh'
+                        ? `请等待 ${cooldownMinutes} 分钟后重试`
+                        : `Please retry after ${cooldownMinutes} minutes`,
+                    { type: 'info' }
+                );
+                return;
+            }
+        }
+
+        await executeAnalyze();
     };
 
-    // 别名操作
     const handleStartEditAlias = () => {
         if (!repo) return;
         setAliasValue(repo.alias || '');
@@ -251,9 +367,7 @@ export const DetailPage: React.FC = () => {
 
     const handleSaveAlias = () => {
         if (!repo) return;
-        const trimmed = aliasValue.trim();
-        // F1：只写 store（updateRepository 不可变更新），页面读派生值刷新
-        updateRepository(repo.id, { alias: trimmed || undefined });
+        updateRepository(repo.id, { alias: aliasValue.trim() || undefined });
         setEditingAlias(false);
     };
 
@@ -262,7 +376,25 @@ export const DetailPage: React.FC = () => {
         setEditingAlias(false);
     };
 
-    // 笔记操作
+    const handleToggleTag = (tagId: string) => {
+        if (!repo) return;
+        const currentTags = repo.customTags || [];
+        const newTags = currentTags.includes(tagId)
+            ? currentTags.filter((id) => id !== tagId)
+            : [...currentTags, tagId];
+        updateRepository(repo.id, { customTags: newTags });
+    };
+
+    const handleQuickCreateTag = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key !== 'Enter' || !repo) return;
+        const name = quickTagName.trim();
+        if (!name) return;
+        const color = QUICK_TAG_COLORS[tags.length % QUICK_TAG_COLORS.length];
+        const created = addTag({ name, color, icon: '🏷️', order: tags.length });
+        setQuickTagName('');
+        updateRepository(repo.id, { customTags: [...(repo.customTags || []), created.id] });
+    };
+
     const handleStartEditNote = () => {
         setNoteValue(currentNote?.content || '');
         setEditingNote(true);
@@ -275,17 +407,6 @@ export const DetailPage: React.FC = () => {
         setEditingNote(false);
     };
 
-    const handleCancelNote = () => {
-        setNoteValue('');
-        setEditingNote(false);
-    };
-
-    const handleDeleteNote = () => {
-        if (repo) {
-            setShowDeleteConfirm(true);
-        }
-    };
-
     const confirmDeleteNote = () => {
         if (repo) {
             deleteNote(repo.id);
@@ -294,260 +415,111 @@ export const DetailPage: React.FC = () => {
         }
     };
 
-    // 标签操作
-    const handleToggleTag = (tagId: string) => {
-        if (!repo) return;
-        const currentTags = repo.customTags || [];
-        const newTags = currentTags.includes(tagId)
-            ? currentTags.filter(id => id !== tagId)
-            : [...currentTags, tagId];
-        // F1：只写 store，页面读派生值刷新
-        updateRepository(repo.id, { customTags: newTags });
-    };
-
-    const handleOpenHomepage = useCallback(() => {
-        if (!repo?.homepage) return;
-        window.githubStarsAPI.openExternal(repo.homepage);
-    }, [repo?.homepage]);
-
-    const handleViewReleases = useCallback(() => {
-        setCurrentPage('releases');
-    }, [setCurrentPage]);
-
-    const rovingControls = useMemo<RovingControl[]>(() => {
-        if (!repo) return [];
-
-        const controls: RovingControl[] = [
-            { id: 'alias', group: 'topbar', ref: getControlRef('alias'), action: handleStartEditAlias },
-            { id: 'subscribe', group: 'topbar', ref: getControlRef('subscribe'), action: handleToggleSubscribe },
-            { id: 'releases', group: 'topbar', ref: getControlRef('releases'), action: handleViewReleases, visible: isSubscribed },
-            { id: 'copy-url', group: 'topbar', ref: getControlRef('copy-url'), action: handleCopyRepoUrl },
-            { id: 'open-github', group: 'topbar', ref: getControlRef('open-github'), action: handleOpenGithub },
-            {
-                id: 'tags-toggle',
-                group: 'quick',
-                ref: getControlRef('tags-toggle'),
-                action: () => setShowTagsSection(value => !value),
-            },
-            {
-                id: 'notes-toggle',
-                group: 'quick',
-                ref: getControlRef('notes-toggle'),
-                action: () => setShowNotesSection(value => !value),
-            },
-            {
-                id: 'tag-add',
-                group: 'tags',
-                ref: getControlRef('tag-add'),
-                action: () => setShowTagSelector(value => !value),
-                visible: showTagsSection,
-            },
-            ...((repo.customTags || []).map((tagId) => ({
-                id: `tag-remove:${tagId}`,
-                group: 'tags' as const,
-                ref: getControlRef(`tag-remove:${tagId}`),
-                action: () => handleToggleTag(tagId),
-                visible: showTagsSection,
-            }))),
-            ...(tags.map((tagItem) => ({
-                id: `tag-option:${tagItem.id}`,
-                group: 'tags' as const,
-                ref: getControlRef(`tag-option:${tagItem.id}`),
-                action: () => handleToggleTag(tagItem.id),
-                visible: showTagsSection && showTagSelector,
-            }))),
-            {
-                id: 'tag-manage',
-                group: 'tags',
-                ref: getControlRef('tag-manage'),
-                action: () => setCurrentPage('tags'),
-                visible: showTagsSection && showTagSelector && tags.length === 0,
-            },
-            {
-                id: 'analysis-run',
-                group: 'analysis',
-                ref: getControlRef('analysis-run'),
-                action: handleAIAnalyze,
-                disabled: analyzing,
-            },
-            {
-                id: 'note-edit',
-                group: 'notes',
-                ref: getControlRef('note-edit'),
-                action: handleStartEditNote,
-                visible: showNotesSection && !editingNote,
-            },
-            {
-                id: 'note-delete',
-                group: 'notes',
-                ref: getControlRef('note-delete'),
-                action: handleDeleteNote,
-                visible: showNotesSection && Boolean(currentNote) && editingNote,
-            },
-            {
-                id: 'note-cancel',
-                group: 'notes',
-                ref: getControlRef('note-cancel'),
-                action: handleCancelNote,
-                visible: showNotesSection && editingNote,
-            },
-            {
-                id: 'note-save',
-                group: 'notes',
-                ref: getControlRef('note-save'),
-                action: handleSaveNote,
-                visible: showNotesSection && editingNote,
-            },
-            {
-                id: 'homepage',
-                group: 'links',
-                ref: getControlRef('homepage'),
-                action: handleOpenHomepage,
-                visible: Boolean(repo.homepage),
-            },
-        ];
-
-        return controls;
-    }, [
-        analyzing,
-        currentNote,
-        editingNote,
-        getControlRef,
-        handleAIAnalyze,
-        handleCancelNote,
-        handleCopyRepoUrl,
-        handleDeleteNote,
-        handleOpenGithub,
-        handleOpenHomepage,
-        handleSaveNote,
-        handleStartEditAlias,
-        handleStartEditNote,
-        handleToggleSubscribe,
-        handleToggleTag,
-        handleViewReleases,
-        isSubscribed,
-        repo,
-        setCurrentPage,
-        showNotesSection,
-        showTagSelector,
-        showTagsSection,
-        tags,
-    ]);
-
-    const roving = useRovingControls({
-        enabled: Boolean(repo) && !editingAlias && !showDeleteConfirm && !showReanalyzeConfirm,
-        controls: rovingControls,
-        initialId: 'alias',
-        deps: [
-            editingAlias,
-            showDeleteConfirm,
-            showReanalyzeConfirm,
-            showTagsSection,
-            showNotesSection,
-            showTagSelector,
-            editingNote,
-            repo?.id,
-        ],
-    });
-
-    const getControlStyle = useCallback((id: string, style: React.CSSProperties = {}): React.CSSProperties => (
-        roving.isActive(id)
-            ? {
-                ...style,
-                outline: 'none',
-                // roving 激活焦点环：primary token 调出的软环 + 阴影标度
-                boxShadow: '0 0 0 2px color-mix(in srgb, var(--color-primary) 45%, transparent), var(--shadow-md)',
-            }
-            : style
-    ), [roving]);
-
-    // 别名弹窗：覆盖 Modal 默认初始焦点（关闭按钮），聚焦输入框
-    const aliasInputRef = useRef<HTMLInputElement | null>(null);
-    useEffect(() => {
-        if (editingAlias) {
-            window.requestAnimationFrame(() => aliasInputRef.current?.focus());
-        }
-    }, [editingAlias]);
-
     if (!repo) {
         return null;
     }
 
-    // 平台图标走 constants/platformIcons.ts 全站统一映射
-    const renderPlatformIcon = (platformId: string): React.ReactNode => {
-        const Icon = getPlatformIcon(platformId);
-        return <Icon size={14} />;
-    };
+    const langColor = repo.language ? getLanguageColor(repo.language) : null;
+    const hasNote = Boolean(currentNote?.content);
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* 顶部栏 */}
+            {/* 顶栏 */}
             <div style={{
-                display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
-                padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '10px 20px',
+                borderBottom: '1px solid var(--color-border)',
                 background: 'var(--color-surface)',
+                flexShrink: 0,
             }}>
-                {/* ⌫ 返回 chip：tabIndex=-1——roving 全局 Enter/Space 处理器会劫持未注册的可聚焦按钮（方案 v1.2 C1） */}
-                <BackHintChip label={t('back', lang)} onClick={handleBack} tabIndex={-1} />
+                <BackHintChip label={t('back', lang)} onClick={handleBack} />
+
+                {currentIndex >= 0 && (
+                    <div style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 2,
+                        marginLeft: 6,
+                        padding: '2px 4px',
+                        borderRadius: 'var(--radius-md)',
+                        background: 'var(--color-surface-secondary)',
+                        border: '1px solid var(--color-border)',
+                    }}>
+                        <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            style={{ padding: '2px 4px' }}
+                            disabled={!hasPrev}
+                            onClick={handlePrevRepo}
+                            title={t('prevRepo', lang)}
+                            aria-label={t('prevRepo', lang)}
+                        >
+                            <ChevronLeft size={14} />
+                        </button>
+                        <span style={{
+                            fontSize: 12,
+                            color: 'var(--color-text-secondary)',
+                            fontVariantNumeric: 'tabular-nums',
+                            padding: '0 4px',
+                        }}>
+                            {currentIndex + 1} / {filteredRepos.length}
+                        </span>
+                        <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            style={{ padding: '2px 4px' }}
+                            disabled={!hasNext}
+                            onClick={handleNextRepo}
+                            title={t('nextRepo', lang)}
+                            aria-label={t('nextRepo', lang)}
+                        >
+                            <ChevronRight size={14} />
+                        </button>
+                    </div>
+                )}
+
                 <div style={{ flex: 1 }} />
-                {/* 别名按钮 */}
+
                 <button
-                    ref={bindControlRef('alias')}
-                    className="btn btn-ghost btn-sm"
-                    style={getControlStyle('alias', { flexShrink: 0 })}
-                    tabIndex={roving.getTabIndex('alias')}
-                    onFocus={() => roving.setActiveId('alias')}
-                    onClick={handleStartEditAlias}
-                    title={t('editAlias', lang)}
-                >
-                    <Edit2 size={14} />
-                    {t('alias', lang)}
-                </button>
-                <button
-                    ref={bindControlRef('subscribe')}
-                    className="btn btn-ghost btn-sm"
-                    style={getControlStyle('subscribe', { flexShrink: 0 })}
-                    tabIndex={roving.getTabIndex('subscribe')}
-                    onFocus={() => roving.setActiveId('subscribe')}
-                    onClick={handleToggleSubscribe}
+                    type="button"
+                    className={`btn btn-sm ${isSubscribed ? 'btn-secondary' : 'btn-ghost'}`}
+                    style={{ flexShrink: 0 }}
+                    onClick={() => toggleSubscription(repo.id)}
                 >
                     {isSubscribed ? <BellOff size={14} /> : <Bell size={14} />}
                     {isSubscribed ? t('unsubscribe', lang) : t('subscribe', lang)}
                 </button>
-                {/* 查看版本按钮 - 订阅后显示 🆕 v1.4.1 */}
+
                 {isSubscribed && (
                     <button
-                        ref={bindControlRef('releases')}
+                        type="button"
                         className="btn btn-ghost btn-sm"
-                        style={getControlStyle('releases', { flexShrink: 0 })}
-                        tabIndex={roving.getTabIndex('releases')}
-                        onFocus={() => roving.setActiveId('releases')}
-                        onClick={handleViewReleases}
+                        style={{ flexShrink: 0 }}
+                        onClick={() => setCurrentPage('releases')}
                         title={t('viewReleases', lang)}
-                        aria-label={t('viewReleases', lang)}
                     >
                         <FileText size={14} />
                         {t('viewReleases', lang)}
                     </button>
                 )}
+
                 <button
-                    ref={bindControlRef('copy-url')}
+                    type="button"
                     className="btn btn-ghost btn-sm"
-                    style={getControlStyle('copy-url', { flexShrink: 0 })}
-                    tabIndex={roving.getTabIndex('copy-url')}
-                    onFocus={() => roving.setActiveId('copy-url')}
+                    style={{ flexShrink: 0 }}
                     onClick={handleCopyRepoUrl}
                     title={t('copyRepoUrl', lang)}
+                    aria-label={t('copyRepoUrl', lang)}
                 >
                     <Copy size={14} />
-                    {t('copyRepoUrl', lang)}
                 </button>
+
                 <button
-                    ref={bindControlRef('open-github')}
+                    type="button"
                     className="btn btn-primary btn-sm"
-                    style={getControlStyle('open-github', { flexShrink: 0 })}
-                    tabIndex={roving.getTabIndex('open-github')}
-                    onFocus={() => roving.setActiveId('open-github')}
+                    style={{ flexShrink: 0 }}
                     onClick={handleOpenGithub}
                 >
                     <ExternalLink size={14} />
@@ -555,329 +527,493 @@ export const DetailPage: React.FC = () => {
                 </button>
             </div>
 
-            {/* 内容（进入动画由 App.tsx 页面容器统一提供） */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-                {/* 仓库信息头 */}
-                <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
-                    <img
-                        src={repo.owner.avatarUrl}
-                        alt={repo.owner.login}
-                        width={56}
-                        height={56}
-                        decoding="async"
-                        style={{ width: 56, height: 56, borderRadius: 12, border: '1px solid var(--color-border)', flexShrink: 0 }}
-                    />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4, wordBreak: 'break-word' }}>
-                            {repo.alias || repo.name}
-                        </h1>
-                        {repo.alias && (
-                            <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 4 }}>
-                                {repo.fullName}
-                            </p>
-                        )}
-                        <div style={{ display: 'flex', gap: 16, fontSize: 14, color: 'var(--color-text-secondary)' }}>
-                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                <Star size={15} style={{ color: 'var(--color-accent)' }} />
-                                {repo.stargazersCount.toLocaleString()}
-                            </span>
-                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                <GitFork size={15} />
-                                {repo.forksCount.toLocaleString()}
-                            </span>
-                            {repo.language && (
-                                <span>{repo.language}</span>
-                            )}
-                        </div>
-                    </div>
-                    {/* 🆕 v1.6.1 标签/笔记快捷按钮 - 移至仓库头部右侧 */}
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                        <button
-                            ref={bindControlRef('tags-toggle')}
-                            className={`btn btn-sm ${showTagsSection ? 'btn-primary' : 'btn-ghost'}`}
-                            style={getControlStyle('tags-toggle')}
-                            tabIndex={roving.getTabIndex('tags-toggle')}
-                            onFocus={() => roving.setActiveId('tags-toggle')}
-                            onClick={() => setShowTagsSection(!showTagsSection)}
-                            title={t('tags', lang)}
-                            aria-pressed={showTagsSection}
-                        >
-                            <Tag size={14} />
-                            {t('tags', lang)}
-                            {hasTags && (
-                                <span className={`count-pill ${showTagsSection ? 'count-pill-on-solid' : 'count-pill-soft'}`}>
-                                    {(repo.customTags?.length ?? 0)}
-                                </span>
-                            )}
-                        </button>
-                        <button
-                            ref={bindControlRef('notes-toggle')}
-                            className={`btn btn-sm ${showNotesSection ? 'btn-primary' : 'btn-ghost'}`}
-                            style={getControlStyle('notes-toggle')}
-                            tabIndex={roving.getTabIndex('notes-toggle')}
-                            onFocus={() => roving.setActiveId('notes-toggle')}
-                            onClick={() => setShowNotesSection(!showNotesSection)}
-                            title={t('notes', lang)}
-                            aria-pressed={showNotesSection}
-                        >
-                            <FileText size={14} />
-                            {t('notes', lang)}
-                            {hasNotes && (
-                                <span className={`count-pill ${showNotesSection ? 'count-pill-on-solid' : 'count-pill-soft'}`}>
-                                    {currentNote ? 1 : 0}
-                                </span>
-                            )}
-                        </button>
-                    </div>
-                </div>
-
-                {/* 描述 */}
-                <div className="card" style={{ marginBottom: 12 }}>
-                    <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, color: 'var(--color-text-secondary)' }}>
-                        {t('description', lang)}
-                    </h3>
-                    <p style={{ fontSize: 14, lineHeight: 1.6 }}>
-                        {repo.description || t('noDescription', lang)}
-                    </p>
-                </div>
-
-                {/* 🆕 v1.6.1 标签分组（展开/折叠动画：grid 行高过渡，无高度硬截断） */}
-                <div
-                    style={{
-                        display: 'grid',
-                        gridTemplateRows: showTagsSection ? '1fr' : '0fr',
-                        opacity: showTagsSection ? 1 : 0,
-                        overflow: 'hidden',
-                        transition: 'grid-template-rows 0.3s ease, opacity 0.3s ease, margin-bottom 0.3s ease',
-                        marginBottom: showTagsSection ? 12 : 0,
-                    }}
-                >
-                    <div style={{ minHeight: 0, overflow: 'hidden' }}>
-                    <div className="card">
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                            <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <Tag size={14} />
-                                {t('tags', lang)}
-                            </h3>
-                            <button
-                                ref={bindControlRef('tag-add')}
-                                className="btn btn-ghost btn-sm"
-                                style={getControlStyle('tag-add')}
-                                tabIndex={roving.getTabIndex('tag-add')}
-                                onFocus={() => roving.setActiveId('tag-add')}
-                                onClick={() => setShowTagSelector(!showTagSelector)}
-                                aria-pressed={showTagSelector}
-                            >
-                                {showTagSelector ? t('confirm', lang) : <><Plus size={12} /> {t('addTag', lang)}</>}
-                            </button>
-                        </div>
-
-                        {/* 已选标签 */}
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: showTagSelector ? 12 : 0 }}>
-                            {(repo.customTags || []).map((tagId) => {
-                                const tag = tagById.get(tagId);
-                                if (!tag) return null;
-                                return (
-                                    <TagBadge
-                                        key={tag.id}
-                                        tag={tag}
-                                        size="md"
-                                        showRemove
-                                        removeButtonRef={bindControlRef(`tag-remove:${tag.id}`)}
-                                        removeButtonStyle={getControlStyle(`tag-remove:${tag.id}`)}
-                                        removeButtonTabIndex={roving.getTabIndex(`tag-remove:${tag.id}`)}
-                                        onRemoveFocus={() => roving.setActiveId(`tag-remove:${tag.id}`)}
-                                        onRemove={() => handleToggleTag(tag.id)}
-                                    />
-                                );
-                            })}
-                            {/* 🆕 v1.6.1 空状态 */}
-                            {(repo.customTags || []).length === 0 && !showTagSelector && (
-                                <span style={{ fontSize: 14, color: 'var(--color-text-muted)' }}>
-                                    {t('noTagsYet', lang)}
-                                </span>
-                            )}
-                        </div>
-
-                        {/* 标签选择器（TagChip 共享组件，roving props 透传） */}
-                        {showTagSelector && tags.length > 0 && (
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--color-border)' }}>
-                                {tags.map((tag) => (
-                                    <TagChip
-                                        key={tag.id}
-                                        ref={bindControlRef(`tag-option:${tag.id}`)}
-                                        tag={tag}
-                                        selected={(repo.customTags || []).includes(tag.id)}
-                                        onClick={() => handleToggleTag(tag.id)}
-                                        tabIndex={roving.getTabIndex(`tag-option:${tag.id}`)}
-                                        onFocus={() => roving.setActiveId(`tag-option:${tag.id}`)}
-                                        style={getControlStyle(`tag-option:${tag.id}`)}
-                                    />
-                                ))}
+            {/* 内容滚动区 */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
+                {/* Hero 信息头 */}
+                <div className="hero-card">
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                        {!avatarError && repo.owner.avatarUrl ? (
+                            <img
+                                src={repo.owner.avatarUrl}
+                                alt={repo.owner.login}
+                                width={48}
+                                height={48}
+                                decoding="async"
+                                onError={() => setAvatarError(true)}
+                                style={{
+                                    width: 48,
+                                    height: 48,
+                                    borderRadius: 10,
+                                    border: '1px solid var(--color-border)',
+                                    flexShrink: 0,
+                                }}
+                            />
+                        ) : (
+                            <div style={{
+                                width: 48,
+                                height: 48,
+                                borderRadius: 10,
+                                border: '1px solid var(--color-border)',
+                                background: 'var(--color-surface-secondary)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                flexShrink: 0,
+                            }}>
+                                <Box size={22} style={{ color: 'var(--color-text-muted)' }} />
                             </div>
                         )}
 
-                        {tags.length === 0 && showTagSelector && (
-                            <div style={{ textAlign: 'center', padding: 16 }}>
-                                <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 8 }}>
-                                    {t('noTags', lang)}
-                                </p>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                <h1 style={{ fontSize: 18, fontWeight: 700, wordBreak: 'break-word', margin: 0 }}>
+                                    {repo.alias || repo.name}
+                                </h1>
                                 <button
-                                    ref={bindControlRef('tag-manage')}
-                                    className="btn btn-secondary btn-sm"
-                                    style={getControlStyle('tag-manage')}
-                                    tabIndex={roving.getTabIndex('tag-manage')}
-                                    onFocus={() => roving.setActiveId('tag-manage')}
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
+                                    style={{ padding: '2px 6px', color: 'var(--color-text-muted)' }}
+                                    onClick={handleStartEditAlias}
+                                    title={t('editAlias', lang)}
+                                    aria-label={t('editAlias', lang)}
+                                >
+                                    <Edit2 size={13} />
+                                </button>
+                                <div style={{
+                                    marginLeft: 'auto',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 12,
+                                    fontSize: 13,
+                                    color: 'var(--color-text-secondary)',
+                                    flexShrink: 0,
+                                }}>
+                                    <span title={repo.stargazersCount.toLocaleString()} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                        <Star size={14} style={{ color: 'var(--color-accent)' }} />
+                                        {formatCompactNumber(repo.stargazersCount)}
+                                    </span>
+                                    <span title={repo.forksCount.toLocaleString()} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                        <GitFork size={14} />
+                                        {formatCompactNumber(repo.forksCount)}
+                                    </span>
+                                    {repo.language && (
+                                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                            {langColor && <span className="lang-dot" style={{ width: 8, height: 8, backgroundColor: langColor }} />}
+                                            {repo.language}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 10,
+                                flexWrap: 'wrap',
+                                marginTop: 2,
+                                fontSize: 12,
+                                color: 'var(--color-text-muted)',
+                            }}>
+                                <span>{repo.fullName}</span>
+                                {repo.homepage && (
+                                    <button
+                                        type="button"
+                                        className="link"
+                                        style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: 4,
+                                            fontSize: 12,
+                                            border: 'none',
+                                            background: 'none',
+                                            padding: 0,
+                                        }}
+                                        onClick={handleOpenHomepage}
+                                    >
+                                        <Globe size={12} />
+                                        <span style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {repo.homepage}
+                                        </span>
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 核心摘要与原描述 */}
+                    <div style={{ marginTop: 14 }}>
+                        {repo.aiSummary ? (
+                            <>
+                                <p style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--color-text-primary)', fontWeight: 500, margin: 0 }}>
+                                    {repo.aiSummary}
+                                </p>
+                                {repo.description && repo.description !== repo.aiSummary && (
+                                    <p style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--color-text-secondary)', marginTop: 6 }}>
+                                        {repo.description}
+                                    </p>
+                                )}
+                            </>
+                        ) : (
+                            <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--color-text-secondary)', margin: 0 }}>
+                                {repo.description || t('noDescription', lang)}
+                            </p>
+                        )}
+                    </div>
+
+                    {/* 行内标签编辑栏 */}
+                    <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        flexWrap: 'wrap',
+                        marginTop: 14,
+                        paddingTop: 12,
+                        borderTop: '1px solid var(--color-border)',
+                    }}>
+                        <Tag size={13} style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
+                        {(repo.customTags || []).map((tagId) => {
+                            const tag = tagById.get(tagId);
+                            if (!tag) return null;
+                            return (
+                                <TagBadge
+                                    key={tag.id}
+                                    tag={tag}
+                                    size="sm"
+                                    showRemove
+                                    onRemove={() => handleToggleTag(tag.id)}
+                                />
+                            );
+                        })}
+
+                        <button
+                            type="button"
+                            className={`btn btn-sm ${showTagSelector ? 'btn-secondary' : 'btn-ghost'}`}
+                            style={{ padding: '2px 8px', fontSize: 12 }}
+                            onClick={() => setShowTagSelector((v) => !v)}
+                            aria-pressed={showTagSelector}
+                        >
+                            {showTagSelector ? t('tokenHelpCollapse', lang) : <><Plus size={12} /> {t('addTag', lang)}</>}
+                        </button>
+                    </div>
+
+                    {showTagSelector && (
+                        <div className="panel-enter" style={{
+                            marginTop: 10,
+                            padding: 10,
+                            borderRadius: 'var(--radius-md)',
+                            background: 'var(--color-surface-secondary)',
+                            border: '1px solid var(--color-border)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                        }}>
+                            {tags.length > 0 ? (
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                    {tags.map((tag) => (
+                                        <TagChip
+                                            key={tag.id}
+                                            tag={tag}
+                                            selected={(repo.customTags || []).includes(tag.id)}
+                                            onClick={() => handleToggleTag(tag.id)}
+                                        />
+                                    ))}
+                                </div>
+                            ) : (
+                                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                                    {t('noTags', lang)}
+                                </span>
+                            )}
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                <input
+                                    type="text"
+                                    className="input"
+                                    style={{ padding: '4px 8px', fontSize: 12, flex: 1 }}
+                                    value={quickTagName}
+                                    onChange={(e) => setQuickTagName(e.target.value)}
+                                    onKeyDown={handleQuickCreateTag}
+                                    placeholder={t('quickCreateTagPlaceholder', lang)}
+                                />
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
                                     onClick={() => setCurrentPage('tags')}
                                 >
                                     {t('manageTags', lang)}
                                 </button>
                             </div>
-                        )}
-                    </div>
-                    </div>
-                </div>
-
-                {/* AI 分析 */}
-                <div className="card" style={{ marginBottom: 12 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                        <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <Sparkles size={14} style={{ color: 'var(--color-primary)' }} />
-                            AI {t('analysis', lang)}
-                        </h3>
-                        <button
-                            ref={bindControlRef('analysis-run')}
-                            className="btn btn-secondary btn-sm"
-                            style={getControlStyle('analysis-run')}
-                            tabIndex={roving.getTabIndex('analysis-run')}
-                            onFocus={() => roving.setActiveId('analysis-run')}
-                            onClick={handleAIAnalyze}
-                            disabled={analyzing}
-                        >
-                            {analyzing ? (
-                                <>
-                                    <Loader2 size={12} className="animate-spin" />
-                                    {t('aiAnalyzing', lang)}
-                                </>
-                            ) : (
-                                <>
-                                    <Sparkles size={12} />
-                                    {t('aiAnalyze', lang)}
-                                </>
-                            )}
-                        </button>
-                    </div>
-
-                    {repo.analyzedAt && !repo.analysisFailed ? (
-                        <div>
-                            <p style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 8 }}>
-                                {repo.aiSummary}
-                            </p>
-
-                            {repo.aiTags && repo.aiTags.length > 0 && (
-                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-                                    {repo.aiTags.map((tag, i) => (
-                                        <span key={i} className="tag">{tag}</span>
-                                    ))}
-                                </div>
-                            )}
-
-                            {repo.aiPlatforms && repo.aiPlatforms.length > 0 && (
-                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                    {repo.aiPlatforms.map((p) => (
-                                        <span key={p} style={{
-                                            fontSize: 13, display: 'flex', alignItems: 'center', gap: 4,
-                                            color: 'var(--color-text-secondary)',
-                                        }}>
-                                            {renderPlatformIcon(p)} {p}
-                                        </span>
-                                    ))}
-                                </div>
-                            )}
-
-                            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                <CheckCircle2 size={12} style={{ color: 'var(--color-success)' }} />
-                                {t('analyzedAt', lang)} {new Date(repo.analyzedAt).toLocaleDateString()}
-                            </div>
-                        </div>
-                    ) : repo.analyzedAt && repo.analysisFailed ? (
-                        /* F1 三态：曾成功分析的仓库重分析失败——保留旧摘要，底部附加失败/冷却横幅 */
-                        <div>
-                            {repo.aiSummary && (
-                                <p style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 8 }}>
-                                    {repo.aiSummary}
-                                </p>
-                            )}
-
-                            {repo.aiTags && repo.aiTags.length > 0 && (
-                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-                                    {repo.aiTags.map((tag, i) => (
-                                        <span key={i} className="tag">{tag}</span>
-                                    ))}
-                                </div>
-                            )}
-
-                            {repo.aiPlatforms && repo.aiPlatforms.length > 0 && (
-                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                                    {repo.aiPlatforms.map((p) => (
-                                        <span key={p} style={{
-                                            fontSize: 13, display: 'flex', alignItems: 'center', gap: 4,
-                                            color: 'var(--color-text-secondary)',
-                                        }}>
-                                            {renderPlatformIcon(p)} {p}
-                                        </span>
-                                    ))}
-                                </div>
-                            )}
-
-                            <div style={{ fontSize: 12, color: 'var(--color-error)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                <XCircle size={12} style={{ color: 'var(--color-error)' }} />
-                                {failedCooldownMinutes > 0
-                                    ? (lang === 'zh'
-                                        ? `最近一次分析失败，${failedCooldownMinutes} 分钟后可重试`
-                                        : `Last analysis failed. Retry in ${failedCooldownMinutes}min`)
-                                    : (lang === 'zh' ? '最近一次分析失败，可重试' : 'Last analysis failed. You can retry now')}
-                            </div>
-                        </div>
-                    ) : (
-                        <div style={{ fontSize: 14, color: 'var(--color-text-muted)', textAlign: 'center', padding: 16 }}>
-                            {repo.analysisFailed ? (
-                                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                                    <XCircle size={14} style={{ color: 'var(--color-error)' }} />
-                                    {t('analysisFailed', lang)}
-                                </span>
-                            ) : (
-                                <span>{t('clickToAnalyze', lang)}</span>
-                            )}
                         </div>
                     )}
                 </div>
 
-                {/* 🆕 v1.6.1 笔记（展开/折叠动画：grid 行高过渡，无高度硬截断） */}
-                <div
-                    style={{
-                        display: 'grid',
-                        gridTemplateRows: showNotesSection ? '1fr' : '0fr',
-                        opacity: showNotesSection ? 1 : 0,
-                        overflow: 'hidden',
-                        transition: 'grid-template-rows 0.3s ease, opacity 0.3s ease, margin-bottom 0.3s ease',
-                        marginBottom: showNotesSection ? 12 : 0,
-                    }}
-                >
-                    <div style={{ minHeight: 0, overflow: 'hidden' }}>
+                {/* 分段 Tab 栏 */}
+                <div className="detail-tabs">
+                    <div className="segmented" style={{ width: 'fit-content' }} role="tablist">
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={activeTab === 'overview'}
+                            className={`segmented-item${activeTab === 'overview' ? ' active' : ''}`}
+                            style={{ padding: '5px 16px' }}
+                            onClick={() => setActiveTab('overview')}
+                        >
+                            {t('tabOverview', lang)}
+                        </button>
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={activeTab === 'readme'}
+                            className={`segmented-item${activeTab === 'readme' ? ' active' : ''}`}
+                            style={{ padding: '5px 16px' }}
+                            onClick={() => setActiveTab('readme')}
+                        >
+                            {t('tabReadme', lang)}
+                        </button>
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={activeTab === 'notes'}
+                            className={`segmented-item${activeTab === 'notes' ? ' active' : ''}`}
+                            style={{ padding: '5px 16px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                            onClick={() => setActiveTab('notes')}
+                        >
+                            <span>{t('tabNotes', lang)}</span>
+                            {hasNote && (
+                                <span style={{
+                                    width: 6,
+                                    height: 6,
+                                    borderRadius: '50%',
+                                    background: 'var(--color-primary)',
+                                }} />
+                            )}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Tab 1: 概览 & AI */}
+                {activeTab === 'overview' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                        {/* AI 分析面板 */}
+                        <div className="card">
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                                <h3 style={{
+                                    fontSize: 14,
+                                    fontWeight: 600,
+                                    color: 'var(--color-text-secondary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                }}>
+                                    <Sparkles size={14} style={{ color: 'var(--color-primary)' }} />
+                                    AI {t('analysis', lang)}
+                                </h3>
+                                <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={handleAIAnalyze}
+                                    disabled={analyzing}
+                                >
+                                    {analyzing ? (
+                                        <>
+                                            <Loader2 size={12} className="animate-spin" />
+                                            {t('aiAnalyzing', lang)}
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Sparkles size={12} />
+                                            {t('aiAnalyze', lang)}
+                                        </>
+                                    )}
+                                </button>
+                            </div>
+
+                            {repo.analyzedAt && !repo.analysisFailed ? (
+                                <div>
+                                    {repo.aiTags && repo.aiTags.length > 0 && (
+                                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                                            {repo.aiTags.map((tag, i) => (
+                                                <span key={i} className="tag">{tag}</span>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {repo.aiPlatforms && repo.aiPlatforms.length > 0 && (
+                                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                                            {repo.aiPlatforms.map((p) => {
+                                                const Icon = getPlatformIcon(p);
+                                                return (
+                                                    <span key={p} style={{
+                                                        fontSize: 13,
+                                                        display: 'inline-flex',
+                                                        alignItems: 'center',
+                                                        gap: 4,
+                                                        color: 'var(--color-text-secondary)',
+                                                    }}>
+                                                        <Icon size={14} /> {p}
+                                                    </span>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                    <div style={{
+                                        fontSize: 12,
+                                        color: 'var(--color-text-muted)',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 4,
+                                    }}>
+                                        <CheckCircle2 size={12} style={{ color: 'var(--color-success)' }} />
+                                        {t('analyzedAt', lang)} {new Date(repo.analyzedAt).toLocaleDateString()}
+                                    </div>
+                                </div>
+                            ) : repo.analyzedAt && repo.analysisFailed ? (
+                                <div>
+                                    {repo.aiTags && repo.aiTags.length > 0 && (
+                                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                                            {repo.aiTags.map((tag, i) => (
+                                                <span key={i} className="tag">{tag}</span>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {repo.aiPlatforms && repo.aiPlatforms.length > 0 && (
+                                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+                                            {repo.aiPlatforms.map((p) => {
+                                                const Icon = getPlatformIcon(p);
+                                                return (
+                                                    <span key={p} style={{
+                                                        fontSize: 13,
+                                                        display: 'inline-flex',
+                                                        alignItems: 'center',
+                                                        gap: 4,
+                                                        color: 'var(--color-text-secondary)',
+                                                    }}>
+                                                        <Icon size={14} /> {p}
+                                                    </span>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                    <div style={{
+                                        fontSize: 12,
+                                        color: 'var(--color-error)',
+                                        marginTop: 6,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 4,
+                                    }}>
+                                        <XCircle size={12} style={{ color: 'var(--color-error)' }} />
+                                        {failedCooldownMinutes > 0
+                                            ? (lang === 'zh'
+                                                ? `最近一次分析失败，${failedCooldownMinutes} 分钟后可重试`
+                                                : `Last analysis failed. Retry in ${failedCooldownMinutes}min`)
+                                            : (lang === 'zh' ? '最近一次分析失败，可重试' : 'Last analysis failed. You can retry now')}
+                                    </div>
+                                </div>
+                            ) : (
+                                <div style={{ fontSize: 13, color: 'var(--color-text-muted)', padding: '8px 0' }}>
+                                    {repo.analysisFailed ? (
+                                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--color-error)' }}>
+                                            <XCircle size={14} />
+                                            {t('analysisFailed', lang)}
+                                        </span>
+                                    ) : (
+                                        <span>{t('clickToAnalyze', lang)}</span>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Topics 与时间线 */}
+                        <div className="card">
+                            {repo.topics && repo.topics.length > 0 && (
+                                <div style={{ marginBottom: 14 }}>
+                                    <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 8 }}>
+                                        Topics
+                                    </h3>
+                                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                        {repo.topics.map((topic) => (
+                                            <span key={topic} className="tag">{topic}</span>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                                gap: 10,
+                                paddingTop: repo.topics?.length ? 12 : 0,
+                                borderTop: repo.topics?.length ? '1px solid var(--color-border)' : 'none',
+                            }}>
+                                <TimelineItem
+                                    label={t('repoCreatedAt', lang)}
+                                    value={formatRelativeTime(repo.createdAt, lang)}
+                                    title={new Date(repo.createdAt).toLocaleString()}
+                                />
+                                <TimelineItem
+                                    label={t('lastUpdated', lang)}
+                                    value={formatRelativeTime(repo.updatedAt, lang)}
+                                    title={new Date(repo.updatedAt).toLocaleString()}
+                                />
+                                <TimelineItem
+                                    label={t('repoPushedAt', lang)}
+                                    value={formatRelativeTime(repo.pushedAt, lang)}
+                                    title={new Date(repo.pushedAt).toLocaleString()}
+                                />
+                                {repo.starredAt && (
+                                    <TimelineItem
+                                        label={t('repoStarredAt', lang)}
+                                        value={formatRelativeTime(repo.starredAt, lang)}
+                                        title={new Date(repo.starredAt).toLocaleString()}
+                                    />
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Tab 2: README 预览 */}
+                {activeTab === 'readme' && (
+                    <div className="card" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+                        {readmeLoading ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '8px 0' }}>
+                                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                                    {t('readmeLoading', lang)}
+                                </span>
+                                <Skeleton width="45%" height={20} />
+                                <Skeleton width="100%" height={14} />
+                                <Skeleton width="92%" height={14} />
+                                <Skeleton width="78%" height={14} />
+                                <Skeleton width="88%" height={80} />
+                            </div>
+                        ) : renderedReadme ? (
+                            <div style={{ lineHeight: 1.6 }}>{renderedReadme}</div>
+                        ) : (
+                            <EmptyState
+                                icon={<BookOpen size={40} strokeWidth={1.5} />}
+                                title={t('readmeEmpty', lang)}
+                            />
+                        )}
+                    </div>
+                )}
+
+                {/* Tab 3: Markdown 笔记 */}
+                {activeTab === 'notes' && (
                     <div className="card">
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                            <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                            <h3 style={{
+                                fontSize: 14,
+                                fontWeight: 600,
+                                color: 'var(--color-text-secondary)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6,
+                            }}>
                                 <FileText size={14} />
                                 {t('notes', lang)}
                             </h3>
                             {!editingNote && (
                                 <button
-                                    ref={bindControlRef('note-edit')}
-                                    className="btn btn-ghost btn-sm"
-                                    style={getControlStyle('note-edit')}
-                                    tabIndex={roving.getTabIndex('note-edit')}
-                                    onFocus={() => roving.setActiveId('note-edit')}
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
                                     onClick={handleStartEditNote}
                                 >
                                     <Edit2 size={12} />
@@ -891,47 +1027,52 @@ export const DetailPage: React.FC = () => {
                                 <textarea
                                     value={noteValue}
                                     onChange={(e) => setNoteValue(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                                            e.preventDefault();
+                                            handleSaveNote();
+                                        }
+                                    }}
                                     placeholder={t('notePlaceholder', lang)}
                                     className="input"
                                     style={{
                                         width: '100%',
-                                        minHeight: 120,
+                                        minHeight: 160,
                                         padding: 12,
                                         lineHeight: 1.6,
                                         resize: 'vertical',
+                                        fontFamily: 'inherit',
                                     }}
                                 />
-                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10, alignItems: 'center' }}>
                                     {currentNote && (
                                         <button
-                                            ref={bindControlRef('note-delete')}
+                                            type="button"
                                             className="btn btn-ghost btn-sm"
-                                            style={getControlStyle('note-delete', { color: 'var(--color-error-text)' })}
-                                            tabIndex={roving.getTabIndex('note-delete')}
-                                            onFocus={() => roving.setActiveId('note-delete')}
-                                            onClick={handleDeleteNote}
+                                            style={{ color: 'var(--color-error-text)' }}
+                                            onClick={() => setShowDeleteConfirm(true)}
                                         >
                                             {t('delete', lang)}
                                         </button>
                                     )}
+                                    <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+                                        {t('noteHint', lang)} · Ctrl+Enter
+                                    </span>
                                     <div style={{ flex: 1 }} />
                                     <button
-                                        ref={bindControlRef('note-cancel')}
+                                        type="button"
                                         className="btn btn-ghost btn-sm"
-                                        style={getControlStyle('note-cancel')}
-                                        tabIndex={roving.getTabIndex('note-cancel')}
-                                        onFocus={() => roving.setActiveId('note-cancel')}
-                                        onClick={handleCancelNote}
+                                        onClick={() => {
+                                            setNoteValue('');
+                                            setEditingNote(false);
+                                        }}
                                     >
                                         <X size={12} />
                                         {t('cancel', lang)}
                                     </button>
                                     <button
-                                        ref={bindControlRef('note-save')}
+                                        type="button"
                                         className="btn btn-primary btn-sm"
-                                        style={getControlStyle('note-save')}
-                                        tabIndex={roving.getTabIndex('note-save')}
-                                        onFocus={() => roving.setActiveId('note-save')}
                                         onClick={handleSaveNote}
                                     >
                                         <Save size={12} />
@@ -941,65 +1082,31 @@ export const DetailPage: React.FC = () => {
                             </div>
                         ) : currentNote ? (
                             <div>
-                                <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-                                    {currentNote.content}
-                                </p>
-                                <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 8 }}>
+                                <div style={{ overflowWrap: 'anywhere', lineHeight: 1.6 }}>
+                                    {renderedNote}
+                                </div>
+                                <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 12 }}>
                                     {t('noteUpdatedAt', lang, { date: new Date(currentNote.updatedAt).toLocaleString() })}
                                 </p>
                             </div>
                         ) : (
-                            /* 🆕 v1.6.1 空状态 */
-                            <div style={{ padding: '8px 0', color: 'var(--color-text-muted)', fontSize: 14 }}>
-                                {t('noNotesYet', lang)}
-                            </div>
+                            <EmptyState
+                                icon={<FileText size={36} strokeWidth={1.5} />}
+                                title={t('noNotesYet', lang)}
+                                description={t('noteHint', lang)}
+                                action={
+                                    <button type="button" className="btn btn-primary btn-sm" onClick={handleStartEditNote}>
+                                        <Plus size={14} />
+                                        {t('addFirstNote', lang)}
+                                    </button>
+                                }
+                            />
                         )}
-                    </div>
-                    </div>
-                </div>
-
-                {/* Topics */}
-                {repo.topics && repo.topics.length > 0 && (
-                    <div className="card" style={{ marginBottom: 12 }}>
-                        <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, color: 'var(--color-text-secondary)' }}>
-                            Topics
-                        </h3>
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                            {repo.topics.map((topic) => (
-                                <span key={topic} className="tag">{topic}</span>
-                            ))}
-                        </div>
-                    </div>
-                )}
-
-                {/* 链接 */}
-                {repo.homepage && (
-                    <div className="card" style={{ marginBottom: 12 }}>
-                        <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, color: 'var(--color-text-secondary)' }}>
-                            {t('homepage', lang)}
-                        </h3>
-                        <button
-                            ref={bindControlRef('homepage')}
-                            className="link"
-                            style={getControlStyle('homepage', {
-                                fontSize: 14,
-                                padding: 0,
-                                border: 'none',
-                                background: 'none',
-                                height: 'auto',
-                                textAlign: 'left',
-                            })}
-                            tabIndex={roving.getTabIndex('homepage')}
-                            onFocus={() => roving.setActiveId('homepage')}
-                            onClick={handleOpenHomepage}
-                        >
-                            {repo.homepage}
-                        </button>
                     </div>
                 )}
             </div>
 
-            {/* 🆕 别名编辑弹窗（统一收编 Modal：遮罩淡入/焦点圈定/Escape） */}
+            {/* 别名编辑弹窗 */}
             <Modal
                 isOpen={editingAlias}
                 onClose={handleCancelAlias}
@@ -1031,7 +1138,7 @@ export const DetailPage: React.FC = () => {
                 />
             </Modal>
 
-            {/* 🆕 笔记删除确认弹窗 */}
+            {/* 笔记删除确认弹窗 */}
             <ConfirmDialog
                 isOpen={showDeleteConfirm}
                 title={t('delete', lang)}
@@ -1043,7 +1150,7 @@ export const DetailPage: React.FC = () => {
                 onCancel={() => setShowDeleteConfirm(false)}
             />
 
-            {/* 🆕 v1.6.2 重新分析确认弹窗 */}
+            {/* 重新分析确认弹窗 */}
             <ConfirmDialog
                 isOpen={showReanalyzeConfirm}
                 title={lang === 'zh' ? '重新分析' : 'Re-analyze'}
@@ -1062,3 +1169,15 @@ export const DetailPage: React.FC = () => {
         </div>
     );
 };
+
+const TimelineItem: React.FC<{ label: string; value: string; title: string }> = ({ label, value, title }) => (
+    <div title={title} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <Clock size={11} />
+            {label}
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)' }}>
+            {value || '—'}
+        </span>
+    </div>
+);

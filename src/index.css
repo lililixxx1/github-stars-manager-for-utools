@@ -100,28 +100,30 @@
   /* 继承默认 @theme 变量，无需重复定义 */
 }
 
-/* ==================== 全局样式 ==================== */
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
+/* ==================== 全局样式（置于 @layer base 避免覆盖 Tailwind v4 utilities） ==================== */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
 
-html, body, #root {
-  height: 100%;
-  overflow: hidden;
-}
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+  }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial,
-    sans-serif;
-  background-color: var(--color-background);
-  color: var(--color-text-primary);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  /* 主题切换动画 */
-  transition: background-color 0.2s ease, color 0.2s ease;
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+      'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial,
+      sans-serif;
+    background-color: var(--color-background);
+    color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* 主题切换动画 */
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
 }
 
 /* ==================== 滚动条美化 ==================== */
@@ -286,7 +288,7 @@ body {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  padding: 16px;
+  padding: 18px 20px;
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
@@ -791,8 +793,8 @@ button.tag:hover {
 /* ---- Toast 轻提示 ---- */
 .toast-stack {
     position: fixed;
-    bottom: 16px;
-    right: 16px;
+    bottom: 44px;
+    right: 20px;
     z-index: 1200;
     display: flex;
     flex-direction: column;
@@ -1091,9 +1093,9 @@ button.tag:hover {
 }
 
 /* ==================== 卡片密度（600px 高窗口适配） ==================== */
-/* 仓库/版本卡片紧凑内边距（.card 默认 16px） */
+/* 仓库/版本卡片紧凑内边距 */
 .card-compact {
-    padding: 13px;
+    padding: 16px 18px;
 }
 
 /* ==================== 页面/面板进入动画（阶段8 动效收敛） ==================== */
@@ -1143,12 +1145,12 @@ button.tag:hover {
 /* 分页模式视口外跳过布局/绘制（虚拟化模式不使用，避免影响 measureElement） */
 .list-card-cv {
     content-visibility: auto;
-    contain-intrinsic-size: auto 122px;
+    contain-intrinsic-size: auto 136px;
 }
 
 .list-row-cv {
     content-visibility: auto;
-    contain-intrinsic-size: auto 60px;
+    contain-intrinsic-size: auto 72px;
 }
 
 /* 语言筛选条横向细滚动条 */
@@ -1158,6 +1160,349 @@ button.tag:hover {
 
 .lang-filter-bar::-webkit-scrollbar {
     height: 4px;
+}
+
+/* ==================== 首页改版样式（智能视图 / 筛选浮层 / 列表行 / 状态栏 / 批量栏） ==================== */
+.smart-view-strip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    overflow-x: auto;
+    min-width: 0;
+    scrollbar-width: none;
+}
+
+.smart-view-strip::-webkit-scrollbar {
+    display: none;
+}
+
+.smart-view-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.smart-view-pill:hover {
+    background: var(--color-surface-hover);
+    color: var(--color-text-primary);
+}
+
+.smart-view-pill.active {
+    background: color-mix(in srgb, var(--color-primary) 13%, transparent);
+    border-color: color-mix(in srgb, var(--color-primary) 28%, transparent);
+    color: var(--color-primary-dark);
+    font-weight: 600;
+}
+
+:root.dark .smart-view-pill.active {
+    color: var(--color-primary-light);
+}
+
+.smart-view-pill:focus:not(:focus-visible) {
+    outline: none;
+}
+
+.filter-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: 340px;
+    max-width: calc(100vw - 32px);
+    max-height: 390px;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    z-index: 120;
+    overflow: hidden;
+    animation: panel-enter 0.15s ease-out;
+}
+
+.filter-popover-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 12px;
+}
+
+.active-filter-strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 20px;
+    overflow-x: auto;
+    background: var(--color-surface-secondary);
+    border-bottom: 1px solid var(--color-border);
+    scrollbar-width: thin;
+}
+
+.batch-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 20px;
+    background: color-mix(in srgb, var(--color-primary) 9%, var(--color-surface));
+    border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 25%, var(--color-border));
+}
+
+.list-row-item {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--color-border);
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.list-row-item:hover {
+    background: color-mix(in srgb, var(--color-surface-hover) 65%, transparent);
+}
+
+.list-row-item.active {
+    background: var(--color-surface-hover);
+    border-left-color: var(--color-primary);
+}
+
+.status-bar {
+    height: 34px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 20px;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
+    font-size: var(--text-sm);
+    color: var(--color-text-secondary);
+}
+
+.unread-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-new-badge-end);
+    animation: badge-pulse 2s ease-in-out infinite;
+}
+
+/* ==================== 详情页 Hero 与 Tab 样式 ==================== */
+.hero-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: 18px 20px;
+    margin-bottom: 16px;
+}
+
+.detail-tabs {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+/* ==================== 设计系统基础布局组件 ==================== */
+.page-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface);
+    flex-shrink: 0;
+}
+
+.page-header-title {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    color: var(--color-text-primary);
+    margin: 0;
+}
+
+.section-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.section-card-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-md);
+    font-weight: 600;
+    color: var(--color-text-primary);
+    margin: 0;
+    flex: 1;
+}
+
+/* ==================== 设置页概览卡与左右分组导航 ==================== */
+.settings-overview-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    padding: 14px 20px;
+    background: var(--color-background);
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+}
+
+.settings-stat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 14px;
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.settings-stat-card:hover {
+    border-color: var(--color-primary);
+    background: var(--color-surface-secondary);
+}
+
+.settings-layout {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+}
+
+.settings-sidebar {
+    width: 176px;
+    flex-shrink: 0;
+    padding: 14px 12px;
+    border-right: 1px solid var(--color-border);
+    background: var(--color-surface);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+}
+
+.settings-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: var(--text-base);
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.settings-nav-item:hover {
+    background: var(--color-surface-hover);
+    color: var(--color-text-primary);
+}
+
+.settings-nav-item.active {
+    background: color-mix(in srgb, var(--color-primary) 13%, transparent);
+    color: var(--color-primary-dark);
+    font-weight: 600;
+}
+
+:root.dark .settings-nav-item.active {
+    color: var(--color-primary-light);
+}
+
+.settings-nav-item:focus:not(:focus-visible) {
+    outline: none;
+}
+
+.settings-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* ==================== 全局命令面板 (⌘K / Ctrl+K) ==================== */
+.cmd-palette-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1300;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 64px;
+    background: var(--color-overlay);
+    backdrop-filter: blur(2px);
+    animation: overlay-in 0.12s ease-out;
+}
+
+.cmd-palette {
+    width: 100%;
+    max-width: 540px;
+    margin: 0 16px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    animation: panel-enter 0.15s ease-out;
+}
+
+.cmd-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-primary);
+    font-size: var(--text-base);
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+}
+
+.cmd-item:hover,
+.cmd-item.active {
+    background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.cmd-item.active {
+    color: var(--color-primary-dark);
+}
+
+:root.dark .cmd-item.active {
+    color: var(--color-primary-light);
+}
+
+.cmd-input:focus,
+.cmd-input:focus-visible {
+    outline: none;
+    box-shadow: none;
 }
 
 /* 尊重系统减少动态效果偏好（含 !important 覆盖 ReleaseCard 内联 badge-pulse） */

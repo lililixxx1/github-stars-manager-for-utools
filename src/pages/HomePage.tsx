@@ -8,83 +8,250 @@ import { toast } from '../components/Toast';
 import { t } from '../locales';
 import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
 import { getTagTextColor } from '../utils/tagColor';
+import { getLanguageColor } from '../constants/languages';
+import { formatCompactNumber, getRepoSortTimeInfo } from '../utils/format';
 import { FilterBar, type FilterBarHandle } from './home/components/FilterBar';
 import { EmptyState } from '../components/EmptyState';
-import type { Repository, Tag } from '../types';
+import type { Repository, SortBy, Tag } from '../types';
 import {
     RefreshCw, ChevronLeft, ChevronRight,
-    Star, Sparkles, FileText, Package, SearchX, AlertTriangle, X
+    Star, Sparkles, FileText, Package, SearchX, AlertTriangle, X,
+    Bell, Box, Tag as TagIcon, MinusCircle, CheckSquare
 } from 'lucide-react';
 
-// 🆕 阶段6 虚拟滚动："全部"模式（itemsPerPage=0）的行高初始估计。
-// 行高并不固定（卡片描述两行裁剪、标签换行；列表行内容单/双行），
-// 实际高度一律由 virtualizer.measureElement 动态测量，这里仅作首帧/未测行的估计：
-// 阶段8 密度调整后（.card-compact padding 13×2 + 行距 6）：卡片 ≈ 26 + 标题 22 + 描述两行 39 + 底栏 18 + 行距 6；
-// 列表行 ≈ padding 12×2 + 两行内容 44 + margin 4 + 1px 分割线
-const CARD_ROW_ESTIMATE = 122;
-const LIST_ROW_ESTIMATE = 60;
+const CARD_ROW_ESTIMATE = 136;
+const LIST_ROW_ESTIMATE = 72;
+
+const MiniAvatar: React.FC<{ avatarUrl?: string; login: string }> = memo(({ avatarUrl, login }) => {
+    const [failed, setFailed] = useState(false);
+
+    useEffect(() => {
+        setFailed(false);
+    }, [avatarUrl]);
+
+    if (!avatarUrl || failed) {
+        return (
+            <div style={{
+                width: 24, height: 24, borderRadius: 6, flexShrink: 0,
+                background: 'var(--color-surface-secondary)',
+                border: '1px solid var(--color-border)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+                <Box size={13} style={{ color: 'var(--color-text-muted)' }} />
+            </div>
+        );
+    }
+
+    return (
+        <img
+            src={avatarUrl}
+            alt={login}
+            width={24}
+            height={24}
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailed(true)}
+            style={{
+                width: 24, height: 24, borderRadius: 6, flexShrink: 0,
+                border: '1px solid var(--color-border)',
+            }}
+        />
+    );
+});
+MiniAvatar.displayName = 'MiniAvatar';
 
 interface ListRepoRowContentProps {
     repo: Repository;
     hasNote: boolean;
     tagById: Map<string, Tag>;
+    sortBy: SortBy;
     lang: 'zh' | 'en';
+    selectable?: boolean;
+    selected?: boolean;
+    onToggleSelect?: (repo: Repository) => void;
 }
 
-/** 列表视图纯内容组件（memo 化）：hover/键盘切换 activeRepoIndex 时不重渲染行内部内容与标签查找 */
-const ListRepoRowContent = memo<ListRepoRowContentProps>(({ repo, hasNote, tagById, lang }) => (
-    <>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 14, fontWeight: 500 }}>
-                {repo.alias || repo.name}
-            </span>
-            {repo.alias && (
-                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                    ({repo.fullName})
-                </span>
+/** 列表视图纯内容组件（memo 化，与卡片视图信息口径对齐） */
+const ListRepoRowContent = memo<ListRepoRowContentProps>(({
+    repo,
+    hasNote,
+    tagById,
+    sortBy,
+    lang,
+    selectable = false,
+    selected = false,
+    onToggleSelect,
+}) => {
+    const langColor = repo.language ? getLanguageColor(repo.language) : null;
+    const summaryText = repo.aiSummary || repo.description || t('noDescription', lang);
+    const timeInfo = getRepoSortTimeInfo(repo, sortBy, lang);
+
+    return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {selectable && (
+                <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => onToggleSelect?.(repo)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={repo.alias || repo.name}
+                    style={{
+                        width: 15,
+                        height: 15,
+                        accentColor: 'var(--color-primary)',
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                    }}
+                />
             )}
-            <span style={{ display: 'flex', alignItems: 'center', gap: 2, marginLeft: 'auto', fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                <Star size={12} style={{ color: 'var(--color-accent)' }} />
-                {repo.stargazersCount.toLocaleString()}
-            </span>
-            <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                {repo.language}
-            </span>
-            {hasNote && (
-                <FileText size={12} style={{ color: 'var(--color-primary)' }} />
-            )}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-            <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {repo.description || t('noDescription', lang)}
-            </span>
-            {(repo.customTags || []).slice(0, 3).map((tagId) => {
-                const tag = tagById.get(tagId);
-                if (!tag) return null;
-                const tagBg = tag.color
-                    ? (/^#[0-9a-fA-F]{6}$/.test(tag.color) ? `${tag.color}20` : tag.color)
-                    : 'color-mix(in srgb, var(--color-primary) 12%, transparent)';
-                return (
-                    <span
-                        key={tag.id}
-                        style={{
-                            fontSize: 10, padding: '1px 6px', borderRadius: 999,
-                            background: tagBg,
-                            color: getTagTextColor(tag.color),
-                            border: `1px solid ${tag.color || 'var(--color-primary)'}`,
-                        }}
-                    >
-                        {tag.icon} {tag.name}
+
+            <MiniAvatar avatarUrl={repo.owner.avatarUrl} login={repo.owner.login} />
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{
+                        fontSize: 14,
+                        fontWeight: 500,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                    }}>
+                        {repo.alias || repo.name}
                     </span>
-                );
-            })}
+                    {repo.alias && (
+                        <span style={{
+                            fontSize: 11,
+                            color: 'var(--color-text-muted)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                        }}>
+                            {repo.fullName}
+                        </span>
+                    )}
+
+                    <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        marginLeft: 'auto',
+                        flexShrink: 0,
+                        fontSize: 12,
+                        color: 'var(--color-text-secondary)',
+                    }}>
+                        {hasNote && (
+                            <FileText size={12} style={{ color: 'var(--color-primary)' }} />
+                        )}
+                        {repo.isSubscribed && (
+                            <Bell size={12} style={{ color: 'var(--color-accent)' }} />
+                        )}
+                        {repo.language && (
+                            <button
+                                type="button"
+                                onClick={(e) => {
+                                    if (selectable || !repo.language) return;
+                                    e.stopPropagation();
+                                    const { searchFilter, setSearchFilter } = useStore.getState();
+                                    const exists = searchFilter.languages.includes(repo.language);
+                                    setSearchFilter({
+                                        languages: exists
+                                            ? searchFilter.languages.filter((l) => l !== repo.language)
+                                            : [...searchFilter.languages, repo.language],
+                                    });
+                                }}
+                                style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 4,
+                                    background: 'transparent',
+                                    border: 'none',
+                                    padding: 0,
+                                    color: 'inherit',
+                                    fontSize: 'inherit',
+                                    cursor: 'pointer',
+                                }}
+                                title={`${t('filterTabLanguages', lang)}: ${repo.language}`}
+                            >
+                                {langColor && (
+                                    <span className="lang-dot" style={{ width: 8, height: 8, backgroundColor: langColor }} />
+                                )}
+                                {repo.language}
+                            </button>
+                        )}
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontVariantNumeric: 'tabular-nums' }}>
+                            <Star size={12} style={{ color: 'var(--color-accent)' }} />
+                            {formatCompactNumber(repo.stargazersCount)}
+                        </span>
+                    </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                    <span style={{
+                        fontSize: 12,
+                        color: 'var(--color-text-secondary)',
+                        flex: 1,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                    }}>
+                        {summaryText}
+                    </span>
+
+                    {(repo.customTags || []).slice(0, 2).map((tagId) => {
+                        const tag = tagById.get(tagId);
+                        if (!tag) return null;
+                        const tagBg = tag.color
+                            ? (/^#[0-9a-fA-F]{6}$/.test(tag.color) ? `${tag.color}18` : tag.color)
+                            : 'color-mix(in srgb, var(--color-primary) 12%, transparent)';
+                        const borderColor = tag.color
+                            ? `color-mix(in srgb, ${tag.color} 38%, transparent)`
+                            : 'color-mix(in srgb, var(--color-primary) 35%, transparent)';
+                        return (
+                            <button
+                                key={tag.id}
+                                type="button"
+                                onClick={(e) => {
+                                    if (selectable) return;
+                                    e.stopPropagation();
+                                    const { searchFilter, setSearchFilter } = useStore.getState();
+                                    const exists = searchFilter.customTags.includes(tag.id);
+                                    setSearchFilter({
+                                        customTags: exists
+                                            ? searchFilter.customTags.filter((id) => id !== tag.id)
+                                            : [...searchFilter.customTags, tag.id],
+                                    });
+                                }}
+                                title={`${t('filterTabTags', lang)}: ${tag.name}`}
+                                style={{
+                                    fontSize: 10,
+                                    padding: '1px 7px',
+                                    borderRadius: 999,
+                                    background: tagBg,
+                                    color: getTagTextColor(tag.color),
+                                    border: `1px solid ${borderColor}`,
+                                    whiteSpace: 'nowrap',
+                                    flexShrink: 0,
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                {tag.icon ? `${tag.icon} ` : ''}{tag.name}
+                            </button>
+                        );
+                    })}
+
+                    {timeInfo.timeText && (
+                        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                            {timeInfo.timeText}
+                        </span>
+                    )}
+                </div>
+            </div>
         </div>
-    </>
-));
+    );
+});
 ListRepoRowContent.displayName = 'ListRepoRowContent';
 
 export const HomePage: React.FC = () => {
-    // 精确订阅（阶段2 性能重构）：每个字段单独 selector，避免全量订阅
     const repositories = useStore((state) => state.repositories);
     const token = useStore((state) => state.token);
     const settings = useStore((state) => state.settings);
@@ -100,34 +267,33 @@ export const HomePage: React.FC = () => {
     const setViewMode = useStore((state) => state.setViewMode);
     const noteRepoIds = useStore((state) => state.noteRepoIds);
     const noteContentByRepoId = useStore((state) => state.noteContentByRepoId);
+    const batchAddTag = useStore((state) => state.batchAddTag);
+    const batchRemoveTag = useStore((state) => state.batchRemoveTag);
+    const batchSetSubscription = useStore((state) => state.batchSetSubscription);
 
-    // 同步进度来自独立的 progress store（高频 set 不再触发本组件）
     const syncStatus = useProgressStore((state) => state.syncStatus);
     const syncProgress = useProgressStore((state) => state.syncProgress);
     const syncError = useProgressStore((state) => state.syncError);
     const setSyncError = useProgressStore((state) => state.setSyncError);
 
     const lang = (settings.language || 'zh') as 'zh' | 'en';
-    // 🆕 阶段6 itemsPerPage 语义：正数=每页条数（分页，现状不变）；0=全部（不 slice，整表进虚拟列表）。默认 20 不变。
-    // 注意不能再用 `|| 20` 兜底——那会把 0 当 falsy 吞掉
     const itemsPerPageSetting = settings.itemsPerPage ?? 20;
     const isShowAllMode = itemsPerPageSetting === 0;
     const itemsPerPage = isShowAllMode ? 20 : itemsPerPageSetting;
+
     const filteredRepos = useMemo(
         () => getFilteredRepos(),
         [repositories, searchFilter, noteRepoIds, noteContentByRepoId, getFilteredRepos]
     );
-    // "全部"模式恒为单页（分页条自然隐藏：totalPages > 1 不成立）
+
     const totalPages = isShowAllMode ? 1 : Math.max(1, Math.ceil(filteredRepos.length / itemsPerPage));
-    // "全部"模式不 slice：整表引用直接交给虚拟列表，避免每次筛选变化复制大数组
     const currentRepos = isShowAllMode
         ? filteredRepos
         : filteredRepos.slice(
             (currentPageNum - 1) * itemsPerPage,
             currentPageNum * itemsPerPage
         );
-    // B3/B4（方案 v1.2）：挂载期一次性恢复——仅在 HomePage 重新挂载（从子页返回）时取记忆快照；
-    // 指纹四项 + 页码在界全匹配才恢复，否则 offset=0。render 期计算以喂给 virtualizer 的 initialOffset（首帧窗口）
+
     const initialMemoryRef = useRef(useStore.getState().homeScrollMemory);
     const initialMemory = initialMemoryRef.current;
     const restoreOffset = initialMemory
@@ -138,18 +304,20 @@ export const HomePage: React.FC = () => {
         && currentPageNum <= totalPages
         ? initialMemory.offset
         : 0;
+
     const [activeRepoIndex, setActiveRepoIndex] = useState<number | null>(null);
+    const [isKeyboardNavigating, setIsKeyboardNavigating] = useState(false);
     const [keyboardArea, setKeyboardArea] = useState<'toolbar' | 'list'>('list');
+    const [batchMode, setBatchMode] = useState(false);
+    const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+    const [batchTagAction, setBatchTagAction] = useState<'add' | 'remove' | null>(null);
+
     const itemRefs = useRef<Record<number, HTMLDivElement | null>>({});
     const listContainerRef = useRef<HTMLDivElement | null>(null);
     const filterBarRef = useRef<FilterBarHandle | null>(null);
+    const batchTagMenuRef = useRef<HTMLDivElement | null>(null);
     const activeRepo = activeRepoIndex === null ? null : currentRepos[activeRepoIndex] ?? null;
 
-    // 🆕 阶段6 虚拟滚动："全部"模式下行级虚拟化，仅渲染视口附近的行。
-    // - measureElement 动态测高（行高不固定，禁止固定 estimateSize 假设），estimateSize 仅首帧估计
-    // - getItemKey 用 repo.id：筛选/排序变化后避免行错位复用
-    // - overscan 5：上下多预备几行，滚动时不露白
-    // - 分页模式（itemsPerPage>0）enabled:false 完全旁路，滚动容器/渲染与升级前一致
     const listVirtualizer = useVirtualizer({
         count: currentRepos.length,
         getScrollElement: () => listContainerRef.current,
@@ -157,16 +325,11 @@ export const HomePage: React.FC = () => {
         getItemKey: (index) => currentRepos[index]?.id ?? index,
         overscan: 5,
         enabled: isShowAllMode,
-        // B4：与 B3 的 scrollTop 恢复同源取值，首帧即渲染正确窗口（估算行高下为近似恢复，方案 R6）
         initialOffset: restoreOffset,
     });
 
-    // B2：滚动位置持续追踪（方案 v1.3 修正——passive cleanup 运行时元素已脱离文档，
-    // 此时读 el.scrollTop 恒为 0，卸载时刻读取不可用；改为滚动时写入 ref，卸载只读追踪值，不触碰 DOM）
     const lastScrollTopRef = useRef(0);
 
-    // B2：卸载时保存滚动位置记忆（[] 依赖＝仅真实卸载。
-    // 当前未启用 StrictMode；若未来启用，双挂载的假卸载会以追踪值覆盖记忆，届时需改为滚动时节流写 store）
     useEffect(() => {
         return () => {
             const s = useStore.getState();
@@ -180,31 +343,24 @@ export const HomePage: React.FC = () => {
         };
     }, []);
 
-    // B3：挂载恢复滚动位置。立即赋值（不依赖 rAF——页面不可见时渲染循环暂停、rAF 永不触发，
-    // 立即赋值强制同步布局同样生效）+ rAF 复校一次（可见页面的首帧时机），分页模式精确，虚拟模式近似
     useEffect(() => {
         if (!restoreOffset) return;
         const offset = restoreOffset;
         const apply = () => {
             const el = listContainerRef.current;
             if (el) el.scrollTop = offset;
-            // 恢复赋值同步追踪值：程序化赋值不保证派发 scroll 事件（页面不可见时浏览器不派发），
-            // 不能依赖 onScroll 回填，否则下一次卸载保存会用旧值覆盖
             lastScrollTopRef.current = offset;
         };
         apply();
         requestAnimationFrame(apply);
     }, []);
 
-    // B6：页码越界收敛——设置页改每页数量/导入备份/后台同步使 totalPages 变小时，
-    // 避免"越界页码 slice 出空列表 + 分页条显示 3/2"的死角（方案 v1.2 P1-2）
     useEffect(() => {
         if (!isShowAllMode && filteredRepos.length > 0 && currentPageNum > totalPages) {
             setCurrentPageNum(totalPages);
         }
     }, [isShowAllMode, filteredRepos.length, currentPageNum, totalPages, setCurrentPageNum]);
 
-    // 获取所有语言（按仓库数量降序排列，保证高频语言优先展示；数量相同时按字母序）
     const allLanguages = useMemo(() => {
         const langCounts = new Map<string, number>();
         for (const r of repositories) {
@@ -230,21 +386,18 @@ export const HomePage: React.FC = () => {
         });
     }, [currentRepos.length, currentPageNum, viewMode]);
 
-    // 🆕 阶段6："全部"模式无分页语义，把页码归 1，避免切回分页模式时停留在越界页码
     useEffect(() => {
         if (isShowAllMode && currentPageNum !== 1) {
             setCurrentPageNum(1);
         }
     }, [isShowAllMode, currentPageNum, setCurrentPageNum]);
 
-    // 🆕 阶段6：切换视图（卡片/列表）行高量级完全不同，清除已测缓存按新视图重测
     useEffect(() => {
         if (isShowAllMode) {
             listVirtualizer.measure();
         }
     }, [viewMode, isShowAllMode, listVirtualizer]);
 
-    // 键盘跟随跳过一次的标志：挂载恢复滚动后，不让"activeRepo 从 null 变 0"的首次跟随把列表拉回顶部
     const restorePendingRef = useRef(restoreOffset > 0);
 
     useEffect(() => {
@@ -256,8 +409,6 @@ export const HomePage: React.FC = () => {
         }
 
         if (isShowAllMode) {
-            // 虚拟模式下未挂载行没有 DOM ref，统一走 scrollToIndex 跟随；
-            // align:'auto' 仅在行未完全可见时滚动，等价原 scrollIntoView 的 block:'nearest'
             listVirtualizer.scrollToIndex(activeRepoIndex ?? 0, { align: 'auto' });
             return;
         }
@@ -268,25 +419,62 @@ export const HomePage: React.FC = () => {
         });
     }, [activeRepo?.id, activeRepoIndex, isShowAllMode, listVirtualizer]);
 
-    // 翻页后同步追踪值：键盘翻页的 scrollIntoView/鼠标翻页的高度钳制都可能改变滚动位置，
-    // 事件派发存在次帧延迟，若在事件派发前卸载会保存旧值——翻页落地时直接回读容器一次
     useEffect(() => {
         const el = listContainerRef.current;
         if (el) lastScrollTopRef.current = el.scrollTop;
     }, [currentPageNum]);
 
+    // 任何鼠标点击操作立即关闭键盘高亮环，避免切回或清筛选后首卡残留高亮框
+    useEffect(() => {
+        const handleMouseDown = () => setIsKeyboardNavigating(false);
+        window.addEventListener('mousedown', handleMouseDown);
+        return () => window.removeEventListener('mousedown', handleMouseDown);
+    }, []);
+
+    useEffect(() => {
+        if (!batchTagAction) return;
+        const handleMouseDown = (event: MouseEvent) => {
+            if (batchTagMenuRef.current && !batchTagMenuRef.current.contains(event.target as Node)) {
+                setBatchTagAction(null);
+            }
+        };
+        document.addEventListener('mousedown', handleMouseDown);
+        return () => document.removeEventListener('mousedown', handleMouseDown);
+    }, [batchTagAction]);
+
     const handleSync = useCallback(async () => {
         const result = await useStore.getState().syncRepositories();
-        // 被长任务互斥挡住时给出反馈，避免点击同步无任何响应
         if (result === 'busy') {
             toast.show(t('syncSkippedBusy', lang));
         }
     }, [lang]);
 
-    const handleRepoClick = useCallback((repo: typeof repositories[0]) => {
+    const handleRepoClick = useCallback((repo: Repository) => {
         setSelectedRepoId(repo.id);
         setCurrentPage('detail');
     }, [setCurrentPage, setSelectedRepoId]);
+
+    const handleToggleSelect = useCallback((repo: Repository) => {
+        setSelectedIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(repo.id)) {
+                next.delete(repo.id);
+            } else {
+                next.add(repo.id);
+            }
+            return next;
+        });
+    }, []);
+
+    const handleToggleBatchMode = useCallback(() => {
+        setBatchMode((prev) => {
+            if (prev) {
+                setSelectedIds(new Set());
+                setBatchTagAction(null);
+            }
+            return !prev;
+        });
+    }, []);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -296,6 +484,7 @@ export const HomePage: React.FC = () => {
             if (event.key === 'ArrowDown') {
                 if (currentRepos.length === 0) return;
                 event.preventDefault();
+                setIsKeyboardNavigating(true);
                 setActiveRepoIndex((prev) => {
                     if (prev === null) return 0;
                     return Math.min(prev + 1, currentRepos.length - 1);
@@ -308,35 +497,40 @@ export const HomePage: React.FC = () => {
                 event.preventDefault();
                 setActiveRepoIndex((prev) => {
                     if (prev === null || prev <= 0) {
+                        setIsKeyboardNavigating(false);
                         setKeyboardArea('toolbar');
                         requestAnimationFrame(() => {
                             filterBarRef.current?.focusActiveControl();
                         });
                         return 0;
                     }
+                    setIsKeyboardNavigating(true);
                     return Math.max(prev - 1, 0);
                 });
                 return;
             }
 
             if (event.key === 'ArrowRight') {
-                // 🆕 阶段6："全部"模式无分页语义，左右翻页键直接忽略
-                // （不改为滚动到首/末：与分页模式的按键预期不一致，且上下键已覆盖滚动跟随）
-                if (isShowAllMode) return;
-                if (currentPageNum >= totalPages) return;
+                if (isShowAllMode || currentPageNum >= totalPages) return;
                 event.preventDefault();
+                setIsKeyboardNavigating(true);
                 setCurrentPageNum(currentPageNum + 1);
                 setActiveRepoIndex(0);
                 return;
             }
 
             if (event.key === 'ArrowLeft') {
-                // 🆕 阶段6：同上，"全部"模式忽略翻页键
-                if (isShowAllMode) return;
-                if (currentPageNum <= 1) return;
+                if (isShowAllMode || currentPageNum <= 1) return;
                 event.preventDefault();
+                setIsKeyboardNavigating(true);
                 setCurrentPageNum(currentPageNum - 1);
                 setActiveRepoIndex(0);
+                return;
+            }
+
+            if (batchMode && event.key === ' ' && activeRepo) {
+                event.preventDefault();
+                handleToggleSelect(activeRepo);
                 return;
             }
 
@@ -348,24 +542,30 @@ export const HomePage: React.FC = () => {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [activeRepo, currentPageNum, currentRepos.length, handleRepoClick, isShowAllMode, keyboardArea, totalPages]);
-
-    // 阶段3 排序收敛：排序偏好只在两处流动——
-    // ① UI 改排序 → store.setSortPreference（原子写 settings + searchFilter）
-    // ② 启动 → loadSettings 把 settings.defaultSortBy/Order 回填 searchFilter
-    // （原 v1.6.2 的 sortRestoredRef 兜底恢复块为第三条冗余路径，已删除）
+    }, [
+        activeRepo,
+        batchMode,
+        currentPageNum,
+        currentRepos.length,
+        handleRepoClick,
+        handleToggleSelect,
+        isShowAllMode,
+        keyboardArea,
+        setCurrentPageNum,
+        totalPages,
+    ]);
 
     const toggleViewMode = useCallback(() => {
         setViewMode(viewMode === 'card' ? 'list' : 'card');
     }, [viewMode, setViewMode]);
 
-    // 稳定 FilterBar 回调引用（避免 activeRepoIndex 变更时击穿 FilterBar 的 memo）
     const currentReposLengthRef = useRef(0);
     currentReposLengthRef.current = currentRepos.length;
 
     const handleRequestListArea = useCallback(() => {
         if (currentReposLengthRef.current === 0) return;
         setKeyboardArea('list');
+        setIsKeyboardNavigating(true);
         setActiveRepoIndex((prev) => prev ?? 0);
         requestAnimationFrame(() => {
             listContainerRef.current?.focus();
@@ -375,6 +575,61 @@ export const HomePage: React.FC = () => {
     const handleRequestToolbarArea = useCallback(() => {
         setKeyboardArea('toolbar');
     }, []);
+
+    // 批量动作处理
+    const selectedIdList = useMemo(() => Array.from(selectedIds), [selectedIds]);
+
+    const handleSelectPage = () => {
+        setSelectedIds((prev) => {
+            const next = new Set(prev);
+            for (const r of currentRepos) {
+                next.add(r.id);
+            }
+            return next;
+        });
+    };
+
+    const handleBatchApplyTag = (tag: Tag) => {
+        if (selectedIdList.length === 0) return;
+        if (batchTagAction === 'add') {
+            batchAddTag(selectedIdList, tag.id);
+            toast.show(
+                lang === 'zh'
+                    ? `已为 ${selectedIdList.length} 个仓库添加「${tag.name}」`
+                    : `Added "${tag.name}" to ${selectedIdList.length} repos`,
+                { type: 'success' }
+            );
+        } else if (batchTagAction === 'remove') {
+            batchRemoveTag(selectedIdList, tag.id);
+            toast.show(
+                lang === 'zh'
+                    ? `已从 ${selectedIdList.length} 个仓库移除「${tag.name}」`
+                    : `Removed "${tag.name}" from ${selectedIdList.length} repos`,
+                { type: 'info' }
+            );
+        }
+        setBatchTagAction(null);
+    };
+
+    const handleBatchSubscribe = () => {
+        if (selectedIdList.length === 0) return;
+        batchSetSubscription(selectedIdList, true);
+        toast.show(
+            lang === 'zh'
+                ? `已订阅 ${selectedIdList.length} 个仓库的版本更新`
+                : `Subscribed to ${selectedIdList.length} repos`,
+            { type: 'success' }
+        );
+    };
+
+    // 状态栏范围文本
+    const rangeLabel = useMemo(() => {
+        if (filteredRepos.length === 0) return '0';
+        if (isShowAllMode) return `${filteredRepos.length}`;
+        const start = (currentPageNum - 1) * itemsPerPage + 1;
+        const end = Math.min(currentPageNum * itemsPerPage, filteredRepos.length);
+        return `${start}–${end} / ${filteredRepos.length}`;
+    }, [currentPageNum, filteredRepos.length, isShowAllMode, itemsPerPage]);
 
     // 首次使用引导
     if (!token) {
@@ -406,7 +661,6 @@ export const HomePage: React.FC = () => {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* 筛选栏组件 🆕 v1.7.0 */}
             <FilterBar
                 ref={filterBarRef}
                 lang={lang}
@@ -418,13 +672,82 @@ export const HomePage: React.FC = () => {
                 syncStatus={syncStatus}
                 viewMode={viewMode}
                 onViewModeToggle={toggleViewMode}
+                batchMode={batchMode}
+                onToggleBatchMode={handleToggleBatchMode}
                 keyboardArea={keyboardArea}
                 onRequestListArea={handleRequestListArea}
                 onRequestToolbarArea={handleRequestToolbarArea}
                 hasListResults={currentRepos.length > 0}
             />
 
-            {/* 同步进度 */}
+            {/* 批量整理栏 */}
+            {batchMode && (
+                <div className="batch-bar">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-primary-dark)' }}>
+                            {t('batchSelected', lang, { count: selectedIdList.length })}
+                        </span>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={handleSelectPage}>
+                            <CheckSquare size={12} />
+                            {t('batchSelectPage', lang)}
+                        </button>
+                        {selectedIdList.length > 0 && (
+                            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSelectedIds(new Set())}>
+                                {t('batchClearSelection', lang)}
+                            </button>
+                        )}
+                    </div>
+
+                    <div ref={batchTagMenuRef} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div className="relative">
+                            <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                disabled={selectedIdList.length === 0 || tags.length === 0}
+                                onClick={() => setBatchTagAction((prev) => (prev === 'add' ? null : 'add'))}
+                            >
+                                <TagIcon size={12} />
+                                {t('batchAddTag', lang)}
+                            </button>
+                            {batchTagAction === 'add' && (
+                                <BatchTagDropdown tags={tags} onSelect={handleBatchApplyTag} />
+                            )}
+                        </div>
+                        <div className="relative">
+                            <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                disabled={selectedIdList.length === 0 || tags.length === 0}
+                                onClick={() => setBatchTagAction((prev) => (prev === 'remove' ? null : 'remove'))}
+                            >
+                                <MinusCircle size={12} />
+                                {t('batchRemoveTag', lang)}
+                            </button>
+                            {batchTagAction === 'remove' && (
+                                <BatchTagDropdown tags={tags} onSelect={handleBatchApplyTag} />
+                            )}
+                        </div>
+                        <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            disabled={selectedIdList.length === 0}
+                            onClick={handleBatchSubscribe}
+                        >
+                            <Bell size={12} />
+                            {t('batchSubscribe', lang)}
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            onClick={handleToggleBatchMode}
+                            aria-label={t('commonClose', lang)}
+                        >
+                            <X size={13} />
+                        </button>
+                    </div>
+                </div>
+            )}
+
             <SyncProgress
                 current={syncProgress.current}
                 total={syncProgress.total}
@@ -432,7 +755,6 @@ export const HomePage: React.FC = () => {
                 language={lang}
             />
 
-            {/* 错误提示（role="alert"：读屏即时播报；错误展示单源归此横幅） */}
             {syncError && (
                 <div role="alert" style={{
                     padding: '8px 16px', background: 'var(--color-error-strong)',
@@ -458,7 +780,10 @@ export const HomePage: React.FC = () => {
                 ref={listContainerRef}
                 className="repo-listbox"
                 onScroll={(e) => { lastScrollTopRef.current = e.currentTarget.scrollTop; }}
-                style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'card' ? '6px 16px' : '0' }}
+                onMouseMove={() => {
+                    if (isKeyboardNavigating) setIsKeyboardNavigating(false);
+                }}
+                style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'card' ? '14px 20px' : '0' }}
                 role="listbox"
                 aria-label={t('repositories', lang)}
                 aria-activedescendant={keyboardArea === 'list' && activeRepo ? `repo-option-${activeRepo.id}` : undefined}
@@ -479,62 +804,55 @@ export const HomePage: React.FC = () => {
                         ) : undefined}
                     />
                 ) : isShowAllMode ? (
-                    // 🆕 阶段6 "全部"模式：虚拟列表，仅渲染视口附近的行。
-                    // 外层占位 div 撑起总高度；行绝对定位 + translateY 布局；
-                    // ref=measureElement + data-index 动态测高，getItemKey=repo.id 防错位复用。
-                    // aria-activedescendant 协议不变（行 id 命名沿用 repo-option-{id}，
-                    // 未挂载行无 DOM 节点属浏览器可容忍行为）
                     <div style={{ position: 'relative', height: listVirtualizer.getTotalSize(), width: '100%' }}>
                         {listVirtualizer.getVirtualItems().map((virtualRow) => {
                             const repo = currentRepos[virtualRow.index];
                             if (!repo) return null;
-                            const isActive = activeRepoIndex === virtualRow.index;
+                            const isActive = isKeyboardNavigating && activeRepoIndex === virtualRow.index;
+                            const isSelected = selectedIds.has(repo.id);
                             return (
                                 <div
                                     key={virtualRow.key}
                                     id={`repo-option-${repo.id}`}
+                                    className={viewMode === 'list' ? `list-row-item${isActive ? ' active' : ''}` : undefined}
                                     role="option"
                                     aria-selected={isActive}
                                     data-index={virtualRow.index}
                                     ref={listVirtualizer.measureElement}
-                                    onClick={viewMode === 'card' ? undefined : () => handleRepoClick(repo)}
-                                    onMouseEnter={() => {
-                                        setActiveRepoIndex(virtualRow.index);
-                                        setKeyboardArea('list');
-                                    }}
+                                    onClick={viewMode === 'card'
+                                        ? undefined
+                                        : () => (batchMode ? handleToggleSelect(repo) : handleRepoClick(repo))}
                                     style={{
                                         position: 'absolute',
                                         top: 0,
                                         left: 0,
                                         width: '100%',
                                         transform: `translateY(${virtualRow.start}px)`,
-                                        // 还原两种视图的原有行样式：卡片=6px 行距（原 flex gap，阶段8 密度），列表=原行内边距与高亮边
-                                        ...(viewMode === 'card'
-                                            ? { paddingBottom: 6 }
-                                            : {
-                                                padding: '12px 16px',
-                                                borderBottom: '1px solid var(--color-border)',
-                                                cursor: 'pointer',
-                                                transition: 'background 0.15s',
-                                                background: isActive ? 'var(--color-surface-hover)' : 'transparent',
-                                                borderLeft: isActive ? '3px solid var(--color-primary)' : '3px solid transparent',
-                                            }),
+                                        ...(viewMode === 'card' ? { paddingBottom: 12 } : {}),
                                     }}
                                 >
                                     {viewMode === 'card' ? (
-                                        // 阶段8：卡片自身不再播 animate-fade-in，避免虚拟行重挂载时动画重播闪烁
                                         <RepositoryCard
                                             repo={repo}
                                             onClick={handleRepoClick}
                                             language={lang}
                                             isActive={isActive}
+                                            sortBy={searchFilter.sortBy}
+                                            hasNote={noteRepoIds.has(repo.id)}
+                                            selectable={batchMode}
+                                            selected={isSelected}
+                                            onToggleSelect={handleToggleSelect}
                                         />
                                     ) : (
                                         <ListRepoRowContent
                                             repo={repo}
                                             hasNote={noteRepoIds.has(repo.id)}
                                             tagById={tagById}
+                                            sortBy={searchFilter.sortBy}
                                             lang={lang}
+                                            selectable={batchMode}
+                                            selected={isSelected}
+                                            onToggleSelect={handleToggleSelect}
                                         />
                                     )}
                                 </div>
@@ -542,10 +860,9 @@ export const HomePage: React.FC = () => {
                         })}
                     </div>
                 ) : viewMode === 'card' ? (
-                    // 卡片视图（阶段8 密度：行距 8→6；分页模式挂 .list-card-cv 跳过视口外绘制）
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                         {currentRepos.map((repo, index) => {
-                            const isActive = activeRepoIndex === index;
+                            const isActive = isKeyboardNavigating && activeRepoIndex === index;
                             return (
                                 <div
                                     key={repo.id}
@@ -554,89 +871,143 @@ export const HomePage: React.FC = () => {
                                     role="option"
                                     aria-selected={isActive}
                                     ref={(element) => { itemRefs.current[repo.id] = element; }}
-                                    onMouseEnter={() => {
-                                        setActiveRepoIndex(index);
-                                        setKeyboardArea('list');
-                                    }}
                                 >
                                     <RepositoryCard
                                         repo={repo}
                                         onClick={handleRepoClick}
                                         language={lang}
                                         isActive={isActive}
+                                        sortBy={searchFilter.sortBy}
+                                        hasNote={noteRepoIds.has(repo.id)}
+                                        selectable={batchMode}
+                                        selected={selectedIds.has(repo.id)}
+                                        onToggleSelect={handleToggleSelect}
                                     />
                                 </div>
                             );
                         })}
                     </div>
                 ) : (
-                    // 列表视图（分页模式，行内容 memo 化 + .list-row-cv）
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
                         {currentRepos.map((repo, index) => {
-                            const isActive = activeRepoIndex === index;
+                            const isActive = isKeyboardNavigating && activeRepoIndex === index;
                             return (
-                            <div
-                                key={repo.id}
-                                id={`repo-option-${repo.id}`}
-                                className="list-row-cv"
-                                role="option"
-                                aria-selected={isActive}
-                                ref={(element) => { itemRefs.current[repo.id] = element; }}
-                                onClick={() => handleRepoClick(repo)}
-                                onMouseEnter={() => {
-                                    setActiveRepoIndex(index);
-                                    setKeyboardArea('list');
-                                }}
-                                style={{
-                                    padding: '12px 16px',
-                                    borderBottom: '1px solid var(--color-border)',
-                                    cursor: 'pointer',
-                                    transition: 'background 0.15s',
-                                    background: isActive ? 'var(--color-surface-hover)' : 'transparent',
-                                    borderLeft: isActive ? '3px solid var(--color-primary)' : '3px solid transparent',
-                                }}
-                            >
-                                <ListRepoRowContent
-                                    repo={repo}
-                                    hasNote={noteRepoIds.has(repo.id)}
-                                    tagById={tagById}
-                                    lang={lang}
-                                />
-                            </div>
+                                <div
+                                    key={repo.id}
+                                    id={`repo-option-${repo.id}`}
+                                    className={`list-row-cv list-row-item${isActive ? ' active' : ''}`}
+                                    role="option"
+                                    aria-selected={isActive}
+                                    ref={(element) => { itemRefs.current[repo.id] = element; }}
+                                    onClick={() => (batchMode ? handleToggleSelect(repo) : handleRepoClick(repo))}
+                                >
+                                    <ListRepoRowContent
+                                        repo={repo}
+                                        hasNote={noteRepoIds.has(repo.id)}
+                                        tagById={tagById}
+                                        sortBy={searchFilter.sortBy}
+                                        lang={lang}
+                                        selectable={batchMode}
+                                        selected={selectedIds.has(repo.id)}
+                                        onToggleSelect={handleToggleSelect}
+                                    />
+                                </div>
                             );
                         })}
                     </div>
                 )}
             </div>
 
-            {/* 分页 */}
-            {totalPages > 1 && (
-                <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                    padding: '8px 16px', borderTop: '1px solid var(--color-border)',
-                    background: 'var(--color-surface)',
-                }}>
-                    <button
-                        className="btn btn-ghost btn-sm"
-                        disabled={currentPageNum <= 1}
-                        onClick={() => setCurrentPageNum(currentPageNum - 1)}
-                        aria-label={t('prevPage', lang)}
-                    >
-                        <ChevronLeft size={14} />
-                    </button>
-                    <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
-                        {currentPageNum} / {totalPages}
+            {/* 底部紧凑状态栏（分页 + 键盘提示） */}
+            <div className="status-bar">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{rangeLabel}</span>
+                    {totalPages > 1 && (
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                            <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                style={{ padding: '1px 5px' }}
+                                disabled={currentPageNum <= 1}
+                                onClick={() => setCurrentPageNum(currentPageNum - 1)}
+                                aria-label={t('prevPage', lang)}
+                            >
+                                <ChevronLeft size={13} />
+                            </button>
+                            <span style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', minWidth: 36, textAlign: 'center' }}>
+                                {currentPageNum}/{totalPages}
+                            </span>
+                            <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                style={{ padding: '1px 5px' }}
+                                disabled={currentPageNum >= totalPages}
+                                onClick={() => setCurrentPageNum(currentPageNum + 1)}
+                                aria-label={t('nextPage', lang)}
+                            >
+                                <ChevronRight size={13} />
+                            </button>
+                        </div>
+                    )}
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    <span style={{
+                        fontSize: 11,
+                        color: 'var(--color-text-muted)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                    }}>
+                        {t('shortcutHints', lang)}
                     </span>
                     <button
-                        className="btn btn-ghost btn-sm"
-                        disabled={currentPageNum >= totalPages}
-                        onClick={() => setCurrentPageNum(currentPageNum + 1)}
-                        aria-label={t('nextPage', lang)}
+                        type="button"
+                        className="chip"
+                        style={{ padding: '0 6px', fontSize: 11, flexShrink: 0 }}
+                        onClick={() => window.dispatchEvent(new CustomEvent('open-command-palette'))}
+                        title="Ctrl+K / ⌘K"
                     >
-                        <ChevronRight size={14} />
+                        ⌘K
                     </button>
                 </div>
-            )}
+            </div>
         </div>
     );
 };
+
+const BatchTagDropdown: React.FC<{ tags: Tag[]; onSelect: (tag: Tag) => void }> = ({ tags, onSelect }) => (
+    <div
+        className="panel-enter"
+        style={{
+            position: 'absolute',
+            top: 'calc(100% + 4px)',
+            left: 0,
+            minWidth: 180,
+            maxHeight: 220,
+            overflowY: 'auto',
+            background: 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 8,
+            boxShadow: 'var(--shadow-md)',
+            padding: 6,
+            zIndex: 130,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+        }}
+    >
+        {tags.map((tag) => (
+            <button
+                key={tag.id}
+                type="button"
+                className="btn btn-ghost btn-sm"
+                style={{ justifyContent: 'flex-start', width: '100%' }}
+                onClick={() => onSelect(tag)}
+            >
+                <span>{tag.icon || '🏷️'}</span>
+                <span style={{ color: getTagTextColor(tag.color) }}>{tag.name}</span>
+            </button>
+        ))}
+    </div>
+);

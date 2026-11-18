@@ -1,12 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Star, GitFork, Box } from 'lucide-react';
-
-function formatNumber(num: number): string {
-    if (num >= 1000) {
-        return (num / 1000).toFixed(1) + 'k';
-    }
-    return String(num);
-}
+import { formatCompactNumber } from '../utils/format';
 
 interface RepoRowProps {
     /** 头像地址；缺省渲染 Box 占位块（ReleaseCard 无仓库数据时） */
@@ -59,7 +53,7 @@ export const RepoRow: React.FC<RepoRowProps> = ({
     }, [avatarUrl]);
 
     return (
-        <div style={{ display: 'flex', gap: 12 }}>
+        <div style={{ display: 'flex', gap: 14 }}>
             {avatarUrl && !imgError ? (
                 <img
                     src={avatarUrl}
@@ -86,7 +80,7 @@ export const RepoRow: React.FC<RepoRowProps> = ({
 
             <div style={{ flex: 1, minWidth: 0 }}>
                 {/* 标题行：名称 + 副标题 + 统计 */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                     <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 6 }}>
                         <h3 style={{
                             fontSize: 15, fontWeight: 600, color: 'var(--color-text-primary)',
@@ -107,11 +101,11 @@ export const RepoRow: React.FC<RepoRowProps> = ({
                         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0, marginLeft: 8 }}>
                             <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 13, color: 'var(--color-text-secondary)' }}>
                                 <Star size={14} style={{ color: 'var(--color-accent)' }} />
-                                {formatNumber(stars)}
+                                {formatCompactNumber(stars)}
                             </span>
                             <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 13, color: 'var(--color-text-secondary)' }}>
                                 <GitFork size={14} />
-                                {formatNumber(forks)}
+                                {formatCompactNumber(forks)}
                             </span>
                         </div>
                     )}

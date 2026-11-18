@@ -3,6 +3,7 @@ import { useStore } from './stores/useStore';
 import { useProgressStore } from './stores/useProgressStore';
 import { HomePage } from './pages/HomePage';
 import { AnalyzeProgress } from './components/AnalyzeProgress';
+import { CommandPalette } from './components/CommandPalette';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { Skeleton, SkeletonCard } from './components/Skeleton';
 import { ToastHost, toast } from './components/Toast';
@@ -97,6 +98,43 @@ function releaseRepositorySearchSubInput(): void {
     utools.subInputBlur?.();
     utools.removeSubInput();
 }
+
+const DevSubInputBar: React.FC<{ keyword: string; placeholder: string }> = ({ keyword, placeholder }) => {
+    const [draft, setDraft] = useState(keyword);
+    useEffect(() => {
+        setDraft(keyword);
+    }, [keyword]);
+
+    return (
+        <div style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            padding: '8px 20px',
+            background: 'var(--color-surface-secondary)',
+            borderBottom: '1px solid var(--color-border)',
+            flexShrink: 0,
+        }}>
+            <span style={{
+                fontSize: 11, fontWeight: 600, padding: '2px 6px',
+                borderRadius: 4, background: 'color-mix(in srgb, var(--color-primary) 15%, transparent)',
+                color: 'var(--color-primary)', whiteSpace: 'nowrap',
+            }}>
+                DEV SUBINPUT
+            </span>
+            <input
+                type="search"
+                className="input"
+                style={{ padding: '5px 10px', fontSize: 13 }}
+                value={draft}
+                onChange={(e) => {
+                    const next = e.target.value;
+                    setDraft(next);
+                    scheduleSubInputKeyword(next);
+                }}
+                placeholder={placeholder}
+            />
+        </div>
+    );
+};
 
 const App: React.FC = () => {
     // 精确订阅（阶段2 性能重构）：根组件只订阅页面路由与设置，进度类状态在 useProgressStore
@@ -316,6 +354,10 @@ const App: React.FC = () => {
 
     // 获取语言设置
     const lang = (settings?.language || 'zh') as 'zh' | 'en';
+    const keyword = useStore((state) => state.searchFilter.keyword);
+    const isMockBrowser = import.meta.env.DEV
+        && typeof window !== 'undefined'
+        && Boolean((window as unknown as Record<string, unknown>).__GH_STARS_DEV_MOCK__);
 
     // 确认弹窗处理函数
     const handleAnalyzeConfirm = async () => {
@@ -326,8 +368,10 @@ const App: React.FC = () => {
         }
     };
 
+    const isHomePage = currentPage !== 'detail' && currentPage !== 'settings' && currentPage !== 'tags' && currentPage !== 'releases';
+
     return (
-        <>
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <ConfirmDialog
                 isOpen={showAnalyzeConfirm}
                 title={t('analyzeConfirmTitle', lang)}
@@ -338,18 +382,24 @@ const App: React.FC = () => {
                 onCancel={() => setShowAnalyzeConfirm(false)}
             />
             <AnalyzeProgress />
+            <CommandPalette />
             <ToastHost />
-            {/* 阶段8：页面级进入动画统一挂在容器上（替代逐卡片动画）；首页轻播避免与首屏争抢 */}
-            <Suspense fallback={<PageLoadingFallback />}>
-                {currentPage === 'detail' && <div className="page-enter"><DetailPage /></div>}
-                {currentPage === 'settings' && <div className="page-enter"><SettingsPage /></div>}
-                {currentPage === 'tags' && <div className="page-enter"><TagsPage /></div>}
-                {currentPage === 'releases' && <div className="page-enter"><ReleasesPage /></div>}
-            </Suspense>
-            {currentPage !== 'detail' && currentPage !== 'settings' && currentPage !== 'tags' && currentPage !== 'releases' && (
-                <div className="page-enter page-enter-light"><HomePage /></div>
+            {isMockBrowser && isHomePage && (
+                <DevSubInputBar keyword={keyword} placeholder={t('search', lang)} />
             )}
-        </>
+            {/* 阶段8：页面级进入动画统一挂在容器上（替代逐卡片动画）；首页轻播避免与首屏争抢 */}
+            <div style={{ flex: 1, minHeight: 0 }}>
+                <Suspense fallback={<PageLoadingFallback />}>
+                    {currentPage === 'detail' && <div className="page-enter"><DetailPage /></div>}
+                    {currentPage === 'settings' && <div className="page-enter"><SettingsPage /></div>}
+                    {currentPage === 'tags' && <div className="page-enter"><TagsPage /></div>}
+                    {currentPage === 'releases' && <div className="page-enter"><ReleasesPage /></div>}
+                </Suspense>
+                {isHomePage && (
+                    <div className="page-enter page-enter-light"><HomePage /></div>
+                )}
+            </div>
+        </div>
     );
 };
 

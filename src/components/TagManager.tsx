@@ -5,7 +5,7 @@ import { Modal } from './Modal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { t } from '../locales';
 import type { Tag } from '../types';
-import { Plus, Edit2, Trash2, GripVertical, Check, Lightbulb } from 'lucide-react';
+import { Plus, Edit2, Trash2, GripVertical, Check, Lightbulb, ArrowUpRight } from 'lucide-react';
 import {
     DndContext,
     closestCenter,
@@ -49,17 +49,19 @@ interface TagManagerProps {
 // 可排序标签项组件
 interface SortableTagItemProps {
     tag: Tag;
+    count: number;
     onEdit: (tag: Tag) => void;
     onDelete: (tagId: string) => void;
-    getTagCount: (tagId: string) => number;
+    onViewRepos: (tagId: string) => void;
     lang: 'zh' | 'en';
 }
 
 const SortableTagItem: React.FC<SortableTagItemProps> = ({
     tag,
+    count,
     onEdit,
     onDelete,
-    getTagCount,
+    onViewRepos,
     lang,
 }) => {
     const {
@@ -81,30 +83,36 @@ const SortableTagItem: React.FC<SortableTagItemProps> = ({
     return (
         <div
             ref={setNodeRef}
-            className="card card-compact"
-            style={{
-                ...style,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                opacity: isDragging ? 0.5 : 1,
-            }}
+            className="card card-compact flex items-center justify-between"
+            style={style}
         >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div className="flex items-center gap-2">
                 {/* 拖拽手柄 - 使用 div 避免 button 嵌套问题 */}
                 <div
-                    style={{ cursor: 'move', touchAction: 'none', padding: 4, borderRadius: 4 }}
+                    className="cursor-move p-1 rounded"
+                    style={{ touchAction: 'none' }}
                     {...attributes}
                     {...listeners}
                 >
                     <GripVertical size={16} style={{ color: 'var(--color-text-muted)' }} />
                 </div>
                 <TagBadge tag={tag} size="md" />
-                <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
-                    {t('tagCount', lang, { count: getTagCount(tag.id) })}
+                <span className="text-[13px] text-[var(--color-text-muted)]">
+                    {t('tagCount', lang, { count })}
                 </span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <div className="flex items-center gap-1">
+                {count > 0 && (
+                    <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => onViewRepos(tag.id)}
+                        title={t('viewTagRepos', lang)}
+                    >
+                        <span>{t('viewTagRepos', lang)}</span>
+                        <ArrowUpRight size={13} />
+                    </button>
+                )}
                 <button
                     className="btn btn-ghost btn-sm"
                     onClick={() => onEdit(tag)}
@@ -137,7 +145,9 @@ export const TagManager: React.FC<TagManagerProps> = ({
     const deleteTag = useStore((state) => state.deleteTag);
     const reorderTags = useStore((state) => state.reorderTags);
     const repositories = useStore((state) => state.repositories);
-    const lang = (useStore.getState().settings.language || 'zh') as 'zh' | 'en';
+    const setSearchFilter = useStore((state) => state.setSearchFilter);
+    const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const lang = useStore((state) => (state.settings?.language || 'zh') as 'zh' | 'en');
 
     const [isEditing, setIsEditing] = useState(false);
     const [editingTag, setEditingTag] = useState<Tag | null>(null);
@@ -178,6 +188,11 @@ export const TagManager: React.FC<TagManagerProps> = ({
         return counts;
     }, [repositories]);
     const getTagCount = useCallback((tagId: string) => tagCounts.get(tagId) || 0, [tagCounts]);
+
+    const handleViewTagRepos = useCallback((tagId: string) => {
+        setSearchFilter({ customTags: [tagId], smartView: 'all' });
+        setCurrentPage('home');
+    }, [setCurrentPage, setSearchFilter]);
 
     // 拖拽传感器配置
     const sensors = useSensors(
@@ -325,9 +340,10 @@ export const TagManager: React.FC<TagManagerProps> = ({
                             <SortableTagItem
                                 key={tag.id}
                                 tag={tag}
+                                count={getTagCount(tag.id)}
                                 onEdit={startEdit}
                                 onDelete={handleDeleteTag}
-                                getTagCount={getTagCount}
+                                onViewRepos={handleViewTagRepos}
                                 lang={lang}
                             />
                         ))}

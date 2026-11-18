@@ -18,7 +18,7 @@ export const SyncProgress: React.FC<SyncProgressProps> = ({ current, total, stat
     const syncingText = hasKnownTotal
         ? `${current} / ${total}`
         : current > 0
-            ? (language === 'zh' ? `已扫描 ${current} 个` : `Scanned ${current}`)
+            ? t('syncScannedCount', language, { count: current })
             : '...';
 
     return (

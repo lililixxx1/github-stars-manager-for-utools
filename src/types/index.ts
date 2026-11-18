@@ -137,8 +137,11 @@ export interface SyncState {
 }
 
 // ==================== 搜索过滤 ====================
+export type SmartView = 'all' | 'untagged' | 'unanalyzed' | 'noted' | 'subscribed' | 'recent';
+
 export interface SearchFilter {
     keyword: string;
+    smartView?: SmartView;
     languages: string[];
     topics: string[];
     aiTags: string[];

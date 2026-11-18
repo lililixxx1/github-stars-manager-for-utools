@@ -12,20 +12,19 @@ import { Badge } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { toast } from '../components/Toast';
 import { PLATFORM_OPTIONS } from '../constants/platforms';
+import { getPlatformIcon } from '../constants/platformIcons';
 import { releaseService } from '../services/releaseService';
 import { t } from '../locales';
 import type { Language } from '../locales';
 import type { Release, Repository } from '../types';
 import { useBackShortcut } from '../hooks/useBackShortcut';
-import { BackHintChip } from '../components/BackHintChip';
+import { PageHeader } from '../components/ui/PageHeader';
+import { formatCompactNumber, formatRelativeTime as formatRelativeTimeUtil } from '../utils/format';
 
 type TabType = 'updates' | 'subscriptions';
 
-// 格式化 Star 数（与 RepoRow.formatNumber 两段式一致）
-export const formatStars = (count: number): string => {
-    if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
-    return count.toString();
-};
+// 格式化 Star 数（复用全局紧凑数字格式化）
+export const formatStars = (count: number): string => formatCompactNumber(count);
 
 export function ReleasesPage() {
     // 精确订阅（阶段2 性能重构）
@@ -38,6 +37,7 @@ export function ReleasesPage() {
     const markAllReleasesRead = useStore((state) => state.markAllReleasesRead);
     const setReleaseFilter = useStore((state) => state.setReleaseFilter);
     const setCurrentPage = useStore((state) => state.setCurrentPage);
+    const setSelectedRepoId = useStore((state) => state.setSelectedRepoId);
     const toggleSubscription = useStore((state) => state.toggleSubscription);
     const clearAllSubscriptions = useStore((state) => state.clearAllSubscriptions);
     const releasesInitialTab = useStore((state) => state.releasesInitialTab);
@@ -185,54 +185,26 @@ export function ReleasesPage() {
     };
 
     // 格式化相对时间
-    const formatRelativeTime = (dateString: string) => {
-        const date = new Date(dateString);
-        const now = new Date();
-        const diffMs = now.getTime() - date.getTime();
-        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-
-        if (lang === 'zh') {
-            if (diffDays === 0) return diffHours <= 1 ? '刚刚' : `${diffHours} 小时前`;
-            if (diffDays === 1) return '昨天';
-            if (diffDays < 7) return `${diffDays} 天前`;
-            if (diffDays < 30) return `${Math.floor(diffDays / 7)} 周前`;
-            return `${Math.floor(diffDays / 30)} 个月前`;
-        } else {
-            if (diffDays === 0) return diffHours <= 1 ? 'just now' : `${diffHours} hours ago`;
-            if (diffDays === 1) return 'yesterday';
-            if (diffDays < 7) return `${diffDays} days ago`;
-            if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
-            return `${Math.floor(diffDays / 30)} months ago`;
-        }
-    };
+    const formatRelativeTime = (dateString: string) => formatRelativeTimeUtil(dateString, lang);
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            {/* 顶栏 - 遵循 UI-Design-Guide.md §4.2 */}
-            <div style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                padding: '10px 16px', borderBottom: '1px solid var(--color-border)',
-                background: 'var(--color-surface)',
-            }}>
-                <BackHintChip label={t('back', lang)} onClick={handleBack} />
-                <h2 style={{ fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                    {t('releases', lang)}
-                </h2>
-                <div style={{ flex: 1 }} />
-                {releaseCheckStatus.newCount > 0 && activeTab === 'updates' && (
-                    <Badge variant="default">
-                        {releaseCheckStatus.newCount} {t('newReleases', lang)}
-                    </Badge>
-                )}
-            </div>
+        <div className="flex flex-col h-full">
+            <PageHeader
+                title={t('releases', lang)}
+                backLabel={t('back', lang)}
+                onBack={handleBack}
+                right={
+                    releaseCheckStatus.newCount > 0 && activeTab === 'updates' ? (
+                        <Badge variant="default">
+                            {releaseCheckStatus.newCount} {t('newReleases', lang)}
+                        </Badge>
+                    ) : undefined
+                }
+            />
 
-            {/* 独立 Tab 栏：分段控件（与设置页 segmented 统一） */}
-            <div style={{
-                padding: '8px 16px', borderBottom: '1px solid var(--color-border)',
-                background: 'var(--color-surface)',
-            }}>
-                <div className="segmented" style={{ width: 'fit-content' }}>
+            {/* 独立 Tab 栏：分段控件 */}
+            <div className="px-5 py-2.5 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
+                <div className="segmented w-fit">
                     <button
                         type="button"
                         className={`segmented-item${activeTab === 'updates' ? ' active' : ''}`}
@@ -251,60 +223,79 @@ export function ReleasesPage() {
                     >
                         {t('subscriptionManage', lang)}
                         {subscribedRepos.length > 0 && (
-                            <span style={{ marginLeft: 4, opacity: 0.7 }}>{subscribedRepos.length}</span>
+                            <span className="ml-1.5 opacity-70">{subscribedRepos.length}</span>
                         )}
                     </button>
                 </div>
             </div>
 
             {/* 包含过滤器、统计信息以及主列表的滚动内容区 */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+            <div className="flex-1 overflow-y-auto p-5">
                 {activeTab === 'updates' ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: sortedReleases.length === 0 ? '100%' : undefined }}>
-                        {/* 筛选栏（恒显——含「检查更新」唯一页内入口，空态不再是死胡同；仅检查中让位 spinner） */}
+                    <div className="flex flex-col gap-4" style={{ minHeight: sortedReleases.length === 0 ? '100%' : undefined }}>
                         {releaseCheckStatus.checking ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-primary)' }}>
+                            <div className="flex items-center gap-2 text-[var(--color-primary)]">
                                 <Loader2 size={14} className="animate-spin" />
-                                <span style={{ fontSize: 13 }}>{t('checkingUpdates', lang)}</span>
+                                <span className="text-[13px]">{t('checkingUpdates', lang)}</span>
                             </div>
                         ) : (
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                <div style={{ display: 'flex', gap: 8 }}>
+                            <div className="flex flex-col gap-2">
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                    <div className="flex gap-2">
+                                        <button
+                                            className="btn btn-secondary btn-sm"
+                                            onClick={handleCheckUpdates}
+                                            disabled={!token || subscribedRepos.length === 0}
+                                            title={!token ? t('tokenRequiredHint', lang) : subscribedRepos.length === 0 ? t('subscribeRequiredHint', lang) : undefined}
+                                        >
+                                            <RefreshCw size={14} />
+                                            {t('checkUpdates', lang)}
+                                        </button>
+                                        <button
+                                            className="btn btn-secondary btn-sm"
+                                            onClick={handleMarkAllRead}
+                                            disabled={sortedReleases.length === 0}
+                                        >
+                                            {t('markAllRead', lang)}
+                                        </button>
+                                    </div>
+
                                     <button
-                                        className="btn btn-secondary btn-sm"
-                                        onClick={handleCheckUpdates}
-                                        disabled={!token || subscribedRepos.length === 0}
-                                        title={!token ? (lang === 'zh' ? '请先配置 GitHub Token' : 'Please configure GitHub Token first') : subscribedRepos.length === 0 ? (lang === 'zh' ? '请先订阅仓库' : 'Please subscribe to repos first') : undefined}
+                                        type="button"
+                                        className={`chip${releaseFilter.showUnreadOnly ? ' active' : ''}`}
+                                        onClick={() => setReleaseFilter({ showUnreadOnly: !releaseFilter.showUnreadOnly })}
+                                        aria-pressed={releaseFilter.showUnreadOnly}
                                     >
-                                        <RefreshCw size={14} />
-                                        {t('checkUpdates', lang)}
-                                    </button>
-                                    <button
-                                        className="btn btn-secondary btn-sm"
-                                        onClick={handleMarkAllRead}
-                                        disabled={sortedReleases.length === 0}
-                                    >
-                                        {t('markAllRead', lang)}
+                                        {t('showUnreadOnly', lang)}
                                     </button>
                                 </div>
-                                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, color: 'var(--color-text-secondary)', cursor: 'pointer' }}>
-                                        <input type="checkbox" checked={releaseFilter.showUnreadOnly} onChange={(e) => setReleaseFilter({ showUnreadOnly: e.target.checked })} style={{ accentColor: 'var(--color-primary)' }} />
-                                        {t('showUnreadOnly', lang)}
-                                    </label>
-                                    <select
-                                        className="input"
-                                        style={{ padding: '4px 8px', fontSize: 13, width: 'auto' }}
-                                        value={releaseFilter.platform || ''}
-                                        onChange={(e) => setReleaseFilter({ platform: e.target.value || null })}
+
+                                {/* 平台胶囊筛选条 */}
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                    <button
+                                        type="button"
+                                        className={`chip${!releaseFilter.platform ? ' active' : ''}`}
+                                        onClick={() => setReleaseFilter({ platform: null })}
+                                        aria-pressed={!releaseFilter.platform}
                                     >
-                                        <option value="">{t('allPlatforms', lang)}</option>
-                                        {PLATFORM_OPTIONS.map((platform) => (
-                                            <option key={platform.id} value={platform.id}>
-                                                {platform.icon} {platform.label}
-                                            </option>
-                                        ))}
-                                    </select>
+                                        {t('allPlatforms', lang)}
+                                    </button>
+                                    {PLATFORM_OPTIONS.map((platform) => {
+                                        const PlatformIcon = getPlatformIcon(platform.id);
+                                        const selected = releaseFilter.platform === platform.id;
+                                        return (
+                                            <button
+                                                key={platform.id}
+                                                type="button"
+                                                className={`chip${selected ? ' active' : ''}`}
+                                                onClick={() => setReleaseFilter({ platform: selected ? null : platform.id })}
+                                                aria-pressed={selected}
+                                            >
+                                                <PlatformIcon size={12} />
+                                                <span>{platform.label}</span>
+                                            </button>
+                                        );
+                                    })}
                                 </div>
                             </div>
                         )}
@@ -382,9 +373,17 @@ export function ReleasesPage() {
                                 />
                             </div>
                         ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                                 {subscribedRepos.map((repo) => (
-                                    <div key={repo.id} className="card card-compact" style={{ display: 'flex', alignItems: 'center' }}>
+                                    <div
+                                        key={repo.id}
+                                        className="card card-compact card-interactive"
+                                        style={{ display: 'flex', alignItems: 'center' }}
+                                        onClick={() => {
+                                            setSelectedRepoId(repo.id);
+                                            setCurrentPage('detail');
+                                        }}
+                                    >
                                         <img
                                             src={repo.owner.avatarUrl}
                                             alt={repo.owner.login}
@@ -414,7 +413,14 @@ export function ReleasesPage() {
                                                 <span>{t('lastUpdated', lang)}: {formatRelativeTime(repo.pushedAt)}</span>
                                             </div>
                                         </div>
-                                        <button className="btn btn-secondary btn-sm" style={{ color: 'var(--color-error-text)' }} onClick={() => handleUnsubscribe(repo)}>
+                                        <button
+                                            className="btn btn-secondary btn-sm"
+                                            style={{ color: 'var(--color-error-text)' }}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleUnsubscribe(repo);
+                                            }}
+                                        >
                                             {t('unsubscribe', lang)}
                                         </button>
                                     </div>
