@@ -29,6 +29,7 @@ import {
     List,
     RefreshCw,
     Settings,
+    Tags,
     X,
 } from 'lucide-react';
 import { FilterPopover } from './FilterPopover';
@@ -62,6 +63,7 @@ interface ToolbarControl {
     action: () => void;
     disabled?: boolean;
     active?: boolean;
+    iconOnly?: boolean;
     content: React.ReactNode;
 }
 
@@ -267,9 +269,17 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             ),
         },
         {
+            key: 'tags',
+            title: t('manageTags', lang),
+            action: () => setCurrentPage('tags'),
+            iconOnly: true,
+            content: <Tags size={14} />,
+        },
+        {
             key: 'view',
             title: t('viewMode', lang),
             action: onViewModeToggle,
+            iconOnly: true,
             content: viewMode === 'card' ? <LayoutGrid size={14} /> : <List size={14} />,
         },
         {
@@ -277,6 +287,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             title: t('batchMode', lang),
             action: onToggleBatchMode,
             active: batchMode,
+            iconOnly: true,
             content: <CheckSquare size={14} />,
         },
         {
@@ -284,12 +295,14 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             title: t('syncNow', lang),
             action: onRefresh,
             disabled: syncStatus === 'syncing',
+            iconOnly: true,
             content: <RefreshCw size={14} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />,
         },
         {
             key: 'settings',
             title: t('settings', lang),
             action: () => setCurrentPage('settings'),
+            iconOnly: true,
             content: <Settings size={14} />,
         },
     ], [
@@ -538,7 +551,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                     aria-label={t('repositories', lang)}
                 >
                     {toolbarControls.map((control, index) => {
-                        const divider = control.key === 'view' ? (
+                        const divider = control.key === 'tags' ? (
                             <span
                                 key="toolbar-divider"
                                 className="w-px h-4 bg-[var(--color-border)] mx-0.5 shrink-0"
@@ -550,7 +563,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                                 key={control.key}
                                 ref={(element) => { buttonRefs.current[index] = element; }}
                                 type="button"
-                                className={`btn btn-filter btn-sm${control.active ? ' active' : ''}`}
+                                className={`btn btn-filter btn-sm${control.iconOnly ? ' btn-icon-sm' : ''}${control.active ? ' active' : ''}`}
                                 tabIndex={activeControlIndex === index ? 0 : -1}
                                 onClick={control.action}
                                 onMouseEnter={() => activateControl(index)}

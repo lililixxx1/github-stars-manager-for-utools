@@ -247,7 +247,7 @@ export interface GithubStarsAPI {
     // ========== AI 分析 ==========
     analyzeRepo: (
         readmeContent: string,
-        repoInfo: { fullName: string; description: string | null; language: string | null },
+        repoInfo: { fullName: string; description: string | null; language: string | null; topics?: string[] },
         language?: string,
         model?: string,
         thinking?: boolean

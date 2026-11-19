@@ -11,11 +11,12 @@ import { Skeleton } from '../components/Skeleton';
 import { toast } from '../components/Toast';
 import { checkAnalysisNeeded, getCooldownMinutes } from '../utils/analysis';
 import { formatCompactNumber, formatRelativeTime } from '../utils/format';
-import { renderMarkdown } from '../utils/markdown';
+import { MarkdownView } from '../components/MarkdownView';
 import { shouldIgnoreGlobalKeydown } from '../utils/keyboard';
 import { useBackShortcut } from '../hooks/useBackShortcut';
 import { BackHintChip } from '../components/BackHintChip';
 import { getLanguageColor } from '../constants/languages';
+import { PLATFORM_OPTIONS } from '../constants/platforms';
 import { getPlatformIcon } from '../constants/platformIcons';
 import {
     ExternalLink,
@@ -48,6 +49,12 @@ type DetailTab = 'overview' | 'readme' | 'notes';
 const readmeCache = new Map<number, string | null>();
 
 const QUICK_TAG_COLORS = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
+
+const getPlatformLabel = (id: string): string => {
+    const normalized = id.toLowerCase();
+    const found = PLATFORM_OPTIONS.find((opt) => opt.id === normalized);
+    return found?.label || id;
+};
 
 export const DetailPage: React.FC = () => {
     const selectedRepoId = useStore((s) => s.selectedRepoId);
@@ -253,16 +260,6 @@ export const DetailPage: React.FC = () => {
 
     const failedCooldownMinutes = repo?.analysisFailed ? getCooldownMinutes(repo) : 0;
 
-    const renderedReadme = useMemo(
-        () => (readmeContent ? renderMarkdown(readmeContent) : null),
-        [readmeContent]
-    );
-
-    const renderedNote = useMemo(
-        () => (currentNote?.content ? renderMarkdown(currentNote.content) : null),
-        [currentNote?.content]
-    );
-
     const aliasInputRef = useRef<HTMLInputElement | null>(null);
     useEffect(() => {
         if (editingAlias) {
@@ -315,6 +312,7 @@ export const DetailPage: React.FC = () => {
                     analyzedAt: new Date().toISOString(),
                     analysisFailed: false,
                 });
+                toast.show(t('aiAnalyzeSuccess', lang), { type: 'success' });
             } else {
                 markFailure();
             }
@@ -640,24 +638,11 @@ export const DetailPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* 核心摘要与原描述 */}
+                    {/* 仓库原始描述 */}
                     <div style={{ marginTop: 14 }}>
-                        {repo.aiSummary ? (
-                            <>
-                                <p style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--color-text-primary)', fontWeight: 500, margin: 0 }}>
-                                    {repo.aiSummary}
-                                </p>
-                                {repo.description && repo.description !== repo.aiSummary && (
-                                    <p style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--color-text-secondary)', marginTop: 6 }}>
-                                        {repo.description}
-                                    </p>
-                                )}
-                            </>
-                        ) : (
-                            <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--color-text-secondary)', margin: 0 }}>
-                                {repo.description || t('noDescription', lang)}
-                            </p>
-                        )}
+                        <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--color-text-secondary)', margin: 0 }}>
+                            {repo.description || repo.aiSummary || t('noDescription', lang)}
+                        </p>
                     </div>
 
                     {/* 行内标签编辑栏 */}
@@ -828,6 +813,15 @@ export const DetailPage: React.FC = () => {
 
                             {repo.analyzedAt && !repo.analysisFailed ? (
                                 <div>
+                                    <p style={{
+                                        fontSize: 14,
+                                        lineHeight: 1.65,
+                                        color: 'var(--color-text-primary)',
+                                        margin: '0 0 12px',
+                                        whiteSpace: 'pre-wrap',
+                                    }}>
+                                        {repo.aiSummary || repo.description || t('noDescription', lang)}
+                                    </p>
                                     {repo.aiTags && repo.aiTags.length > 0 && (
                                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
                                             {repo.aiTags.map((tag, i) => (
@@ -838,7 +832,7 @@ export const DetailPage: React.FC = () => {
                                     {repo.aiPlatforms && repo.aiPlatforms.length > 0 && (
                                         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
                                             {repo.aiPlatforms.map((p) => {
-                                                const Icon = getPlatformIcon(p);
+                                                const Icon = getPlatformIcon(p.toLowerCase());
                                                 return (
                                                     <span key={p} style={{
                                                         fontSize: 13,
@@ -847,7 +841,7 @@ export const DetailPage: React.FC = () => {
                                                         gap: 4,
                                                         color: 'var(--color-text-secondary)',
                                                     }}>
-                                                        <Icon size={14} /> {p}
+                                                        <Icon size={14} /> {getPlatformLabel(p)}
                                                     </span>
                                                 );
                                             })}
@@ -866,6 +860,17 @@ export const DetailPage: React.FC = () => {
                                 </div>
                             ) : repo.analyzedAt && repo.analysisFailed ? (
                                 <div>
+                                    {repo.aiSummary && (
+                                        <p style={{
+                                            fontSize: 14,
+                                            lineHeight: 1.65,
+                                            color: 'var(--color-text-primary)',
+                                            margin: '0 0 10px',
+                                            whiteSpace: 'pre-wrap',
+                                        }}>
+                                            {repo.aiSummary}
+                                        </p>
+                                    )}
                                     {repo.aiTags && repo.aiTags.length > 0 && (
                                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
                                             {repo.aiTags.map((tag, i) => (
@@ -876,7 +881,7 @@ export const DetailPage: React.FC = () => {
                                     {repo.aiPlatforms && repo.aiPlatforms.length > 0 && (
                                         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
                                             {repo.aiPlatforms.map((p) => {
-                                                const Icon = getPlatformIcon(p);
+                                                const Icon = getPlatformIcon(p.toLowerCase());
                                                 return (
                                                     <span key={p} style={{
                                                         fontSize: 13,
@@ -885,7 +890,7 @@ export const DetailPage: React.FC = () => {
                                                         gap: 4,
                                                         color: 'var(--color-text-secondary)',
                                                     }}>
-                                                        <Icon size={14} /> {p}
+                                                        <Icon size={14} /> {getPlatformLabel(p)}
                                                     </span>
                                                 );
                                             })}
@@ -984,8 +989,8 @@ export const DetailPage: React.FC = () => {
                                 <Skeleton width="78%" height={14} />
                                 <Skeleton width="88%" height={80} />
                             </div>
-                        ) : renderedReadme ? (
-                            <div style={{ lineHeight: 1.6 }}>{renderedReadme}</div>
+                        ) : readmeContent ? (
+                            <MarkdownView content={readmeContent} repoFullName={repo.fullName} />
                         ) : (
                             <EmptyState
                                 icon={<BookOpen size={40} strokeWidth={1.5} />}
@@ -1083,7 +1088,7 @@ export const DetailPage: React.FC = () => {
                         ) : currentNote ? (
                             <div>
                                 <div style={{ overflowWrap: 'anywhere', lineHeight: 1.6 }}>
-                                    {renderedNote}
+                                    <MarkdownView content={currentNote.content} repoFullName={repo.fullName} />
                                 </div>
                                 <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 12 }}>
                                     {t('noteUpdatedAt', lang, { date: new Date(currentNote.updatedAt).toLocaleString() })}

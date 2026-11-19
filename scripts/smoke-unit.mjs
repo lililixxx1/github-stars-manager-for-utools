@@ -21,6 +21,7 @@ export * from './stores/selectors';
 export * from './utils/format';
 export * from './utils/analysis';
 export * from './utils/backup';
+export * from './utils/markdownUrl';
 export { i18n, t } from './locales';
 `;
 
@@ -56,6 +57,12 @@ const {
     checkAnalysisNeeded,
     getCooldownMinutes,
     validateBackup,
+    parseMarkdownToHtml,
+    resolveMarkdownImageUrl,
+    resolveMarkdownLinkUrl,
+    resolveMarkdownSrcset,
+    sanitizeHtmlDimension,
+    slugifyHeading,
     i18n,
     t,
 } = mod.exports;
@@ -259,6 +266,58 @@ test('U7 i18n.zh 与 i18n.en 键集合完全对齐', () => {
     deepStrictEqual(zhKeys, enKeys);
     strictEqual(t('totalRepos', 'zh', { count: 5 }), '共 5 个仓库');
     strictEqual(t('totalRepos', 'en', { count: 5 }), '5 repositories');
+});
+
+// 8. README HTML + GFM 解析与相对路径/XSS 校验
+test('U8 markdownUrl 支持 GFM + HTML 解析与相对 URL 安全补全', () => {
+    strictEqual(
+        resolveMarkdownImageUrl('resources/tinta.ico', 'oipoistar/tinta'),
+        'https://raw.githubusercontent.com/oipoistar/tinta/HEAD/resources/tinta.ico'
+    );
+    strictEqual(
+        resolveMarkdownImageUrl('https://github.com/a/b/blob/main/img.png', 'a/b'),
+        'https://raw.githubusercontent.com/a/b/main/img.png'
+    );
+    strictEqual(resolveMarkdownImageUrl('javascript:alert(1)', 'a/b'), null);
+    strictEqual(resolveMarkdownImageUrl('data:text/html,<script>alert(1)</script>', 'a/b'), null);
+
+    deepStrictEqual(
+        resolveMarkdownLinkUrl('LICENSE', 'oipoistar/tinta'),
+        { href: 'https://github.com/oipoistar/tinta/blob/HEAD/LICENSE', isAnchor: false }
+    );
+    deepStrictEqual(
+        resolveMarkdownLinkUrl('#install', 'oipoistar/tinta'),
+        { href: '#install', isAnchor: true }
+    );
+    strictEqual(resolveMarkdownLinkUrl('javascript:alert(1)', 'oipoistar/tinta'), null);
+
+    strictEqual(
+        resolveMarkdownSrcset('resources/a.png 1x, https://example.com/b.png 2x, javascript:bad 3x', 'oipoistar/tinta'),
+        'https://raw.githubusercontent.com/oipoistar/tinta/HEAD/resources/a.png 1x, https://example.com/b.png 2x'
+    );
+
+    strictEqual(sanitizeHtmlDimension('80'), '80px');
+    strictEqual(sanitizeHtmlDimension('49%'), '49%');
+    strictEqual(sanitizeHtmlDimension('expression(1)'), null);
+    strictEqual(slugifyHeading('✨ Features & Usage!'), 'features-usage');
+
+    const sampleReadme = `<div align="center">
+<img src="resources/tinta.ico" width="80">
+<h1>Tinta</h1>
+<p><em>Markdown, distilled.</em></p>
+</div>
+
+| Feature | Status |
+| --- | --- |
+| GFM Table | Ready |
+
+- [x] Parsed checkbox
+`;
+    const html = parseMarkdownToHtml(sampleReadme);
+    ok(html.includes('<div align="center">'));
+    ok(html.includes('<h1>Tinta</h1>'));
+    ok(html.includes('<table>'));
+    ok(html.includes('type="checkbox"'));
 });
 
 console.log(`\n===== 单元测试结果: ${passed} 通过 / ${failed} 失败 =====`);

@@ -619,6 +619,94 @@ function yieldToMain() {
 // 进行中的 utools.ai 调用（批量分析并发最高 5 个），用于"停止分析"时立即中止 in-flight 调用（R1/H1）
 const inFlightAiCalls = new Set();
 
+const AI_PLATFORM_ALIASES = {
+    mac: 'mac',
+    macos: 'mac',
+    'mac os': 'mac',
+    osx: 'mac',
+    darwin: 'mac',
+    win: 'windows',
+    win32: 'windows',
+    win64: 'windows',
+    windows: 'windows',
+    linux: 'linux',
+    ubuntu: 'linux',
+    ios: 'ios',
+    iphone: 'ios',
+    ipad: 'ios',
+    android: 'android',
+    docker: 'docker',
+    web: 'web',
+    browser: 'web',
+    cli: 'cli',
+    'command line': 'cli',
+    terminal: 'cli',
+};
+
+/**
+ * 从 AI 模型文本响应中稳健提取 JSON 对象（优先 fenced json 块，其次括号配对扫描）
+ */
+function parseAiJsonResponse(content) {
+    if (!content || typeof content !== 'string') return null;
+
+    const fencedMatch = content.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/i);
+    if (fencedMatch) {
+        try {
+            const parsed = JSON.parse(fencedMatch[1]);
+            if (parsed && typeof parsed === 'object') return parsed;
+        } catch {
+            // 继续走括号扫描
+        }
+    }
+
+    for (let start = content.indexOf('{'); start !== -1; start = content.indexOf('{', start + 1)) {
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let i = start; i < content.length; i++) {
+            const ch = content[i];
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (ch === '\\') {
+                    escaped = true;
+                } else if (ch === '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (ch === '"') {
+                inString = true;
+            } else if (ch === '{') {
+                depth++;
+            } else if (ch === '}') {
+                depth--;
+                if (depth === 0) {
+                    const candidate = content.slice(start, i + 1);
+                    try {
+                        const parsed = JSON.parse(candidate);
+                        if (parsed && typeof parsed === 'object') return parsed;
+                    } catch {
+                        // 尝试下一个 '{'
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    const greedyMatch = content.match(/\{[\s\S]*\}/);
+    if (greedyMatch) {
+        try {
+            const parsed = JSON.parse(greedyMatch[0]);
+            if (parsed && typeof parsed === 'object') return parsed;
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
 window.githubStarsAPI = {
     // GitHub API
     verifyToken: (token) => githubAPI.verifyToken(token),
@@ -643,6 +731,7 @@ window.githubStarsAPI = {
             if (Array.isArray(repo.customTags)) copy.customTags = [...repo.customTags];
             if (Array.isArray(repo.topics)) copy.topics = [...repo.topics];
             if (Array.isArray(repo.aiTags)) copy.aiTags = [...repo.aiTags];
+            if (Array.isArray(repo.aiPlatforms)) copy.aiPlatforms = [...repo.aiPlatforms];
             return copy;
         });
     },
@@ -868,11 +957,19 @@ window.githubStarsAPI = {
 
 Return in JSON format: {"summary": "...", "tags": [...], "platforms": [...]}`;
 
+        const safeReadme = typeof readmeContent === 'string' ? readmeContent.trim() : '';
+        const topicsLine = Array.isArray(repoInfo.topics) && repoInfo.topics.length > 0
+            ? `\nTopics: ${repoInfo.topics.join(', ')}`
+            : '';
+        const readmeSection = safeReadme
+            ? `README (前2000字符):\n${safeReadme.substring(0, 2000)}`
+            : '(No README available; infer summary, tags, and supported platforms from repo name, description, language, and topics)';
+
         const messages = [
             { role: 'system', content: systemPrompt },
             {
                 role: 'user',
-                content: `仓库名称: ${repoInfo.fullName}\n描述: ${repoInfo.description || '无描述'}\n语言: ${repoInfo.language || '未知'}\n\nREADME (前2000字符):\n${readmeContent.substring(0, 2000)}`
+                content: `仓库名称: ${repoInfo.fullName}\n描述: ${repoInfo.description || '无描述'}\n语言: ${repoInfo.language || '未知'}${topicsLine}\n\n${readmeSection}`
             }
         ];
 
@@ -891,19 +988,34 @@ Return in JSON format: {"summary": "...", "tags": [...], "platforms": [...]}`;
                 inFlightAiCalls.delete(request);
             }
             console.log('[AI分析] utools.ai 调用完成', { repo: repoInfo.fullName, result });
-            const content = result.content || '';
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                const parsed = JSON.parse(jsonMatch[0]);
+            const content = typeof result === 'string' ? result : (result?.content || '');
+            const parsed = parseAiJsonResponse(content);
+            if (parsed) {
+                const rawSummary = typeof parsed.summary === 'string'
+                    ? parsed.summary
+                    : (typeof parsed.overview === 'string'
+                        ? parsed.overview
+                        : (typeof parsed.description === 'string' ? parsed.description : ''));
                 // 校验有效内容（R2）：summary 缺失或为空视为失败，进入冷却+熔断，
                 // 避免"扣了能量却没有产出"还被标记为已分析
-                if (!parsed || typeof parsed.summary !== 'string' || !parsed.summary.trim()) {
+                if (!rawSummary.trim()) {
                     throw new Error('AI 返回内容缺少有效 summary');
                 }
+                const tags = (Array.isArray(parsed.tags) ? parsed.tags : [])
+                    .map((t) => String(t).trim())
+                    .filter(Boolean);
+                const platforms = Array.from(new Set(
+                    (Array.isArray(parsed.platforms) ? parsed.platforms : [])
+                        .map((p) => {
+                            const norm = String(p).trim().toLowerCase();
+                            return AI_PLATFORM_ALIASES[norm] || norm;
+                        })
+                        .filter(Boolean)
+                ));
                 return {
-                    summary: parsed.summary.trim(),
-                    tags: (Array.isArray(parsed.tags) ? parsed.tags : []).map(t => String(t)),
-                    platforms: (Array.isArray(parsed.platforms) ? parsed.platforms : []).map(p => String(p)),
+                    summary: rawSummary.trim(),
+                    tags,
+                    platforms,
                 };
             }
             // 无法解析出 JSON 视为失败（R2），向上抛出，由调用方标记 analysisFailed 进入冷却

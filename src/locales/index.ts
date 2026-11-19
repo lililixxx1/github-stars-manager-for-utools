@@ -372,6 +372,19 @@ export const i18n = {
         cmdToggleViewMode: '切换卡片 / 列表视图',
         cmdToggleTheme: '切换明暗主题',
         cmdEmpty: '未找到匹配的命令或仓库',
+
+        // AI 分析结果提示与订阅管理优化
+        aiAnalyzeSuccess: 'AI 分析完成',
+        searchSubscriptionsPlaceholder: '搜索已订阅仓库...',
+        addSubscription: '添加订阅',
+        addSubscriptionTitle: '添加版本订阅',
+        searchReposToSubscribe: '搜索仓库名、别名或描述...',
+        noMatchingSubscriptions: '未找到匹配的订阅仓库',
+        allReposSubscribed: '所有仓库都已订阅',
+        noReleaseYet: '暂无版本',
+        openReleasesOnGithub: '在 GitHub 查看 Releases',
+        subscribedLabel: '已订阅',
+        subscriptionUnreadSummary: '{count} 个有未读',
     },
     en: {
         // Common
@@ -746,6 +759,19 @@ export const i18n = {
         cmdToggleViewMode: 'Toggle Card / List View',
         cmdToggleTheme: 'Toggle Light / Dark Theme',
         cmdEmpty: 'No matching commands or repositories',
+
+        // AI analysis success toast & Subscriptions optimization
+        aiAnalyzeSuccess: 'AI analysis complete',
+        searchSubscriptionsPlaceholder: 'Search subscribed repos...',
+        addSubscription: 'Add Subscription',
+        addSubscriptionTitle: 'Add Release Subscriptions',
+        searchReposToSubscribe: 'Search by name, alias, or description...',
+        noMatchingSubscriptions: 'No matching subscriptions',
+        allReposSubscribed: 'All repositories are already subscribed',
+        noReleaseYet: 'No release yet',
+        openReleasesOnGithub: 'View Releases on GitHub',
+        subscribedLabel: 'Subscribed',
+        subscriptionUnreadSummary: '{count} unread',
     },
 } as const;
 

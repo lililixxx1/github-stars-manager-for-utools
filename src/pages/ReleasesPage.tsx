@@ -1,9 +1,10 @@
 import { Suspense, lazy, useState, useEffect, useMemo, useCallback } from 'react';
-import { Box, Loader2, RefreshCw, Inbox, Bell, Star } from 'lucide-react';
+import { Bell, BellOff, Box, Check, ExternalLink, Inbox, Loader2, Plus, RefreshCw, Search, Star, X } from 'lucide-react';
 import { useStore } from '../stores/useStore';
 import { useProgressStore } from '../stores/useProgressStore';
 import { ReleaseCard } from '../components/ReleaseCard';
 import { EmptyState } from '../components/EmptyState';
+import { Modal } from '../components/Modal';
 
 const ReleaseDetail = lazy(() =>
     import('../components/ReleaseDetail').then((m) => ({ default: m.ReleaseDetail }))
@@ -12,6 +13,7 @@ import { Badge } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { toast } from '../components/Toast';
 import { PLATFORM_OPTIONS } from '../constants/platforms';
+import { getLanguageColor } from '../constants/languages';
 import { getPlatformIcon } from '../constants/platformIcons';
 import { releaseService } from '../services/releaseService';
 import { t } from '../locales';
@@ -25,6 +27,53 @@ type TabType = 'updates' | 'subscriptions';
 
 // 格式化 Star 数（复用全局紧凑数字格式化）
 export const formatStars = (count: number): string => formatCompactNumber(count);
+
+const SubAvatar: React.FC<{ avatarUrl?: string; login: string }> = ({ avatarUrl, login }) => {
+    const [failed, setFailed] = useState(false);
+
+    useEffect(() => {
+        setFailed(false);
+    }, [avatarUrl]);
+
+    if (!avatarUrl || failed) {
+        return (
+            <div
+                style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-surface-secondary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                }}
+            >
+                <Box size={16} style={{ color: 'var(--color-text-muted)' }} />
+            </div>
+        );
+    }
+
+    return (
+        <img
+            src={avatarUrl}
+            alt={login}
+            width={36}
+            height={36}
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailed(true)}
+            style={{
+                width: 36,
+                height: 36,
+                borderRadius: 8,
+                border: '1px solid var(--color-border)',
+                flexShrink: 0,
+            }}
+        />
+    );
+};
 
 export function ReleasesPage() {
     // 精确订阅（阶段2 性能重构）
@@ -60,6 +109,9 @@ export function ReleasesPage() {
         return releasesInitialTab || useStore.getState().settings.lastReleasesTab || 'updates';
     });
     const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+    const [subSearch, setSubSearch] = useState('');
+    const [showAddSubModal, setShowAddSubModal] = useState(false);
+    const [addSubSearch, setAddSubSearch] = useState('');
 
     useEffect(() => {
         if (releasesInitialTab) {
@@ -92,6 +144,11 @@ export function ReleasesPage() {
                 return true;
             }
 
+            if (showAddSubModal) {
+                setShowAddSubModal(false);
+                return true;
+            }
+
             if (showConfirmDialog) {
                 setShowConfirmDialog(false);
                 return true;
@@ -99,7 +156,7 @@ export function ReleasesPage() {
 
             return false;
         },
-        deps: [handleBack, selectedRelease, showConfirmDialog],
+        deps: [handleBack, selectedRelease, showAddSubModal, showConfirmDialog],
     });
 
     // 筛选版本（阶段3：useMemo 化 + 订阅单源，去除渲染期存储读）
@@ -137,6 +194,81 @@ export function ReleasesPage() {
     const subscribedRepos = useMemo(() => {
         return repositories.filter(r => subscribedRepoIds.has(r.id));
     }, [repositories, subscribedRepoIds]);
+
+    const unreadCount = useMemo(
+        () => releases.filter((r) => !r.isRead && subscribedRepoIds.has(r.repository.id)).length,
+        [releases, subscribedRepoIds]
+    );
+
+    const latestReleaseByRepoId = useMemo(() => {
+        const map = new Map<number, Release>();
+        for (const release of releases) {
+            const repoId = release.repository.id;
+            const ts = new Date(release.publishedAt || release.published_at || '').getTime() || 0;
+            const existing = map.get(repoId);
+            const existingTs = existing
+                ? (new Date(existing.publishedAt || existing.published_at || '').getTime() || 0)
+                : -Infinity;
+            if (!existing || ts > existingTs) {
+                map.set(repoId, release);
+            }
+        }
+        return map;
+    }, [releases]);
+
+    const unreadSubRepoCount = useMemo(
+        () => subscribedRepos.filter((repo) => {
+            const latest = latestReleaseByRepoId.get(repo.id);
+            return Boolean(latest && !latest.isRead);
+        }).length,
+        [subscribedRepos, latestReleaseByRepoId]
+    );
+
+    const filteredSubscribedRepos = useMemo(() => {
+        const q = subSearch.trim().toLowerCase();
+        const matched = q
+            ? subscribedRepos.filter((repo) =>
+                repo.fullName.toLowerCase().includes(q)
+                || (repo.alias || '').toLowerCase().includes(q)
+                || (repo.description || '').toLowerCase().includes(q)
+                || (repo.aiSummary || '').toLowerCase().includes(q)
+                || (repo.language || '').toLowerCase().includes(q)
+            )
+            : subscribedRepos;
+
+        return [...matched].sort((a, b) => {
+            const relA = latestReleaseByRepoId.get(a.id);
+            const relB = latestReleaseByRepoId.get(b.id);
+            const unreadA = relA && !relA.isRead ? 1 : 0;
+            const unreadB = relB && !relB.isRead ? 1 : 0;
+            if (unreadA !== unreadB) return unreadB - unreadA;
+
+            const tsA = new Date(relA?.publishedAt || relA?.published_at || a.pushedAt || '').getTime() || 0;
+            const tsB = new Date(relB?.publishedAt || relB?.published_at || b.pushedAt || '').getTime() || 0;
+            if (tsA !== tsB) return tsB - tsA;
+
+            return b.stargazersCount - a.stargazersCount;
+        });
+    }, [subscribedRepos, subSearch, latestReleaseByRepoId]);
+
+    const candidateSubscribeRepos = useMemo(() => {
+        const q = addSubSearch.trim().toLowerCase();
+        const matched = q
+            ? repositories.filter((repo) =>
+                repo.fullName.toLowerCase().includes(q)
+                || (repo.alias || '').toLowerCase().includes(q)
+                || (repo.description || '').toLowerCase().includes(q)
+                || (repo.aiSummary || '').toLowerCase().includes(q)
+            )
+            : repositories;
+
+        return [...matched].sort((a, b) => {
+            const subA = subscribedRepoIds.has(a.id) ? 1 : 0;
+            const subB = subscribedRepoIds.has(b.id) ? 1 : 0;
+            if (subA !== subB) return subA - subB;
+            return b.stargazersCount - a.stargazersCount;
+        });
+    }, [repositories, addSubSearch, subscribedRepoIds]);
 
     const handleCheckUpdates = async () => {
         // 先清上次残留错误：checkReleaseUpdates 在 guard 早退路径（checking/!token/无订阅）不触碰 error，
@@ -203,7 +335,7 @@ export function ReleasesPage() {
             />
 
             {/* 独立 Tab 栏：分段控件 */}
-            <div className="px-5 py-2.5 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
+            <div className="px-5 py-2.5 border-b border-[var(--color-border)] bg-[var(--color-surface)] flex items-center justify-between gap-2 flex-wrap">
                 <div className="segmented w-fit">
                     <button
                         type="button"
@@ -213,6 +345,11 @@ export function ReleasesPage() {
                         aria-pressed={activeTab === 'updates'}
                     >
                         {t('versionUpdates', lang)}
+                        {unreadCount > 0 && (
+                            <span className="ml-1.5 px-1.5 py-0.2 text-[11px] rounded-full bg-[var(--color-primary)] text-white">
+                                {unreadCount}
+                            </span>
+                        )}
                     </button>
                     <button
                         type="button"
@@ -227,6 +364,11 @@ export function ReleasesPage() {
                         )}
                     </button>
                 </div>
+                {releaseCheckStatus.lastCheckedAt && (
+                    <span className="text-[12px] text-[var(--color-text-muted)] shrink-0">
+                        {t('lastChecked', lang)}: {formatRelativeTime(releaseCheckStatus.lastCheckedAt)}
+                    </span>
+                )}
             </div>
 
             {/* 包含过滤器、统计信息以及主列表的滚动内容区 */}
@@ -341,21 +483,94 @@ export function ReleasesPage() {
                         )}
                     </div>
                 ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: subscribedRepos.length === 0 ? '100%' : undefined }}>
-                        {/* 订阅管理统计和操作 */}
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>
-                                {t('subscribedCount', lang, { count: subscribedRepos.length })}
-                            </span>
-                            {subscribedRepos.length > 0 && (
-                                <button
-                                    className="btn btn-ghost btn-sm"
-                                    style={{ color: 'var(--color-error-text)' }}
-                                    onClick={handleClearAll}
-                                >
-                                    {t('unsubscribeAll', lang)}
-                                </button>
-                            )}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minHeight: subscribedRepos.length === 0 ? '100%' : undefined }}>
+                        {/* 订阅管理操作栏与统计 */}
+                        <div className="flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <div className="relative flex-1 min-w-[180px] max-w-[300px]">
+                                    <Search
+                                        size={13}
+                                        style={{
+                                            position: 'absolute',
+                                            left: 10,
+                                            top: '50%',
+                                            transform: 'translateY(-50%)',
+                                            color: 'var(--color-text-muted)',
+                                        }}
+                                    />
+                                    <input
+                                        type="text"
+                                        className="input"
+                                        style={{ padding: '5px 28px 5px 30px', fontSize: 12 }}
+                                        value={subSearch}
+                                        onChange={(e) => setSubSearch(e.target.value)}
+                                        placeholder={t('searchSubscriptionsPlaceholder', lang)}
+                                    />
+                                    {subSearch && (
+                                        <button
+                                            type="button"
+                                            className="btn btn-ghost btn-sm"
+                                            style={{
+                                                position: 'absolute',
+                                                right: 4,
+                                                top: '50%',
+                                                transform: 'translateY(-50%)',
+                                                padding: 2,
+                                            }}
+                                            onClick={() => setSubSearch('')}
+                                            aria-label={t('clearFilter', lang)}
+                                        >
+                                            <X size={12} />
+                                        </button>
+                                    )}
+                                </div>
+
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <button
+                                        type="button"
+                                        className="btn btn-primary btn-sm"
+                                        onClick={() => {
+                                            setAddSubSearch('');
+                                            setShowAddSubModal(true);
+                                        }}
+                                    >
+                                        <Plus size={13} />
+                                        {t('addSubscription', lang)}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={handleCheckUpdates}
+                                        disabled={!token || subscribedRepos.length === 0 || releaseCheckStatus.checking}
+                                        title={!token ? t('tokenRequiredHint', lang) : subscribedRepos.length === 0 ? t('subscribeRequiredHint', lang) : undefined}
+                                    >
+                                        <RefreshCw size={13} className={releaseCheckStatus.checking ? 'animate-spin' : ''} />
+                                        {releaseCheckStatus.checking ? t('checkingUpdates', lang) : t('checkUpdates', lang)}
+                                    </button>
+                                    {subscribedRepos.length > 0 && (
+                                        <button
+                                            type="button"
+                                            className="btn btn-ghost btn-sm"
+                                            style={{ color: 'var(--color-error-text)' }}
+                                            onClick={handleClearAll}
+                                        >
+                                            {t('unsubscribeAll', lang)}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 text-[12px] text-[var(--color-text-secondary)]">
+                                <span>{t('subscribedCount', lang, { count: subscribedRepos.length })}</span>
+                                {unreadSubRepoCount > 0 && (
+                                    <>
+                                        <span>·</span>
+                                        <span style={{ color: 'var(--color-primary)', fontWeight: 500 }}>
+                                            {t('subscriptionUnreadSummary', lang, { count: unreadSubRepoCount })}
+                                        </span>
+                                    </>
+                                )}
+                            </div>
                         </div>
 
                         {/* 订阅管理列表 */}
@@ -366,65 +581,172 @@ export function ReleasesPage() {
                                     title={t('noSubscriptions', lang)}
                                     description={t('noSubscriptionsHint', lang)}
                                     action={
-                                        <button className="btn btn-primary" onClick={() => setCurrentPage('home')}>
-                                            {t('browseRepos', lang)}
+                                        <div className="flex items-center gap-2 justify-center">
+                                            <button
+                                                type="button"
+                                                className="btn btn-primary"
+                                                onClick={() => {
+                                                    setAddSubSearch('');
+                                                    setShowAddSubModal(true);
+                                                }}
+                                            >
+                                                <Plus size={14} />
+                                                {t('addSubscription', lang)}
+                                            </button>
+                                            <button type="button" className="btn btn-secondary" onClick={() => setCurrentPage('home')}>
+                                                {t('browseRepos', lang)}
+                                            </button>
+                                        </div>
+                                    }
+                                />
+                            </div>
+                        ) : filteredSubscribedRepos.length === 0 ? (
+                            <div style={{ flex: 1 }}>
+                                <EmptyState
+                                    icon={<Search size={40} strokeWidth={1.5} />}
+                                    title={t('noMatchingSubscriptions', lang)}
+                                    action={
+                                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSubSearch('')}>
+                                            {t('clearFilter', lang)}
                                         </button>
                                     }
                                 />
                             </div>
                         ) : (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                                {subscribedRepos.map((repo) => (
-                                    <div
-                                        key={repo.id}
-                                        className="card card-compact card-interactive"
-                                        style={{ display: 'flex', alignItems: 'center' }}
-                                        onClick={() => {
-                                            setSelectedRepoId(repo.id);
-                                            setCurrentPage('detail');
-                                        }}
-                                    >
-                                        <img
-                                            src={repo.owner.avatarUrl}
-                                            alt={repo.owner.login}
-                                            width={32}
-                                            height={32}
-                                            loading="lazy"
-                                            decoding="async"
-                                            style={{ width: 32, height: 32, borderRadius: 16, marginRight: 12, flexShrink: 0 }}
-                                        />
-                                        <div style={{ flex: 1, minWidth: 0 }}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                <Box size={14} style={{ color: 'var(--color-text-muted)' }} />
-                                                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                                                    {repo.alias || repo.fullName}
-                                                </span>
-                                                {repo.alias && (
-                                                    <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>({repo.fullName})</span>
-                                                )}
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                                                {repo.language && <span className="tag" style={{ padding: '0 6px', fontSize: 11 }}>{repo.language}</span>}
-                                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                                                    <Star size={12} style={{ color: 'var(--color-accent)' }} />
-                                                    {formatStars(repo.stargazersCount)}
-                                                </span>
-                                                <span>·</span>
-                                                <span>{t('lastUpdated', lang)}: {formatRelativeTime(repo.pushedAt)}</span>
-                                            </div>
-                                        </div>
-                                        <button
-                                            className="btn btn-secondary btn-sm"
-                                            style={{ color: 'var(--color-error-text)' }}
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleUnsubscribe(repo);
+                                {filteredSubscribedRepos.map((repo) => {
+                                    const latestRelease = latestReleaseByRepoId.get(repo.id);
+                                    const langColor = repo.language ? getLanguageColor(repo.language) : null;
+                                    const releaseTime = latestRelease
+                                        ? (latestRelease.publishedAt || latestRelease.published_at || '')
+                                        : '';
+
+                                    return (
+                                        <div
+                                            key={repo.id}
+                                            className="card card-compact card-interactive"
+                                            style={{ display: 'flex', alignItems: 'center', gap: 12 }}
+                                            onClick={() => {
+                                                setSelectedRepoId(repo.id);
+                                                setCurrentPage('detail');
                                             }}
                                         >
-                                            {t('unsubscribe', lang)}
-                                        </button>
-                                    </div>
-                                ))}
+                                            <SubAvatar avatarUrl={repo.owner.avatarUrl} login={repo.owner.login} />
+
+                                            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
+                                                    <span style={{
+                                                        fontSize: 14,
+                                                        fontWeight: 600,
+                                                        color: 'var(--color-text-primary)',
+                                                        overflow: 'hidden',
+                                                        textOverflow: 'ellipsis',
+                                                        whiteSpace: 'nowrap',
+                                                    }}>
+                                                        {repo.alias || repo.name}
+                                                    </span>
+                                                    <span style={{
+                                                        fontSize: 12,
+                                                        color: 'var(--color-text-muted)',
+                                                        overflow: 'hidden',
+                                                        textOverflow: 'ellipsis',
+                                                        whiteSpace: 'nowrap',
+                                                    }}>
+                                                        {repo.fullName}
+                                                    </span>
+                                                    {latestRelease ? (
+                                                        <button
+                                                            type="button"
+                                                            className="tag"
+                                                            style={{
+                                                                padding: '1px 7px',
+                                                                fontSize: 11,
+                                                                fontFamily: 'monospace',
+                                                                color: 'var(--color-primary-dark)',
+                                                                borderColor: !latestRelease.isRead
+                                                                    ? 'var(--color-primary)'
+                                                                    : 'color-mix(in srgb, var(--color-primary) 30%, transparent)',
+                                                                background: !latestRelease.isRead
+                                                                    ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)'
+                                                                    : undefined,
+                                                                gap: 5,
+                                                            }}
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                handleReleaseClick(latestRelease);
+                                                            }}
+                                                            title={latestRelease.name || latestRelease.tagName || latestRelease.tag_name}
+                                                        >
+                                                            {!latestRelease.isRead && <span className="unread-dot" />}
+                                                            <span>{latestRelease.tagName || latestRelease.tag_name}</span>
+                                                        </button>
+                                                    ) : (
+                                                        <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+                                                            {t('noReleaseYet', lang)}
+                                                        </span>
+                                                    )}
+                                                </div>
+
+                                                <p style={{
+                                                    fontSize: 12,
+                                                    color: 'var(--color-text-secondary)',
+                                                    margin: 0,
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                }}>
+                                                    {repo.aiSummary || repo.description || t('noDescription', lang)}
+                                                </p>
+
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: 'var(--color-text-muted)', flexWrap: 'wrap' }}>
+                                                    {repo.language && langColor && (
+                                                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--color-text-secondary)' }}>
+                                                            <span className="lang-dot" style={{ width: 8, height: 8, backgroundColor: langColor }} />
+                                                            {repo.language}
+                                                        </span>
+                                                    )}
+                                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                                        <Star size={12} style={{ color: 'var(--color-accent)' }} />
+                                                        {formatStars(repo.stargazersCount)}
+                                                    </span>
+                                                    <span>·</span>
+                                                    <span>
+                                                        {latestRelease && releaseTime
+                                                            ? `${t('publishedAt', lang)}: ${formatRelativeTime(releaseTime)}`
+                                                            : `${t('repoPushedAt', lang)}: ${formatRelativeTime(repo.pushedAt)}`}
+                                                    </span>
+                                                </div>
+                                            </div>
+
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm btn-icon-sm"
+                                                    title={t('openReleasesOnGithub', lang)}
+                                                    aria-label={t('openReleasesOnGithub', lang)}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        window.githubStarsAPI.openExternal(`${repo.htmlUrl}/releases`);
+                                                    }}
+                                                >
+                                                    <ExternalLink size={14} />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-secondary btn-sm"
+                                                    style={{ color: 'var(--color-error-text)' }}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleUnsubscribe(repo);
+                                                    }}
+                                                >
+                                                    <BellOff size={13} />
+                                                    {t('unsubscribe', lang)}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                             </div>
                         )}
                     </div>
@@ -462,6 +784,150 @@ export function ReleasesPage() {
                 onConfirm={confirmClearAll}
                 onCancel={() => setShowConfirmDialog(false)}
             />
+
+            {/* 添加版本订阅弹窗 */}
+            <Modal
+                isOpen={showAddSubModal}
+                onClose={() => setShowAddSubModal(false)}
+                title={t('addSubscriptionTitle', lang)}
+                width={560}
+            >
+                <div className="flex flex-col gap-3">
+                    <div className="relative">
+                        <Search
+                            size={14}
+                            style={{
+                                position: 'absolute',
+                                left: 10,
+                                top: '50%',
+                                transform: 'translateY(-50%)',
+                                color: 'var(--color-text-muted)',
+                            }}
+                        />
+                        <input
+                            type="text"
+                            className="input"
+                            style={{ padding: '7px 30px 7px 32px', fontSize: 13 }}
+                            value={addSubSearch}
+                            onChange={(e) => setAddSubSearch(e.target.value)}
+                            placeholder={t('searchReposToSubscribe', lang)}
+                        />
+                        {addSubSearch && (
+                            <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                style={{
+                                    position: 'absolute',
+                                    right: 4,
+                                    top: '50%',
+                                    transform: 'translateY(-50%)',
+                                    padding: 2,
+                                }}
+                                onClick={() => setAddSubSearch('')}
+                                aria-label={t('clearFilter', lang)}
+                            >
+                                <X size={13} />
+                            </button>
+                        )}
+                    </div>
+
+                    {repositories.length === 0 ? (
+                        <p className="text-[13px] text-[var(--color-text-muted)] text-center py-6">
+                            {t('noRepos', lang)}
+                        </p>
+                    ) : candidateSubscribeRepos.length === 0 ? (
+                        <p className="text-[13px] text-[var(--color-text-muted)] text-center py-6">
+                            {t('noResults', lang)}
+                        </p>
+                    ) : (
+                        <div style={{ maxHeight: 340, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {candidateSubscribeRepos.slice(0, 60).map((repo) => {
+                                const isSub = subscribedRepoIds.has(repo.id);
+                                const langColor = repo.language ? getLanguageColor(repo.language) : null;
+                                return (
+                                    <div
+                                        key={repo.id}
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 10,
+                                            padding: '8px 10px',
+                                            borderRadius: 'var(--radius-md)',
+                                            border: '1px solid var(--color-border)',
+                                            background: 'var(--color-surface-secondary)',
+                                        }}
+                                    >
+                                        <SubAvatar avatarUrl={repo.owner.avatarUrl} login={repo.owner.login} />
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                                                <span style={{
+                                                    fontSize: 13,
+                                                    fontWeight: 600,
+                                                    color: 'var(--color-text-primary)',
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                }}>
+                                                    {repo.alias || repo.name}
+                                                </span>
+                                                <span style={{
+                                                    fontSize: 11,
+                                                    color: 'var(--color-text-muted)',
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                }}>
+                                                    {repo.fullName}
+                                                </span>
+                                            </div>
+                                            <p style={{
+                                                fontSize: 12,
+                                                color: 'var(--color-text-secondary)',
+                                                margin: '2px 0',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap',
+                                            }}>
+                                                {repo.aiSummary || repo.description || t('noDescription', lang)}
+                                            </p>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--color-text-muted)' }}>
+                                                {repo.language && langColor && (
+                                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                                        <span className="lang-dot" style={{ width: 7, height: 7, backgroundColor: langColor }} />
+                                                        {repo.language}
+                                                    </span>
+                                                )}
+                                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                                                    <Star size={11} style={{ color: 'var(--color-accent)' }} />
+                                                    {formatStars(repo.stargazersCount)}
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            className={`btn btn-sm ${isSub ? 'btn-secondary' : 'btn-primary'}`}
+                                            style={{ flexShrink: 0 }}
+                                            onClick={() => toggleSubscription(repo.id)}
+                                        >
+                                            {isSub ? (
+                                                <>
+                                                    <Check size={13} />
+                                                    {t('subscribedLabel', lang)}
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Plus size={13} />
+                                                    {t('subscribe', lang)}
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            </Modal>
         </div>
     );
 }

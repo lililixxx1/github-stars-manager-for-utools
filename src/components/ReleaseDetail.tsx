@@ -5,7 +5,7 @@ import { aiService } from '../services/aiService';
 import { t } from '../locales';
 import type { Language } from '../locales';
 import { Languages, Loader2, AlertCircle, RefreshCw, Check } from 'lucide-react';
-import { renderMarkdown } from '../utils/markdown.tsx';
+import { MarkdownView } from './MarkdownView';
 import { Modal } from './Modal';
 
 interface ReleaseDetailProps {
@@ -104,10 +104,6 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel, aiThinki
 
     // 显示的内容
     const displayContent = (showTranslated && translatedContent) ? translatedContent : release.body;
-    const renderedMarkdown = useMemo(
-        () => (displayContent ? renderMarkdown(displayContent) : null),
-        [displayContent]
-    );
 
     // 判断内容是否已是目标语言
     // 🆕 v1.6.0 使用 useMemo 优化中文检测
@@ -232,7 +228,7 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel, aiThinki
                         {t('releaseNotes', lang)}
                     </h3>
                     <div style={{ backgroundColor: 'var(--color-surface)', borderRadius: '8px', lineHeight: 1.6 }}>
-                        {renderedMarkdown}
+                        <MarkdownView content={displayContent} repoFullName={release.repository.fullName} />
                     </div>
                 </div>
             ) : (

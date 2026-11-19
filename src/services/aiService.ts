@@ -187,8 +187,9 @@ export const aiService = {
             return null;
         }
 
-        if (!readme) {
-            // 无 README 属于"无可分析内容"，用描述兜底并视为完成，避免反复重试
+        const hasFallbackMeta = Boolean(repo.description?.trim()) || (Array.isArray(repo.topics) && repo.topics.length > 0);
+        if (!readme && !hasFallbackMeta) {
+            // 无 README 且无描述/Topics 属于"无可分析内容"，用描述兜底并视为完成，避免反复重试
             return {
                 summary: repo.description || (language === 'zh' ? '暂无描述' : 'No description'),
                 tags: repo.topics || [],
@@ -198,11 +199,12 @@ export const aiService = {
 
         // analyzeRepo 失败时会抛错（额度耗尽、网络异常、返回不可解析等，R2），由调用方处理
         return await window.githubStarsAPI.analyzeRepo(
-            readme,
+            readme || '',
             {
                 fullName: repo.fullName,
                 description: repo.description,
                 language: repo.language,
+                topics: repo.topics,
             },
             language,
             model,
