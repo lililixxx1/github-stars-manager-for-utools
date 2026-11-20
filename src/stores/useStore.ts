@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Repository, PageName, SearchFilter, Settings, Tag, RepositoryNote, ViewMode, SortBy, SortOrder, Release, ReleaseFilter } from '../types';
+import type { Repository, PageName, SearchFilter, Settings, Tag, RepositoryNote, ViewMode, SortBy, SortOrder, Release, ReleaseFilter, DetailTab } from '../types';
 import { storageService } from '../services/storageService';
 import { githubService } from '../services/githubService';
 import { aiService } from '../services/aiService';
@@ -64,7 +64,7 @@ interface AppState {
     setSortPreference: (updates: { sortBy?: SortBy; sortOrder?: SortOrder }) => void;
 
     // 同步（进度状态 syncStatus/syncProgress/syncError 已迁至 useProgressStore，避免双源）
-    syncRepositories: () => Promise<JobTriggerResult>; // 🆕 v1.6.3 同步方法移至 store（支持全局调用）
+    syncRepositories: (options?: { forceFull?: boolean }) => Promise<JobTriggerResult>; // 🆕 v1.6.3 同步方法移至 store（支持全局调用）
 
     // 设置
     settings: Partial<Settings>;
@@ -105,6 +105,7 @@ interface AppState {
     currentNote: RepositoryNote | null;
     noteRepoIds: Set<number>;
     noteContentByRepoId: Map<number, string>;
+    noteByRepoId: Map<number, RepositoryNote>;
     loadNoteIndex: () => void;
     hasRepoNote: (repoId: number) => boolean;
     loadNote: (repoId: number) => void;
@@ -143,8 +144,10 @@ interface AppState {
     toggleSubscription: (repoId: number) => void;     // 切换订阅状态（v1.6.0 乐观更新）
     clearAllSubscriptions: () => void;                // 清空所有订阅
     togglingSubscriptions: Set<number>;               // 🆕 v1.6.0 正在切换订阅的仓库 ID（防竞态）
-    releasesInitialTab?: 'updates' | 'subscriptions'; // 🆕 v1.5.0 设置页跳转到版本页时的初始 Tab
+    releasesInitialTab?: 'updates' | 'subscriptions'; // 兼容旧引用
     setReleasesInitialTab: (tab?: 'updates' | 'subscriptions') => void;
+    detailInitialTab?: DetailTab;
+    setDetailInitialTab: (tab?: DetailTab) => void;
 }
 
 const defaultFilter: SearchFilter = {
@@ -155,6 +158,7 @@ const defaultFilter: SearchFilter = {
     aiTags: [],
     customTags: [],
     platforms: [],  // 🆕 v1.3.0
+    invertFilter: false,
     hasReleases: null,
     hasNotes: null,
     hasAlias: null,
@@ -168,6 +172,9 @@ const defaultSettings: Partial<Settings> = {
     itemsPerPage: 20,
     language: 'zh',
     syncInterval: 24,
+    syncMode: 'smart',
+    autoSyncOnOpen: false,
+    fullSyncIntervalDays: 7,
     aiConcurrency: 1,
     defaultSortBy: 'stars',
     defaultSortOrder: 'desc',
@@ -187,6 +194,8 @@ export const useStore = create<AppState>((set, get) => ({
     setCurrentPage: (page) => set({ currentPage: page }),
     releasesInitialTab: undefined,
     setReleasesInitialTab: (tab) => set({ releasesInitialTab: tab }),
+    detailInitialTab: undefined,
+    setDetailInitialTab: (tab) => set({ detailInitialTab: tab }),
 
     // 仓库列表
     repositories: [],
@@ -254,14 +263,15 @@ export const useStore = create<AppState>((set, get) => ({
         });
     },
 
-    // 🆕 v1.6.3 同步方法移至 store（支持从任意页面触发）
-    syncRepositories: async () => {
+    // 🆕 v1.6.3 同步方法移至 store（支持从任意页面触发 + 可配置同步策略）
+    syncRepositories: async (options) => {
         const { token, settings, repositories } = get();
         const progress = useProgressStore.getState();
 
         logger.log('[syncRepositories] 开始同步检查', {
             hasToken: !!token,
             syncStatus: progress.syncStatus,
+            options,
         });
 
         if (!token) return 'no-token';
@@ -279,12 +289,24 @@ export const useStore = create<AppState>((set, get) => ({
             clearPendingSyncIdle();
             useProgressStore.getState().setSyncStatus('syncing');
             useProgressStore.getState().setSyncProgress({ current: 0, total: 0 });
+            useProgressStore.getState().setLastSyncSummary(null);
 
             try {
                 const syncState = storageService.getSyncState();
-                const result = await githubService.syncRepos(token, repositories, syncState, (current, total) => {
-                    useProgressStore.getState().setSyncProgress({ current, total });
-                });
+                const syncOptions = {
+                    mode: settings.syncMode || 'smart',
+                    forceFull: options?.forceFull,
+                    fullSyncIntervalDays: settings.fullSyncIntervalDays ?? 7,
+                };
+                const result = await githubService.syncRepos(
+                    token,
+                    repositories,
+                    syncState,
+                    (current, total) => {
+                        useProgressStore.getState().setSyncProgress({ current, total });
+                    },
+                    syncOptions
+                );
 
                 logger.log('[Sync] 完成同步', {
                     mode: result.mode,
@@ -304,11 +326,27 @@ export const useStore = create<AppState>((set, get) => ({
                 }
 
                 // 订阅单源：合并时从内存 subscribedRepoIds 取（loadRepositories/toggle 已与存储同步）
-                const subscriptionIdList = Array.from(get().subscribedRepoIds);
+                const currentSubIds = get().subscribedRepoIds;
+                const subscriptionIdList = Array.from(currentSubIds);
 
                 const mergedRepos = result.mode === 'full'
                     ? mergeFullSyncedRepositories(result.repos, currentRepos, subscriptionIdList)
                     : mergeIncrementalRepositories(result.repos, currentRepos, subscriptionIdList);
+
+                const prevIds = new Set(currentRepos.map((repo) => repo.id));
+                const nextIds = new Set(mergedRepos.map((repo) => repo.id));
+                const added = mergedRepos.reduce((acc, repo) => (prevIds.has(repo.id) ? acc : acc + 1), 0);
+                const removed = currentRepos.reduce((acc, repo) => (nextIds.has(repo.id) ? acc : acc + 1), 0);
+
+                // 全量同步时清理已取消 Star 仓库的残留订阅，避免幽灵订阅累积
+                let nextSubscribedRepoIds = currentSubIds;
+                if (result.mode === 'full') {
+                    const prunedSubs = new Set(Array.from(currentSubIds).filter((id) => nextIds.has(id)));
+                    if (prunedSubs.size !== currentSubIds.size) {
+                        storageService.setReleaseSubscriptions(prunedSubs);
+                        nextSubscribedRepoIds = prunedSubs;
+                    }
+                }
 
                 const nextSyncState = githubService.buildSyncState(mergedRepos, syncState, result.mode);
                 // F6：合并基座取最新 settings——同步是长任务，用开始时的闭包快照会
@@ -323,10 +361,17 @@ export const useStore = create<AppState>((set, get) => ({
 
                 set({
                     repositories: mergedRepos,
+                    subscribedRepoIds: nextSubscribedRepoIds,
                     ...buildNoteIndex(mergedRepos),
                     settings: nextSettings,
                 });
                 useProgressStore.getState().setSyncError(null);
+                useProgressStore.getState().setLastSyncSummary({
+                    mode: result.mode,
+                    added,
+                    removed,
+                    total: mergedRepos.length,
+                });
                 useProgressStore.getState().setSyncStatus('completed');
                 useProgressStore.getState().setSyncProgress({
                     current: result.processedCount || mergedRepos.length,
@@ -629,6 +674,7 @@ export const useStore = create<AppState>((set, get) => ({
     currentNote: null,
     noteRepoIds: new Set<number>(),
     noteContentByRepoId: new Map<number, string>(),
+    noteByRepoId: new Map<number, RepositoryNote>(),
     loadNoteIndex: () => {
         const { repositories } = get();
         set(buildNoteIndex(repositories));
@@ -643,9 +689,11 @@ export const useStore = create<AppState>((set, get) => ({
         set((state) => {
             const noteRepoIds = new Set(state.noteRepoIds);
             const noteContentByRepoId = new Map(state.noteContentByRepoId);
+            const noteByRepoId = new Map(state.noteByRepoId);
             noteRepoIds.add(repoId);
             noteContentByRepoId.set(repoId, note.content || '');
-            return { currentNote: note, noteRepoIds, noteContentByRepoId };
+            noteByRepoId.set(repoId, note);
+            return { currentNote: note, noteRepoIds, noteContentByRepoId, noteByRepoId };
         });
         return note;
     },
@@ -654,9 +702,11 @@ export const useStore = create<AppState>((set, get) => ({
         set((state) => {
             const noteRepoIds = new Set(state.noteRepoIds);
             const noteContentByRepoId = new Map(state.noteContentByRepoId);
+            const noteByRepoId = new Map(state.noteByRepoId);
             noteRepoIds.delete(repoId);
             noteContentByRepoId.delete(repoId);
-            return { currentNote: null, noteRepoIds, noteContentByRepoId };
+            noteByRepoId.delete(repoId);
+            return { currentNote: null, noteRepoIds, noteContentByRepoId, noteByRepoId };
         });
     },
 

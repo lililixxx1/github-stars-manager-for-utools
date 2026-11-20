@@ -62,21 +62,38 @@ export const createFilteredReposPipeline = (
         }
 
         // 智能视图筛选
-        result = createFilterBySmartView(filter.smartView, context)(result);
+        const baseResult = createFilterBySmartView(filter.smartView, context)(result);
 
+        const hasFacetFilter = Boolean(
+            (filter.languages && filter.languages.length > 0)
+            || (filter.customTags && filter.customTags.length > 0)
+            || (filter.platforms && filter.platforms.length > 0)
+            || filter.hasNotes !== null
+            || filter.hasAlias !== null
+            || filter.hasReleases !== null
+        );
+
+        let facetResult = baseResult;
         // 语言筛选
-        result = createFilterByLanguages(filter.languages)(result);
+        facetResult = createFilterByLanguages(filter.languages)(facetResult);
 
         // 自定义标签筛选
-        result = createFilterByTags(filter.customTags)(result);
+        facetResult = createFilterByTags(filter.customTags)(facetResult);
 
         // 平台筛选
-        result = createFilterByPlatforms(filter.platforms)(result);
+        facetResult = createFilterByPlatforms(filter.platforms)(facetResult);
 
         // 条件筛选
-        result = createFilterByNotes(filter.hasNotes, context)(result);
-        result = createFilterByAlias(filter.hasAlias)(result);
-        result = createFilterBySubscription(filter.hasReleases)(result);
+        facetResult = createFilterByNotes(filter.hasNotes, context)(facetResult);
+        facetResult = createFilterByAlias(filter.hasAlias)(facetResult);
+        facetResult = createFilterBySubscription(filter.hasReleases)(facetResult);
+
+        if (filter.invertFilter && hasFacetFilter) {
+            const matchedIds = new Set(facetResult.map((repo) => repo.id));
+            result = baseResult.filter((repo) => !matchedIds.has(repo.id));
+        } else {
+            result = facetResult;
+        }
 
         // 3. 关键词搜索 + 相关度计算（仅在有关键词时）
         if (keywords.length > 0) {

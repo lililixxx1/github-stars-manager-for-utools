@@ -12,6 +12,7 @@ interface ReleaseDetailProps {
     release: Release;
     lang: Language;
     onClose: () => void;
+    onOpenRepo?: () => void;
     token?: string;        // 🆕 v1.6.0 用于翻译
     aiModel?: string;      // 🆕 v1.6.0 AI 模型
     aiThinking?: boolean;  // 🆕 v1.8.0 深度思考模式（false = 发 reasoning_effort:'none' 快速模式）
@@ -19,7 +20,7 @@ interface ReleaseDetailProps {
 
 type TranslationState = 'idle' | 'translating' | 'success' | 'error';
 
-export function ReleaseDetail({ release, lang, onClose, token, aiModel, aiThinking }: ReleaseDetailProps) {
+export function ReleaseDetail({ release, lang, onClose, onOpenRepo, token, aiModel, aiThinking }: ReleaseDetailProps) {
     // 支持标准化字段名和 GitHub API 原始字段名
     const htmlUrl = release.htmlUrl || release.html_url;
     const tagName = release.tagName || release.tag_name;
@@ -162,9 +163,23 @@ export function ReleaseDetail({ release, lang, onClose, token, aiModel, aiThinki
         >
             {/* 原头部副行：仓库全名 | 发布时间 + 翻译状态 Badge */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                <p style={{ fontSize: '14px', color: 'var(--color-text-secondary)', margin: 0 }}>
-                    {release.repository.fullName}
-                </p>
+                {onOpenRepo ? (
+                    <button
+                        type="button"
+                        className="link"
+                        style={{ fontSize: '14px', border: 'none', background: 'none', padding: 0 }}
+                        onClick={() => {
+                            onClose();
+                            onOpenRepo();
+                        }}
+                    >
+                        {release.repository.fullName}
+                    </button>
+                ) : (
+                    <p style={{ fontSize: '14px', color: 'var(--color-text-secondary)', margin: 0 }}>
+                        {release.repository.fullName}
+                    </p>
+                )}
                 <span style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>|</span>
                 <span style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
                     {t('publishedAt', lang)}: {releaseService.formatDate(publishedAt || '', lang)}

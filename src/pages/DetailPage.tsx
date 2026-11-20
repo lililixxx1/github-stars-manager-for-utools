@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../stores/useStore';
 import { aiService } from '../services/aiService';
+import { normalizeRepoRelease, releaseService } from '../services/releaseService';
+import type { DetailTab, Release } from '../types';
 import { t } from '../locales';
 import { TagBadge } from '../components/TagBadge';
 import { TagChip } from '../components/TagChip';
@@ -35,18 +37,26 @@ import {
     FileText,
     Tag,
     Copy,
+    ChevronDown,
     ChevronLeft,
     ChevronRight,
+    Download,
     Globe,
     BookOpen,
     Box,
     Clock,
+    Package,
+    RefreshCw,
+    Languages,
 } from 'lucide-react';
 
-type DetailTab = 'overview' | 'readme' | 'notes';
+const ReleaseDetail = lazy(() =>
+    import('../components/ReleaseDetail').then((m) => ({ default: m.ReleaseDetail }))
+);
 
-/** 模块级 README 缓存（避免同会话切回重复请求 GitHub API） */
+/** 模块级 README 与 Release 缓存（避免同会话切回重复请求 GitHub API） */
 const readmeCache = new Map<number, string | null>();
+const repoReleasesCache = new Map<number, Release[]>();
 
 const QUICK_TAG_COLORS = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
 
@@ -81,10 +91,12 @@ export const DetailPage: React.FC = () => {
     const saveNote = useStore((state) => state.saveNote);
     const deleteNote = useStore((state) => state.deleteNote);
     const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
+    const detailInitialTab = useStore((state) => state.detailInitialTab);
+    const setDetailInitialTab = useStore((state) => state.setDetailInitialTab);
 
     const lang = (settings.language || 'zh') as 'zh' | 'en';
 
-    const [activeTab, setActiveTab] = useState<DetailTab>('overview');
+    const [activeTab, setActiveTab] = useState<DetailTab>(() => detailInitialTab || 'overview');
     const [analyzing, setAnalyzing] = useState(false);
     const [editingAlias, setEditingAlias] = useState(false);
     const [aliasValue, setAliasValue] = useState('');
@@ -99,6 +111,19 @@ export const DetailPage: React.FC = () => {
     // README 状态
     const [readmeContent, setReadmeContent] = useState<string | null>(null);
     const [readmeLoading, setReadmeLoading] = useState(false);
+
+    // Release 列表状态
+    const [repoReleases, setRepoReleases] = useState<Release[]>([]);
+    const [releasesLoading, setReleasesLoading] = useState(false);
+    const [releasesError, setReleasesError] = useState<string | null>(null);
+    const [selectedDetailRelease, setSelectedDetailRelease] = useState<Release | null>(null);
+
+    useEffect(() => {
+        if (detailInitialTab) {
+            setActiveTab(detailInitialTab);
+            setDetailInitialTab(undefined);
+        }
+    }, [detailInitialTab, setDetailInitialTab]);
 
     // 列表内上一个 / 下一个定位
     const filteredRepos = useMemo(
@@ -121,6 +146,8 @@ export const DetailPage: React.FC = () => {
         setShowTagSelector(false);
         setShowDeleteConfirm(false);
         setShowReanalyzeConfirm(false);
+        setSelectedDetailRelease(null);
+        setReleasesError(null);
         setAvatarError(false);
     }, [selectedRepoId, loadNote]);
 
@@ -161,6 +188,91 @@ export const DetailPage: React.FC = () => {
             cancelled = true;
         };
     }, [activeTab, repo, token]);
+
+    // 加载当前仓库 Releases（切到 Release tab 或切换仓库时按需拉取）
+    const fetchRepoReleases = useCallback(async (forceRefresh = false) => {
+        if (!repo) return;
+        if (!forceRefresh && repoReleasesCache.has(repo.id)) {
+            setRepoReleases(repoReleasesCache.get(repo.id) ?? []);
+            setReleasesLoading(false);
+            setReleasesError(null);
+            return;
+        }
+
+        setReleasesLoading(true);
+        setReleasesError(null);
+        try {
+            const rawList = await window.githubStarsAPI.getRepoReleases(
+                repo.owner.login,
+                repo.name,
+                token || '',
+                1,
+                15
+            );
+            const normalized = (Array.isArray(rawList) ? rawList : [])
+                .filter((item) => !item?.draft)
+                .map((item) =>
+                    normalizeRepoRelease(item, {
+                        id: repo.id,
+                        fullName: repo.fullName,
+                        name: repo.name,
+                    })
+                );
+            repoReleasesCache.set(repo.id, normalized);
+            setRepoReleases(normalized);
+        } catch (error) {
+            setReleasesError(error instanceof Error ? error.message : t('errorFetchReposFailed', lang));
+            setRepoReleases([]);
+        } finally {
+            setReleasesLoading(false);
+        }
+    }, [lang, repo, token]);
+
+    useEffect(() => {
+        if (activeTab !== 'releases' || !repo) return;
+        if (repoReleasesCache.has(repo.id)) {
+            setRepoReleases(repoReleasesCache.get(repo.id) ?? []);
+            setReleasesLoading(false);
+            setReleasesError(null);
+            return;
+        }
+
+        let cancelled = false;
+        setReleasesLoading(true);
+        setReleasesError(null);
+
+        window.githubStarsAPI
+            .getRepoReleases(repo.owner.login, repo.name, token || '', 1, 15)
+            .then((rawList) => {
+                if (cancelled) return;
+                const normalized = (Array.isArray(rawList) ? rawList : [])
+                    .filter((item) => !item?.draft)
+                    .map((item) =>
+                        normalizeRepoRelease(item, {
+                            id: repo.id,
+                            fullName: repo.fullName,
+                            name: repo.name,
+                        })
+                    );
+                repoReleasesCache.set(repo.id, normalized);
+                setRepoReleases(normalized);
+            })
+            .catch((error) => {
+                if (!cancelled) {
+                    setReleasesError(error instanceof Error ? error.message : t('errorFetchReposFailed', lang));
+                    setRepoReleases([]);
+                }
+            })
+            .finally(() => {
+                if (!cancelled) {
+                    setReleasesLoading(false);
+                }
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [activeTab, lang, repo, token]);
 
     // 幽灵详情页兜底
     useEffect(() => {
@@ -219,6 +331,10 @@ export const DetailPage: React.FC = () => {
     ]);
 
     const consumeDetailBackState = useCallback(() => {
+        if (selectedDetailRelease) {
+            setSelectedDetailRelease(null);
+            return true;
+        }
         if (showDeleteConfirm) {
             setShowDeleteConfirm(false);
             return true;
@@ -242,7 +358,7 @@ export const DetailPage: React.FC = () => {
             return true;
         }
         return false;
-    }, [editingAlias, editingNote, showDeleteConfirm, showReanalyzeConfirm, showTagSelector]);
+    }, [editingAlias, editingNote, selectedDetailRelease, showDeleteConfirm, showReanalyzeConfirm, showTagSelector]);
 
     useBackShortcut({
         enabled: !!repo,
@@ -489,19 +605,6 @@ export const DetailPage: React.FC = () => {
                     {isSubscribed ? <BellOff size={14} /> : <Bell size={14} />}
                     {isSubscribed ? t('unsubscribe', lang) : t('subscribe', lang)}
                 </button>
-
-                {isSubscribed && (
-                    <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        style={{ flexShrink: 0 }}
-                        onClick={() => setCurrentPage('releases')}
-                        title={t('viewReleases', lang)}
-                    >
-                        <FileText size={14} />
-                        {t('viewReleases', lang)}
-                    </button>
-                )}
 
                 <button
                     type="button"
@@ -770,6 +873,16 @@ export const DetailPage: React.FC = () => {
                                     background: 'var(--color-primary)',
                                 }} />
                             )}
+                        </button>
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={activeTab === 'releases'}
+                            className={`segmented-item${activeTab === 'releases' ? ' active' : ''}`}
+                            style={{ padding: '5px 16px' }}
+                            onClick={() => setActiveTab('releases')}
+                        >
+                            {t('tabReleases', lang)}
                         </button>
                     </div>
                 </div>
@@ -1109,6 +1222,202 @@ export const DetailPage: React.FC = () => {
                         )}
                     </div>
                 )}
+
+                {/* Tab 4: Release 列表 */}
+                {activeTab === 'releases' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                                {repoReleases.length > 0 ? t('releasesCountSummary', lang, { count: repoReleases.length }) : repo.fullName}
+                            </span>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => fetchRepoReleases(true)}
+                                    disabled={releasesLoading}
+                                >
+                                    <RefreshCw size={12} className={releasesLoading ? 'animate-spin' : ''} />
+                                    {t('refreshReleases', lang)}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
+                                    onClick={() => window.githubStarsAPI.openExternal(`${repo.htmlUrl}/releases`)}
+                                >
+                                    <ExternalLink size={12} />
+                                    {t('viewAllOnGithub', lang)}
+                                </button>
+                            </div>
+                        </div>
+
+                        {releasesLoading ? (
+                            <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                                    {t('releasesLoading', lang)}
+                                </span>
+                                <Skeleton width="38%" height={18} />
+                                <Skeleton width="100%" height={14} />
+                                <Skeleton width="86%" height={14} />
+                                <Skeleton width="72%" height={60} />
+                            </div>
+                        ) : releasesError ? (
+                            <div className="card">
+                                <EmptyState
+                                    icon={<Package size={40} strokeWidth={1.5} />}
+                                    title={releasesError}
+                                    action={
+                                        <button type="button" className="btn btn-primary btn-sm" onClick={() => fetchRepoReleases(true)}>
+                                            <RefreshCw size={13} />
+                                            {t('retry', lang)}
+                                        </button>
+                                    }
+                                />
+                            </div>
+                        ) : repoReleases.length === 0 ? (
+                            <div className="card">
+                                <EmptyState
+                                    icon={<Package size={40} strokeWidth={1.5} />}
+                                    title={t('releasesEmpty', lang)}
+                                />
+                            </div>
+                        ) : (
+                            repoReleases.map((release, idx) => {
+                                const tagName = release.tagName || release.tag_name || '';
+                                const publishedAt = release.publishedAt || release.published_at || '';
+                                const releaseName = release.name && release.name !== tagName ? release.name : '';
+
+                                return (
+                                    <details
+                                        key={release.id || `${tagName}-${idx}`}
+                                        className="release-accordion card card-compact"
+                                        open={idx === 0}
+                                    >
+                                        <summary className="release-accordion-summary">
+                                            <ChevronDown size={15} className="release-chevron" style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
+                                            <span
+                                                className="tag"
+                                                style={{
+                                                    padding: '1px 8px',
+                                                    fontSize: 12,
+                                                    fontFamily: 'monospace',
+                                                    fontWeight: 600,
+                                                    color: 'var(--color-primary-dark)',
+                                                    borderColor: 'color-mix(in srgb, var(--color-primary) 35%, transparent)',
+                                                }}
+                                            >
+                                                {tagName}
+                                            </span>
+                                            {idx === 0 && !release.prerelease && (
+                                                <span className="badge badge-default">{t('latestReleaseBadge', lang)}</span>
+                                            )}
+                                            {release.prerelease && (
+                                                <span className="badge badge-warning">{t('prereleaseBadge', lang)}</span>
+                                            )}
+                                            {releaseName && (
+                                                <span style={{
+                                                    fontSize: 13,
+                                                    fontWeight: 500,
+                                                    color: 'var(--color-text-primary)',
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                }}>
+                                                    {releaseName}
+                                                </span>
+                                            )}
+                                            {publishedAt && (
+                                                <span style={{ fontSize: 12, color: 'var(--color-text-muted)', marginLeft: 'auto', flexShrink: 0 }}>
+                                                    {formatRelativeTime(publishedAt, lang)}
+                                                </span>
+                                            )}
+                                        </summary>
+
+                                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                                                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                                                    {publishedAt ? `${t('publishedAt', lang)}: ${new Date(publishedAt).toLocaleString()}` : ''}
+                                                </span>
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-secondary btn-sm"
+                                                        onClick={() => setSelectedDetailRelease(release)}
+                                                    >
+                                                        <Languages size={12} />
+                                                        {t('openReleaseModal', lang)}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost btn-sm"
+                                                        onClick={() =>
+                                                            window.githubStarsAPI.openExternal(
+                                                                release.htmlUrl || `${repo.htmlUrl}/releases/tag/${tagName}`
+                                                            )
+                                                        }
+                                                    >
+                                                        <ExternalLink size={12} />
+                                                        {t('viewOnGithub', lang)}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {release.body ? (
+                                                <div style={{ overflowWrap: 'anywhere', lineHeight: 1.6 }}>
+                                                    <MarkdownView content={release.body} repoFullName={repo.fullName} />
+                                                </div>
+                                            ) : (
+                                                <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>
+                                                    {t('noReleaseNotes', lang)}
+                                                </p>
+                                            )}
+
+                                            {release.assets && release.assets.length > 0 && (
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 8, borderTop: '1px solid var(--color-border)' }}>
+                                                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)' }}>
+                                                        {t('assets', lang)} ({release.assets.length})
+                                                    </div>
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                        {release.assets.map((asset) => {
+                                                            const PlatformIcon = getPlatformIcon(releaseService.identifyPlatform(asset));
+                                                            return (
+                                                                <button
+                                                                    key={asset.id || asset.name}
+                                                                    type="button"
+                                                                    onClick={() => window.githubStarsAPI.openExternal(asset.browserDownloadUrl)}
+                                                                    className="btn btn-ghost btn-sm"
+                                                                    style={{
+                                                                        justifyContent: 'space-between',
+                                                                        width: '100%',
+                                                                        padding: '6px 10px',
+                                                                        background: 'var(--color-surface-secondary)',
+                                                                        border: '1px solid var(--color-border)',
+                                                                    }}
+                                                                >
+                                                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                                                                        <PlatformIcon size={13} style={{ flexShrink: 0 }} />
+                                                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--color-text-primary)' }}>
+                                                                            {asset.name}
+                                                                        </span>
+                                                                    </span>
+                                                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, fontSize: 11, color: 'var(--color-text-muted)', flexShrink: 0 }}>
+                                                                        <span>{releaseService.formatFileSize(asset.size)}</span>
+                                                                        <span>{t('downloadsCount', lang, { count: formatCompactNumber(asset.downloadCount) })}</span>
+                                                                        <Download size={12} style={{ color: 'var(--color-primary)' }} />
+                                                                    </span>
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </details>
+                                );
+                            })
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* 别名编辑弹窗 */}
@@ -1171,6 +1480,26 @@ export const DetailPage: React.FC = () => {
                 }}
                 onCancel={() => setShowReanalyzeConfirm(false)}
             />
+
+            {/* Release 详情 / 翻译弹窗 */}
+            {selectedDetailRelease && (
+                <Suspense
+                    fallback={
+                        <div className="modal-overlay">
+                            <Loader2 size={24} className="animate-spin" style={{ color: 'white' }} />
+                        </div>
+                    }
+                >
+                    <ReleaseDetail
+                        release={selectedDetailRelease}
+                        lang={lang}
+                        onClose={() => setSelectedDetailRelease(null)}
+                        token={token || undefined}
+                        aiModel={settings.aiModel}
+                        aiThinking={!!settings.aiThinking}
+                    />
+                </Suspense>
+            )}
         </div>
     );
 };

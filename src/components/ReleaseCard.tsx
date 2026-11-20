@@ -117,6 +117,7 @@ export const ReleaseCard = memo<ReleaseCardProps>(({ release, repository, lang, 
                     {/* 🆕 v1.6.0 NEW 标识（配色沿用 NEW 徽章渐变 token） */}
                     {isUnread && (
                         <span
+                            className="badge-pulse"
                             style={{
                                 fontSize: 10,
                                 fontWeight: 700,
@@ -127,7 +128,6 @@ export const ReleaseCard = memo<ReleaseCardProps>(({ release, repository, lang, 
                                 textTransform: 'uppercase' as const,
                                 letterSpacing: '0.5px',
                                 boxShadow: '0 1px 3px color-mix(in srgb, var(--color-new-badge-end) 40%, transparent)',
-                                animation: 'badge-pulse 2s ease-in-out infinite',
                             }}
                             aria-label={t('unreadNewRelease', lang)}
                             title={t('unreadNewRelease', lang)}

@@ -21,6 +21,7 @@ import {
     Key, Check, X, Loader2, Download, Upload,
     Sun, Moon, Monitor, Globe, Sparkles, Play, StopCircle, Zap, Bell,
     AlertTriangle, Link2, BrainCircuit, Rss, Palette, Database, CheckCircle2,
+    RefreshCw, Activity,
 } from 'lucide-react';
 
 type SettingsSectionId = 'connection' | 'ai' | 'releases' | 'appearance' | 'data';
@@ -56,10 +57,12 @@ export const SettingsPage: React.FC = () => {
     const startAutoAnalyze = useStore((state) => state.startAutoAnalyze);
     const stopAnalyze = useStore((state) => state.stopAnalyze);
     const checkReleaseUpdates = useStore((state) => state.checkReleaseUpdates);
-    const setReleasesInitialTab = useStore((state) => state.setReleasesInitialTab);
+    const syncRepositories = useStore((state) => state.syncRepositories);
+    const setSearchFilter = useStore((state) => state.setSearchFilter);
 
     const isAnalyzing = useProgressStore((state) => state.isAnalyzing);
     const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
+    const syncStatus = useProgressStore((state) => state.syncStatus);
 
     const [activeSection, setActiveSection] = useState<SettingsSectionId>('connection');
     const [tokenInput, setTokenInput] = useState(token || '');
@@ -69,6 +72,12 @@ export const SettingsPage: React.FC = () => {
     const [aiModels, setAiModels] = useState<any[]>([]);
     const [loadingModels, setLoadingModels] = useState(false);
     const [tokenHelpExpanded, setTokenHelpExpanded] = useState(false);
+    const [checkingRateLimit, setCheckingRateLimit] = useState(false);
+    const [rateLimitInfo, setRateLimitInfo] = useState<{
+        remaining: number;
+        limit: number;
+        resetText: string;
+    } | null>(null);
     const [pendingImport, setPendingImport] = useState<{
         data: ValidatedBackup;
         skipped: { repos: number; tags: number; notes: number };
@@ -153,6 +162,63 @@ export const SettingsPage: React.FC = () => {
         const result = await startAutoAnalyze();
         if (result === 'busy') {
             toast.show(t('analyzeDeferredBusy'));
+        }
+    };
+
+    const handleManualSync = async (forceFull = false) => {
+        const result = await syncRepositories(forceFull ? { forceFull: true } : undefined);
+        if (result === 'busy') {
+            toast.show(t('syncSkippedBusy'), { type: 'info' });
+            return;
+        }
+        if (result === 'ok') {
+            const { syncStatus: nextStatus, syncError: nextErr, lastSyncSummary } = useProgressStore.getState();
+            if (nextErr) {
+                toast.show(nextErr, { type: 'error', duration: 5000 });
+            } else if (nextStatus === 'completed' && lastSyncSummary) {
+                const modeLabel = lastSyncSummary.mode === 'full'
+                    ? t('syncModeFullLabel')
+                    : t('syncModeIncrementalLabel');
+                if (lastSyncSummary.added === 0 && lastSyncSummary.removed === 0) {
+                    toast.show(
+                        t('syncSummaryUpToDate', { mode: modeLabel, total: lastSyncSummary.total }),
+                        { type: 'success' }
+                    );
+                } else {
+                    toast.show(
+                        t('syncSummaryChanged', {
+                            mode: modeLabel,
+                            added: lastSyncSummary.added,
+                            removed: lastSyncSummary.removed,
+                            total: lastSyncSummary.total,
+                        }),
+                        { type: 'success', duration: 4000 }
+                    );
+                }
+            }
+        }
+    };
+
+    const handleCheckRateLimit = async () => {
+        if (!token || checkingRateLimit) return;
+        setCheckingRateLimit(true);
+        try {
+            const data = await githubService.checkRateLimit(token);
+            const core = data?.resources?.core || data?.rate;
+            if (core && typeof core.remaining === 'number' && typeof core.limit === 'number') {
+                const resetAt = core.reset ? new Date(core.reset * 1000).toLocaleTimeString() : '—';
+                setRateLimitInfo({
+                    remaining: core.remaining,
+                    limit: core.limit,
+                    resetText: resetAt,
+                });
+            } else {
+                toast.show(t('rateLimitFailed'), { type: 'error' });
+            }
+        } catch {
+            toast.show(t('rateLimitFailed'), { type: 'error' });
+        } finally {
+            setCheckingRateLimit(false);
         }
     };
 
@@ -281,6 +347,17 @@ export const SettingsPage: React.FC = () => {
         ? formatRelativeTime(settings.lastSyncTime, lang)
         : t('overviewNeverSynced');
 
+    const syncState = storageService.getSyncState();
+    const lastFullSyncText = syncState?.lastFullSyncAt
+        ? formatRelativeTime(syncState.lastFullSyncAt, lang)
+        : t('overviewNeverSynced');
+    const currentSyncMode = settings.syncMode || 'smart';
+    const currentSyncModeHint = currentSyncMode === 'full'
+        ? t('syncModeFullHint')
+        : currentSyncMode === 'incremental'
+            ? t('syncModeIncrementalHint')
+            : t('syncModeSmartHint');
+
     return (
         <div className="flex flex-col h-full">
             <PageHeader title={t('settings')} backLabel={t('back')} onBack={handleBack} />
@@ -328,8 +405,8 @@ export const SettingsPage: React.FC = () => {
                     type="button"
                     className="settings-stat-card"
                     onClick={() => {
-                        setReleasesInitialTab('subscriptions');
-                        setCurrentPage('releases');
+                        setSearchFilter({ smartView: 'subscribed' });
+                        setCurrentPage('home');
                     }}
                 >
                     <span className="text-[11px] text-[var(--color-text-muted)]">{t('overviewSubscriptions')}</span>
@@ -358,62 +435,209 @@ export const SettingsPage: React.FC = () => {
 
                 <div className="settings-content">
                     {activeSection === 'connection' && (
-                        <SectionCard
-                            title={t('githubToken')}
-                            icon={<Key size={14} style={{ color: 'var(--color-primary)' }} />}
-                            action={
-                                <TokenHelpHeaderButton
+                        <>
+                            <SectionCard
+                                title={t('githubToken')}
+                                icon={<Key size={14} style={{ color: 'var(--color-primary)' }} />}
+                                action={
+                                    <TokenHelpHeaderButton
+                                        lang={lang}
+                                        expanded={tokenHelpExpanded}
+                                        onToggle={() => setTokenHelpExpanded(!tokenHelpExpanded)}
+                                    />
+                                }
+                            >
+                                <div className="flex gap-2">
+                                    <input
+                                        type="password"
+                                        className="input"
+                                        value={tokenInput}
+                                        onChange={(e) => { setTokenInput(e.target.value); setVerifyResult(null); }}
+                                        placeholder={t('tokenPlaceholder')}
+                                    />
+                                    <button
+                                        className="btn btn-primary shrink-0"
+                                        onClick={handleVerifyToken}
+                                        disabled={verifying || !tokenInput.trim()}
+                                    >
+                                        {verifying ? (
+                                            <Loader2 size={14} className="animate-spin" />
+                                        ) : verifyResult === 'success' ? (
+                                            <Check size={14} />
+                                        ) : verifyResult === 'error' ? (
+                                            <X size={14} />
+                                        ) : (
+                                            <Key size={14} />
+                                        )}
+                                        {t('verifyToken')}
+                                    </button>
+                                </div>
+                                {verifyResult && (
+                                    <p
+                                        className="text-[13px] mt-1.5"
+                                        style={{ color: verifyResult === 'success' ? 'var(--color-success)' : 'var(--color-error-text)' }}
+                                    >
+                                        {verifyResult === 'success'
+                                            ? t('tokenVerified')
+                                            : verifyErrorReason === 'rateLimited'
+                                                ? t('errorRateLimited')
+                                                : verifyErrorReason === 'network'
+                                                    ? t('errorNetwork')
+                                                    : t('errorTokenInvalid')}
+                                    </p>
+                                )}
+                                <TokenHelp
                                     lang={lang}
                                     expanded={tokenHelpExpanded}
                                     onToggle={() => setTokenHelpExpanded(!tokenHelpExpanded)}
                                 />
-                            }
-                        >
-                            <div className="flex gap-2">
-                                <input
-                                    type="password"
-                                    className="input"
-                                    value={tokenInput}
-                                    onChange={(e) => { setTokenInput(e.target.value); setVerifyResult(null); }}
-                                    placeholder={t('tokenPlaceholder')}
-                                />
-                                <button
-                                    className="btn btn-primary shrink-0"
-                                    onClick={handleVerifyToken}
-                                    disabled={verifying || !tokenInput.trim()}
-                                >
-                                    {verifying ? (
-                                        <Loader2 size={14} className="animate-spin" />
-                                    ) : verifyResult === 'success' ? (
-                                        <Check size={14} />
-                                    ) : verifyResult === 'error' ? (
-                                        <X size={14} />
-                                    ) : (
-                                        <Key size={14} />
+                            </SectionCard>
+
+                            <SectionCard
+                                title={t('githubSyncSettings')}
+                                icon={<RefreshCw size={14} style={{ color: 'var(--color-primary)' }} />}
+                            >
+                                {/* 同步方式 */}
+                                <div className="mb-3">
+                                    <div className="text-[13px] font-medium mb-1.5">{t('syncModeLabel')}</div>
+                                    <div className="segmented w-full">
+                                        {(
+                                            [
+                                                { id: 'smart', label: t('syncModeSmart') },
+                                                { id: 'incremental', label: t('syncModeIncremental') },
+                                                { id: 'full', label: t('syncModeFull') },
+                                            ] as const
+                                        ).map((opt) => (
+                                            <button
+                                                key={opt.id}
+                                                type="button"
+                                                className={`segmented-item${currentSyncMode === opt.id ? ' active' : ''}`}
+                                                onClick={() => saveSettings({ syncMode: opt.id })}
+                                                aria-pressed={currentSyncMode === opt.id}
+                                            >
+                                                {opt.label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="text-[12px] text-[var(--color-text-muted)] mt-1">
+                                        {currentSyncModeHint}
+                                    </div>
+                                </div>
+
+                                {/* 全量对账周期（仅智能同步模式显示） */}
+                                {currentSyncMode === 'smart' && (
+                                    <div className="mb-3">
+                                        <div className="text-[13px] font-medium mb-1.5">{t('fullSyncCycleLabel')}</div>
+                                        <div className="segmented w-full">
+                                            {[3, 7, 14, 30].map((days) => (
+                                                <button
+                                                    key={days}
+                                                    type="button"
+                                                    className={`segmented-item${(settings.fullSyncIntervalDays ?? 7) === days ? ' active' : ''}`}
+                                                    onClick={() => saveSettings({ fullSyncIntervalDays: days })}
+                                                    aria-pressed={(settings.fullSyncIntervalDays ?? 7) === days}
+                                                >
+                                                    {t('daysUnit', { days })}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* 打开插件时自动同步 */}
+                                <div className="flex items-center justify-between gap-3 mb-3">
+                                    <div>
+                                        <div className="text-[13px] font-medium">{t('autoSyncOnOpenLabel')}</div>
+                                        <div className="text-[12px] text-[var(--color-text-muted)]">{t('autoSyncOnOpenHint')}</div>
+                                    </div>
+                                    <Toggle
+                                        checked={!!settings.autoSyncOnOpen}
+                                        onChange={(checked) => saveSettings({ autoSyncOnOpen: checked })}
+                                        aria-label={t('autoSyncOnOpenLabel')}
+                                    />
+                                </div>
+
+                                {/* 自动同步频率 */}
+                                {settings.autoSyncOnOpen && (
+                                    <div className="mb-3">
+                                        <div className="text-[13px] font-medium mb-1.5">{t('syncFrequencyLabel')}</div>
+                                        <div className="segmented w-full">
+                                            {[0, 1, 6, 24, 168].map((hours) => {
+                                                const active = (settings.syncInterval ?? 24) === hours;
+                                                const label = hours === 0
+                                                    ? t('syncFreqEveryOpen')
+                                                    : hours >= 24 && hours % 24 === 0
+                                                        ? t('daysUnit', { days: hours / 24 })
+                                                        : t('syncFreqHours', { hours });
+                                                return (
+                                                    <button
+                                                        key={hours}
+                                                        type="button"
+                                                        className={`segmented-item${active ? ' active' : ''}`}
+                                                        onClick={() => saveSettings({ syncInterval: hours })}
+                                                        aria-pressed={active}
+                                                    >
+                                                        {label}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* 同步状态与手动操作 */}
+                                <div className="pt-3 border-t border-[var(--color-border)] flex flex-col gap-2.5">
+                                    <div className="flex items-center justify-between gap-2 text-[12px] text-[var(--color-text-muted)] flex-wrap">
+                                        <span>{t('overviewLastSync')}: {lastSyncText}</span>
+                                        <span>{t('lastFullSyncLabel')}: {lastFullSyncText}</span>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <button
+                                            type="button"
+                                            className="btn btn-primary btn-sm"
+                                            onClick={() => handleManualSync(false)}
+                                            disabled={!token || syncStatus === 'syncing'}
+                                        >
+                                            <RefreshCw size={13} className={syncStatus === 'syncing' ? 'animate-spin' : ''} />
+                                            {syncStatus === 'syncing' ? t('syncing') : t('syncNow')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn btn-secondary btn-sm"
+                                            onClick={() => handleManualSync(true)}
+                                            disabled={!token || syncStatus === 'syncing'}
+                                        >
+                                            <RefreshCw size={13} />
+                                            {t('forceFullSync')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn btn-ghost btn-sm"
+                                            onClick={handleCheckRateLimit}
+                                            disabled={!token || checkingRateLimit}
+                                        >
+                                            {checkingRateLimit ? (
+                                                <Loader2 size={13} className="animate-spin" />
+                                            ) : (
+                                                <Activity size={13} />
+                                            )}
+                                            {t('checkRateLimit')}
+                                        </button>
+                                    </div>
+
+                                    {rateLimitInfo && (
+                                        <div className="text-[12px] text-[var(--color-text-secondary)]">
+                                            {t('rateLimitInfo', {
+                                                remaining: rateLimitInfo.remaining,
+                                                limit: rateLimitInfo.limit,
+                                                reset: rateLimitInfo.resetText,
+                                            })}
+                                        </div>
                                     )}
-                                    {t('verifyToken')}
-                                </button>
-                            </div>
-                            {verifyResult && (
-                                <p
-                                    className="text-[13px] mt-1.5"
-                                    style={{ color: verifyResult === 'success' ? 'var(--color-success)' : 'var(--color-error-text)' }}
-                                >
-                                    {verifyResult === 'success'
-                                        ? t('tokenVerified')
-                                        : verifyErrorReason === 'rateLimited'
-                                            ? t('errorRateLimited')
-                                            : verifyErrorReason === 'network'
-                                                ? t('errorNetwork')
-                                                : t('errorTokenInvalid')}
-                                </p>
-                            )}
-                            <TokenHelp
-                                lang={lang}
-                                expanded={tokenHelpExpanded}
-                                onToggle={() => setTokenHelpExpanded(!tokenHelpExpanded)}
-                            />
-                        </SectionCard>
+                                </div>
+                            </SectionCard>
+                        </>
                     )}
 
                     {activeSection === 'ai' && (
@@ -566,8 +790,8 @@ export const SettingsPage: React.FC = () => {
                                 <button
                                     className="btn btn-secondary btn-sm"
                                     onClick={() => {
-                                        setReleasesInitialTab('subscriptions');
-                                        setCurrentPage('releases');
+                                        setSearchFilter({ smartView: 'subscribed' });
+                                        setCurrentPage('home');
                                     }}
                                 >
                                     {t('manageSubscriptions')}

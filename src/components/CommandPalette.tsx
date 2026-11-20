@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     ArrowRight,
     Bell,
+    FileText,
     FolderGit2,
     LayoutGrid,
     Moon,
@@ -96,22 +97,22 @@ export const CommandPalette: React.FC = () => {
                 },
             },
             {
-                id: 'view-untagged',
+                id: 'view-tagged',
                 group: t('cmdGroupViews'),
-                label: t('smartViewUntagged'),
+                label: t('smartViewTagged'),
                 icon: <Tag size={14} />,
                 run: () => {
-                    setSearchFilter({ smartView: 'untagged' });
+                    setSearchFilter({ smartView: 'tagged' });
                     setCurrentPage('home');
                 },
             },
             {
-                id: 'view-unanalyzed',
+                id: 'view-noted',
                 group: t('cmdGroupViews'),
-                label: t('smartViewUnanalyzed'),
-                icon: <Sparkles size={14} />,
+                label: t('smartViewNoted'),
+                icon: <FileText size={14} />,
                 run: () => {
-                    setSearchFilter({ smartView: 'unanalyzed' });
+                    setSearchFilter({ smartView: 'noted' });
                     setCurrentPage('home');
                 },
             },
@@ -124,13 +125,6 @@ export const CommandPalette: React.FC = () => {
                     setSearchFilter({ smartView: 'subscribed' });
                     setCurrentPage('home');
                 },
-            },
-            {
-                id: 'nav-releases',
-                group: t('cmdGroupPages'),
-                label: t('releases'),
-                icon: <Bell size={14} />,
-                run: () => setCurrentPage('releases'),
             },
             {
                 id: 'nav-tags',

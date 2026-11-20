@@ -216,6 +216,25 @@ const App: React.FC = () => {
         return () => clearTimeout(timer);
     }, []);
 
+    // 启动时按频率检查是否自动同步 GitHub Stars
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            const state = useStore.getState();
+            const { token: currentToken, settings: currentSettings } = state;
+            if (!currentToken || !currentSettings?.autoSyncOnOpen) return;
+            if (useProgressStore.getState().syncStatus === 'syncing') return;
+
+            const intervalHours = currentSettings.syncInterval ?? 24;
+            const lastSync = currentSettings.lastSyncTime || 0;
+            const elapsed = Date.now() - lastSync;
+            if (intervalHours === 0 || !lastSync || elapsed >= intervalHours * 3_600_000) {
+                state.syncRepositories();
+            }
+        }, 800);
+
+        return () => clearTimeout(timer);
+    }, []);
+
     // 🆕 v1.3.0 自动分析检查
     useEffect(() => {
         // 延迟检查自动分析（确保页面渲染完成）
@@ -237,6 +256,25 @@ const App: React.FC = () => {
                 }
             }
         }, 3000);  // 延迟 3 秒，在版本检查之后
+
+        return () => clearTimeout(timer);
+    }, []);
+
+    // 启动时按频率检查是否自动同步 GitHub Stars
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            const state = useStore.getState();
+            const { token: currentToken, settings: currentSettings } = state;
+            if (!currentToken || !currentSettings?.autoSyncOnOpen) return;
+            if (useProgressStore.getState().syncStatus === 'syncing') return;
+
+            const intervalHours = currentSettings.syncInterval ?? 24;
+            const lastSync = currentSettings.lastSyncTime || 0;
+            const elapsed = Date.now() - lastSync;
+            if (intervalHours === 0 || !lastSync || elapsed >= intervalHours * 3_600_000) {
+                state.syncRepositories();
+            }
+        }, 800);
 
         return () => clearTimeout(timer);
     }, []);
@@ -294,7 +332,10 @@ const App: React.FC = () => {
                 switch (code) {
                     case 'github-stars':
                         if (useStore.getState().releasesInitialTab) {
-                            setCurrentPage('releases');
+                            useStore.getState().setReleasesInitialTab(undefined);
+                            useStore.getState().setSearchFilter({ smartView: 'subscribed' });
+                            setCurrentPage('home');
+                            setupRepositorySearchSubInput(true, useStore.getState().searchFilter.keyword);
                             break;
                         }
 

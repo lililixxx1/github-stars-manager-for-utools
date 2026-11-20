@@ -11,10 +11,33 @@ import type { FilterContext } from './filterSelectors';
 import { emptyFilterContext, getSearchIndex } from './filterSelectors';
 
 /** 相关度评分结果 */
-interface RelevanceScore {
+interface ScoredRepo {
     repo: Repository;
     score: number;
-    match: boolean;
+}
+
+interface AiSearchEntry {
+    rawSummary: string | undefined;
+    summaryLower: string;
+    rawTags: string[] | undefined;
+    tagsLower: string[];
+}
+
+const aiSearchCache = new WeakMap<Repository, AiSearchEntry>();
+
+function getAiSearchFields(repo: Repository): AiSearchEntry {
+    const cached = aiSearchCache.get(repo);
+    if (cached && cached.rawSummary === repo.aiSummary && cached.rawTags === repo.aiTags) {
+        return cached;
+    }
+    const entry: AiSearchEntry = {
+        rawSummary: repo.aiSummary,
+        summaryLower: (repo.aiSummary || '').toLowerCase(),
+        rawTags: repo.aiTags,
+        tagsLower: (repo.aiTags || []).map((t) => t.toLowerCase()),
+    };
+    aiSearchCache.set(repo, entry);
+    return entry;
 }
 
 /**
@@ -29,84 +52,67 @@ export const calculateRelevance = (keywords: string[], context: FilterContext = 
     return (repos: Repository[]): Repository[] => {
         if (!keywords?.length) return repos;
 
-        const scored: RelevanceScore[] = repos.map(repo => {
+        const scored: ScoredRepo[] = [];
+
+        for (const repo of repos) {
             let score = 0;
             let allMatch = true;
 
-            // 预计算搜索字段：原始/用户字段走 WeakMap 缓存索引；
-            // AI 字段（aiSummary/aiTags）每轮现算，不缓存
             const index = getSearchIndex(repo);
-            const fields = {
-                name: index.name,
-                fullName: index.fullName,
-                alias: index.alias,
-                description: index.description,
-                aiSummary: (repo.aiSummary || '').toLowerCase(),
-                topics: index.topics,
-                aiTags: (repo.aiTags || []).map(t => t.toLowerCase()),
-                customTags: index.customTags,
-                owner: index.ownerLogin,
-            };
-
-            const noteContent = context.getNoteContent(repo.id).toLowerCase();
+            const aiFields = getAiSearchFields(repo);
+            const noteContent = context.hasNote(repo.id)
+                ? context.getNoteContent(repo.id).toLowerCase()
+                : '';
 
             for (const kw of keywords) {
                 let kwMatch = false;
 
-                // 别名匹配（真正高权重：用户自定义别名是最强个人化信号，完全命中 30 压过 name 完全+fullName 连带的 23，
-                // 部分 20 压过 name 部分的 18。注：阶梯为单字段单关键词贡献值，跨字段累加可越位——既有累加语义）
-                if (fields.alias && fields.alias.includes(kw)) {
-                    score += fields.alias === kw ? 30 : 20;
+                if (index.alias && index.alias.includes(kw)) {
+                    score += index.alias === kw ? 30 : 20;
                     kwMatch = true;
                 }
 
-                // 名称匹配
-                if (fields.name.includes(kw)) {
-                    score += fields.name === kw ? 15 : 10;
+                if (index.name.includes(kw)) {
+                    score += index.name === kw ? 15 : 10;
                     kwMatch = true;
                 }
 
-                if (fields.fullName.includes(kw)) {
+                if (index.fullName.includes(kw)) {
                     score += 8;
                     kwMatch = true;
                 }
 
-                // owner 匹配
-                if (fields.owner.includes(kw)) {
+                if (index.ownerLogin.includes(kw)) {
                     score += 6;
                     kwMatch = true;
                 }
 
-                // 描述匹配
-                if (fields.description.includes(kw)) {
+                if (index.description.includes(kw)) {
                     score += 5;
                     kwMatch = true;
                 }
 
-                if (fields.aiSummary.includes(kw)) {
+                if (aiFields.summaryLower.includes(kw)) {
                     score += 5;
                     kwMatch = true;
                 }
 
-                // 笔记匹配
                 if (noteContent && noteContent.includes(kw)) {
                     score += 4;
                     kwMatch = true;
                 }
 
-                // 标签匹配
-                if (fields.aiTags.some(t => t.includes(kw))) {
+                if (aiFields.tagsLower.some((t) => t.includes(kw))) {
                     score += 4;
                     kwMatch = true;
                 }
 
-                if (fields.customTags.some(t => t.includes(kw))) {
+                if (index.customTags.some((t) => t.includes(kw))) {
                     score += 4;
                     kwMatch = true;
                 }
 
-                // topics 匹配
-                if (fields.topics.some(t => t.includes(kw))) {
+                if (index.topics.some((t) => t.includes(kw))) {
                     score += 3;
                     kwMatch = true;
                 }
@@ -117,13 +123,12 @@ export const calculateRelevance = (keywords: string[], context: FilterContext = 
                 }
             }
 
-            return { repo, score, match: allMatch };
-        });
+            if (allMatch) {
+                scored.push({ repo, score });
+            }
+        }
 
-        // 按匹配和相关度排序
-        return scored
-            .filter(s => s.match)
-            .sort((a, b) => b.score - a.score)
-            .map(s => s.repo);
+        scored.sort((a, b) => b.score - a.score);
+        return scored.map((s) => s.repo);
     };
 };

@@ -9,6 +9,8 @@
 import type { Repository, SortBy, SortOrder } from '@/types';
 import { getSearchIndex } from './filterSelectors';
 
+const nameCollator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+
 /** 排序函数类型 */
 export type SortFn = (repos: Repository[]) => Repository[];
 
@@ -64,7 +66,7 @@ export const createSorter = (sortBy: SortBy, sortOrder: SortOrder): SortFn => {
             // 方向只在最后一行翻转——两分支方向必须一致，否则字符串/数值
             // 的 asc/desc 会各自反转（v1.8.0 的 name 排序反向即此因）
             const comparison = typeof a.key === 'string' || typeof b.key === 'string'
-                ? String(a.key).localeCompare(String(b.key))
+                ? nameCollator.compare(String(a.key), String(b.key))
                 : (a.key as number) - (b.key as number);
 
             return sortOrder === 'desc' ? -comparison : comparison;

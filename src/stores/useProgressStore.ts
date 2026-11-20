@@ -15,14 +15,23 @@ import type { AnalyzeProgress, AnalyzeStats, ReleaseCheckStatus } from '../types
 
 export type LongJobName = 'sync' | 'analyze' | 'releaseCheck';
 
+export interface SyncSummary {
+    mode: 'full' | 'incremental';
+    added: number;
+    removed: number;
+    total: number;
+}
+
 export interface ProgressState {
     // ========== 同步进度 ==========
     syncStatus: 'idle' | 'syncing' | 'completed' | 'error';
     syncProgress: { current: number; total: number };
     syncError: string | null;
+    lastSyncSummary: SyncSummary | null;
     setSyncStatus: (status: ProgressState['syncStatus']) => void;
     setSyncProgress: (progress: { current: number; total: number }) => void;
     setSyncError: (error: string | null) => void;
+    setLastSyncSummary: (summary: SyncSummary | null) => void;
 
     // ========== 批量 AI 分析进度（含中断控制器） ==========
     isAnalyzing: boolean;
@@ -50,9 +59,11 @@ export const useProgressStore = create<ProgressState>((set, get) => ({
     syncStatus: 'idle',
     syncProgress: { current: 0, total: 0 },
     syncError: null,
+    lastSyncSummary: null,
     setSyncStatus: (status) => set({ syncStatus: status }),
     setSyncProgress: (progress) => set({ syncProgress: progress }),
     setSyncError: (error) => set({ syncError: error }),
+    setLastSyncSummary: (summary) => set({ lastSyncSummary: summary }),
 
     isAnalyzing: false,
     analyzeProgress: null,

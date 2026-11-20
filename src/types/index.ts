@@ -84,6 +84,8 @@ export interface Release {
     htmlUrl: string;
     publishedAt: string;
     isRead?: boolean;
+    prerelease?: boolean;
+    draft?: boolean;
     assets: ReleaseAsset[];
     repository: {
         id: number;
@@ -107,11 +109,18 @@ export interface ReleaseAsset {
     updatedAt: string;
 }
 
+// ==================== 同步策略与详情页 Tab ====================
+export type SyncModeSetting = 'smart' | 'incremental' | 'full';
+export type DetailTab = 'overview' | 'readme' | 'notes' | 'releases';
+
 // ==================== 配置信息 ====================
 export interface Settings {
     githubToken: string;
-    syncInterval: number;
+    syncInterval: number;                // 自动同步最小间隔（小时），0 = 每次打开都同步
     lastSyncTime: number;
+    syncMode?: SyncModeSetting;          // 同步策略：智能 / 仅增量 / 每次全量
+    autoSyncOnOpen?: boolean;            // 打开插件时自动同步
+    fullSyncIntervalDays?: number;       // 智能同步下的全量对账周期（天）
     aiModel: string;
     aiCustomPrompt?: string;
     useCustomPrompt?: boolean;
@@ -125,7 +134,7 @@ export interface Settings {
     defaultSortOrder: SortOrder;         // 默认排序方向 🆕 v1.1.0
     autoAnalyzeOnOpen?: boolean;         // 🆕 v1.3.0 启动时自动分析
     autoCheckReleaseUpdates?: boolean;   // 🆕 v1.4.0 启动时自动检查版本更新
-    lastReleasesTab?: 'updates' | 'subscriptions';  // 🆕 阶段3 版本页 Tab 持久化（替代 localStorage，唯一绕过 utools 存储之处）
+    lastReleasesTab?: 'updates' | 'subscriptions';  // 兼容旧配置字段
 }
 
 // ==================== 同步状态 ====================
@@ -137,7 +146,7 @@ export interface SyncState {
 }
 
 // ==================== 搜索过滤 ====================
-export type SmartView = 'all' | 'untagged' | 'unanalyzed' | 'noted' | 'subscribed' | 'recent';
+export type SmartView = 'all' | 'tagged' | 'noted' | 'subscribed' | 'recent';
 
 export interface SearchFilter {
     keyword: string;
@@ -147,6 +156,7 @@ export interface SearchFilter {
     aiTags: string[];
     customTags: string[];                // 自定义标签筛选
     platforms: string[];                 // 🆕 v1.3.0 平台筛选
+    invertFilter?: boolean;              // 反选/排除模式：匹配“不满足当前筛选条件”的仓库
     hasReleases: boolean | null;
     hasNotes: boolean | null;            // 是否有笔记 🆕 v1.1.0
     hasAlias: boolean | null;            // 是否有别名 🆕 v1.1.0

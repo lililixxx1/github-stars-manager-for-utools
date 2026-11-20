@@ -31,6 +31,44 @@ const CACHE_CONFIG = {
     cleanupOnStartup: true,
 };
 
+export function normalizeRepoRelease(
+    raw: any,
+    repo: { id: number; fullName: string; name: string }
+): Release {
+    const rawAssets = Array.isArray(raw?.assets) ? raw.assets : [];
+    const assets: ReleaseAsset[] = rawAssets.map((asset: any, index: number) => ({
+        id: typeof asset?.id === 'number' ? asset.id : index,
+        name: asset?.name || '',
+        size: typeof asset?.size === 'number' ? asset.size : 0,
+        downloadCount: asset?.downloadCount ?? asset?.download_count ?? 0,
+        browserDownloadUrl: asset?.browserDownloadUrl || asset?.browser_download_url || '',
+        contentType: asset?.contentType || asset?.content_type || '',
+        createdAt: asset?.createdAt || asset?.created_at || '',
+        updatedAt: asset?.updatedAt || asset?.updated_at || '',
+    }));
+
+    return {
+        id: Number(raw?.id || 0),
+        tagName: raw?.tagName || raw?.tag_name || '',
+        name: raw?.name || raw?.tagName || raw?.tag_name || '',
+        body: raw?.body || '',
+        htmlUrl: raw?.htmlUrl || raw?.html_url || '',
+        publishedAt: raw?.publishedAt || raw?.published_at || raw?.created_at || '',
+        isRead: raw?.isRead,
+        prerelease: Boolean(raw?.prerelease),
+        draft: Boolean(raw?.draft),
+        assets,
+        repository: raw?.repository || {
+            id: repo.id,
+            fullName: repo.fullName,
+            name: repo.name,
+        },
+        tag_name: raw?.tag_name,
+        published_at: raw?.published_at,
+        html_url: raw?.html_url,
+    };
+}
+
 export const releaseService = {
     /**
      * 获取单个仓库的 Release 列表

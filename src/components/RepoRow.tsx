@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { memo, useEffect, useState } from 'react';
 import { Star, GitFork, Box } from 'lucide-react';
 import { formatCompactNumber } from '../utils/format';
 
@@ -15,35 +15,23 @@ interface RepoRowProps {
     stars?: number;
     /** Fork 数 */
     forks?: number;
+    /** 首屏可见前几张卡片立即加载头像（避免视口内 LCP 延迟） */
+    eager?: boolean;
     /** 标题行下方的自定义内容（描述 / 底部信息），渲染在内容列内 */
     children?: React.ReactNode;
 }
 
 /**
  * 仓库行头部（阶段8 共享组件）
- *
- * 头像 + 名称/副标题 + Star/Fork 统计的通用卡片头部，
- * 供 RepositoryCard 与 ReleaseCard 复用；差异部分走 props 与 children 插槽。
- *
- * @example
- * <RepoRow
- *     avatarUrl={repo.owner.avatarUrl}
- *     ownerLogin={repo.owner.login}
- *     displayName={repo.alias || repo.name}
- *     secondaryName={repo.alias ? repo.fullName : undefined}
- *     stars={repo.stargazersCount}
- *     forks={repo.forksCount}
- * >
- *     <p>描述</p>
- * </RepoRow>
  */
-export const RepoRow: React.FC<RepoRowProps> = ({
+export const RepoRow: React.FC<RepoRowProps> = memo(({
     avatarUrl,
     ownerLogin,
     displayName,
     secondaryName,
     stars,
     forks,
+    eager = false,
     children,
 }) => {
     const [imgError, setImgError] = useState(false);
@@ -64,7 +52,7 @@ export const RepoRow: React.FC<RepoRowProps> = ({
                         width: 40, height: 40, borderRadius: 8, flexShrink: 0,
                         border: '1px solid var(--color-border)',
                     }}
-                    loading="lazy"
+                    loading={eager ? 'eager' : 'lazy'}
                     decoding="async"
                     onError={() => setImgError(true)}
                 />
@@ -114,4 +102,6 @@ export const RepoRow: React.FC<RepoRowProps> = ({
             </div>
         </div>
     );
-};
+});
+
+RepoRow.displayName = 'RepoRow';

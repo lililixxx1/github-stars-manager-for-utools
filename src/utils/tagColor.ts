@@ -12,24 +12,43 @@
  * （App.tsx 即以该 class 切换主题），消费处零传参。
  */
 
-/** 8 预设色（TagManager）→ light 主题下的深色文字变体（同色系 -700 档，保 AA 4.5:1） */
+/** 12 预设色（TagManager）→ light 主题下的深色文字变体（同色系 -700 档，保 AA 4.5:1） */
 const TAG_TEXT_COLORS: Record<string, string> = {
     '#3b82f6': '#1d4ed8', // blue-500    → blue-700
-    '#10b981': '#047857', // emerald-500 → emerald-700
-    '#f59e0b': '#b45309', // amber-500   → amber-700
-    '#ef4444': '#b91c1c', // red-500     → red-700
+    '#6366f1': '#4338ca', // indigo-500  → indigo-700
     '#8b5cf6': '#6d28d9', // violet-500  → violet-700
     '#ec4899': '#be185d', // pink-500    → pink-700
-    '#06b6d4': '#0e7490', // cyan-500    → cyan-700
+    '#ef4444': '#b91c1c', // red-500     → red-700
+    '#f97316': '#c2410c', // orange-500  → orange-700
+    '#f59e0b': '#b45309', // amber-500   → amber-700
     '#84cc16': '#4d7c0f', // lime-500    → lime-700
+    '#10b981': '#047857', // emerald-500 → emerald-700
+    '#14b8a6': '#0f766e', // teal-500    → teal-700
+    '#06b6d4': '#0e7490', // cyan-500    → cyan-700
+    '#64748b': '#334155', // slate-500   → slate-700
 };
 
-/** 未选中态（透明底/软底）文字色：dark 用原色、light 用深色变体；未知色回退文字主色 */
+/** 未选中态（透明底/软底）文字色：dark 用原色、light 用深色变体；自定义 hex 过亮时自动压暗保可读性 */
 export function getTagTextColor(color: string | null | undefined): string {
     if (!color) return 'var(--color-text-primary)';
+    const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
     const variant = TAG_TEXT_COLORS[color.toLowerCase()];
-    if (!variant) return 'var(--color-text-primary)';
-    return document.documentElement.classList.contains('dark') ? color : variant;
+    if (variant) {
+        return isDark ? color : variant;
+    }
+    const rgb = parseHexColor(color);
+    if (!rgb) return 'var(--color-text-primary)';
+    if (isDark) {
+        const luma = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+        return luma >= 0.35 ? color : 'var(--color-text-primary)';
+    }
+    const luma = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+    if (luma <= 0.45) return color;
+    const scale = 0.55;
+    const r = Math.round(rgb.r * scale);
+    const g = Math.round(rgb.g * scale);
+    const b = Math.round(rgb.b * scale);
+    return `rgb(${r}, ${g}, ${b})`;
 }
 
 /** 解析 3/6 位 hex 色值为 RGB；非法输入返回 null */

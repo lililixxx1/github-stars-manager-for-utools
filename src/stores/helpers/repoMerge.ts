@@ -1,4 +1,4 @@
-import type { Repository, Tag } from '../../types';
+import type { Repository, RepositoryNote, Tag } from '../../types';
 import { storageService } from '../../services/storageService';
 
 export function mergeRepoWithExistingData(
@@ -74,16 +74,19 @@ export function buildTagMap(tags: Tag[]): Map<string, Tag> {
 export function buildNoteIndex(repositories: Repository[]): {
     noteRepoIds: Set<number>;
     noteContentByRepoId: Map<number, string>;
+    noteByRepoId: Map<number, RepositoryNote>;
 } {
     const validRepoIds = new Set(repositories.map((repo) => repo.id));
     const noteRepoIds = new Set<number>();
     const noteContentByRepoId = new Map<number, string>();
+    const noteByRepoId = new Map<number, RepositoryNote>();
 
     for (const note of storageService.getAllNotes()) {
         if (!validRepoIds.has(note.repoId)) continue;
         noteRepoIds.add(note.repoId);
         noteContentByRepoId.set(note.repoId, note.content || '');
+        noteByRepoId.set(note.repoId, note);
     }
 
-    return { noteRepoIds, noteContentByRepoId };
+    return { noteRepoIds, noteContentByRepoId, noteByRepoId };
 }

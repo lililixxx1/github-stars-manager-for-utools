@@ -1,5 +1,5 @@
-import React, { memo, useMemo, useState } from 'react';
-import { Edit3, Search } from 'lucide-react';
+import React, { memo, useDeferredValue, useMemo, useState } from 'react';
+import { ArrowLeftRight, Edit3, Search } from 'lucide-react';
 import { t } from '@/locales';
 import { PLATFORM_OPTIONS, PLATFORM_NONE } from '@/constants/platforms';
 import { getPlatformIcon } from '@/constants/platformIcons';
@@ -7,7 +7,7 @@ import { getLanguageColor } from '@/constants/languages';
 import type { SearchFilter, Tag as TagType } from '@/types';
 import { TagChip } from '@/components/TagChip';
 
-type FilterTab = 'languages' | 'tags' | 'platforms' | 'status';
+export type FilterTab = 'languages' | 'tags' | 'platforms' | 'status';
 
 interface FilterPopoverProps {
     lang: 'zh' | 'en';
@@ -24,6 +24,8 @@ interface FilterPopoverProps {
     onTogglePlatform: (platformId: string) => void;
     onToggleUnanalyzedPlatform: () => void;
     onToggleStatus: (key: 'hasNotes' | 'hasAlias' | 'hasReleases') => void;
+    onToggleInvertFilter: () => void;
+    onInvertTab: (tab: FilterTab, candidateLanguages?: string[]) => void;
     onQuickCreateTag: (name: string) => void;
     onManageTags: () => void;
     onClearAll: () => void;
@@ -44,19 +46,22 @@ export const FilterPopover = memo<FilterPopoverProps>(({
     onTogglePlatform,
     onToggleUnanalyzedPlatform,
     onToggleStatus,
+    onToggleInvertFilter,
+    onInvertTab,
     onQuickCreateTag,
     onManageTags,
     onClearAll,
 }) => {
     const [filterTab, setFilterTab] = useState<FilterTab>('languages');
     const [langSearch, setLangSearch] = useState('');
+    const deferredLangSearch = useDeferredValue(langSearch);
     const [quickTagName, setQuickTagName] = useState('');
 
     const filteredLanguages = useMemo(() => {
-        const q = langSearch.trim().toLowerCase();
+        const q = deferredLangSearch.trim().toLowerCase();
         if (!q) return sortedLanguages;
         return sortedLanguages.filter(([name]) => name.toLowerCase().includes(q));
-    }, [langSearch, sortedLanguages]);
+    }, [deferredLangSearch, sortedLanguages]);
 
     const handleQuickCreateKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key !== 'Enter') return;
@@ -256,18 +261,62 @@ export const FilterPopover = memo<FilterPopoverProps>(({
                 )}
             </div>
 
-            {hasFacetFilter && (
-                <div className="flex justify-end px-3 py-1.5 border-t border-[var(--color-border)] bg-[var(--color-surface-secondary)]">
+            <div className="flex items-center justify-between gap-2 px-3 py-2 border-t border-[var(--color-border)] bg-[var(--color-surface-secondary)]">
+                <div className="segmented" style={{ width: 'fit-content' }}>
+                    <button
+                        type="button"
+                        className={`segmented-item${!searchFilter.invertFilter ? ' active' : ''}`}
+                        style={{ padding: '2px 10px', fontSize: 11 }}
+                        onClick={() => {
+                            if (searchFilter.invertFilter) onToggleInvertFilter();
+                        }}
+                        aria-pressed={!searchFilter.invertFilter}
+                    >
+                        {t('filterModeInclude', lang)}
+                    </button>
+                    <button
+                        type="button"
+                        className={`segmented-item${searchFilter.invertFilter ? ' active' : ''}`}
+                        style={{ padding: '2px 10px', fontSize: 11 }}
+                        onClick={() => {
+                            if (!searchFilter.invertFilter) onToggleInvertFilter();
+                        }}
+                        aria-pressed={Boolean(searchFilter.invertFilter)}
+                    >
+                        {t('filterModeExclude', lang)}
+                    </button>
+                </div>
+
+                <div className="flex items-center gap-1">
                     <button
                         type="button"
                         className="btn btn-ghost btn-sm"
-                        style={{ color: 'var(--color-primary)' }}
-                        onClick={onClearAll}
+                        title={t('filterInvertTitle', lang)}
+                        onClick={() =>
+                            onInvertTab(
+                                filterTab,
+                                filterTab === 'languages'
+                                    ? filteredLanguages.map(([name]) => name)
+                                    : undefined
+                            )
+                        }
                     >
-                        {t('clearFilter', lang)}
+                        <ArrowLeftRight size={12} />
+                        {t('filterInvert', lang)}
                     </button>
+
+                    {(hasFacetFilter || searchFilter.invertFilter) && (
+                        <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            style={{ color: 'var(--color-primary)' }}
+                            onClick={onClearAll}
+                        >
+                            {t('clearFilter', lang)}
+                        </button>
+                    )}
                 </div>
-            )}
+            </div>
         </div>
     );
 });

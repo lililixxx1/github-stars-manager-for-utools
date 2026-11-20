@@ -383,6 +383,10 @@ function seedDevStorageIfNeeded(): void {
         language: 'zh',
         defaultSortBy: 'stars',
         defaultSortOrder: 'desc',
+        syncMode: 'smart',
+        autoSyncOnOpen: false,
+        syncInterval: 24,
+        fullSyncIntervalDays: 7,
         autoAnalyzeOnOpen: false,
         autoCheckReleaseUpdates: false,
     });
@@ -509,8 +513,86 @@ export function ensureDevMockApi(): void {
             ].join('\n');
         },
         getRepoReleases: async (owner, repo) => {
+            const fullName = `${owner}/${repo}`.toLowerCase();
             const releases = readStorage<Release[]>('releases', []);
-            return releases.filter((r) => r.repository.fullName.toLowerCase() === `${owner}/${repo}`.toLowerCase());
+            const matched = releases.filter((r) => r.repository.fullName.toLowerCase() === fullName);
+            const repos = readStorage<Repository[]>('repos', []);
+            const repoObj = repos.find((r) => r.fullName.toLowerCase() === fullName);
+            const repoMeta = {
+                id: repoObj?.id || 9999,
+                fullName: repoObj?.fullName || `${owner}/${repo}`,
+                name: repoObj?.name || repo,
+            };
+            if (matched.length > 0) {
+                return [
+                    ...matched,
+                    {
+                        id: matched[0].id + 1000,
+                        tagName: 'v0.6.0-rc.1',
+                        name: `${repo} v0.6.0-rc.1`,
+                        body: '### Pre-release Notes\n\n- Experimental performance improvements\n- Added diagnostic telemetry opt-out\n',
+                        htmlUrl: `https://github.com/${repoMeta.fullName}/releases`,
+                        publishedAt: daysAgoIso(18),
+                        prerelease: true,
+                        assets: [
+                            {
+                                id: 91,
+                                name: `${repo}-linux-x64.tar.gz`,
+                                size: 8_400_000,
+                                downloadCount: 3120,
+                                browserDownloadUrl: `https://github.com/${repoMeta.fullName}/releases`,
+                                contentType: 'application/gzip',
+                                createdAt: daysAgoIso(18),
+                                updatedAt: daysAgoIso(18),
+                            },
+                        ],
+                        repository: repoMeta,
+                    },
+                ];
+            }
+            return [
+                {
+                    id: repoMeta.id * 10 + 1,
+                    tagName: 'v2.4.0',
+                    name: `${repoMeta.name} v2.4.0`,
+                    body: `## What's Changed in ${repoMeta.name} 2.4.0\n\n- Improved core stability and startup latency\n- Added Windows & macOS universal packaging\n\n| Artifact | Target |\n| --- | --- |\n| \`${repo}-win-x64.zip\` | Windows 10/11 |\n| \`${repo}-darwin-arm64.tar.gz\` | macOS Apple Silicon |\n`,
+                    htmlUrl: `https://github.com/${repoMeta.fullName}/releases`,
+                    publishedAt: daysAgoIso(4),
+                    assets: [
+                        {
+                            id: repoMeta.id * 100 + 1,
+                            name: `${repo}-win-x64.zip`,
+                            size: 16_800_000,
+                            downloadCount: 8420,
+                            browserDownloadUrl: `https://github.com/${repoMeta.fullName}/releases`,
+                            contentType: 'application/zip',
+                            createdAt: daysAgoIso(4),
+                            updatedAt: daysAgoIso(4),
+                        },
+                        {
+                            id: repoMeta.id * 100 + 2,
+                            name: `${repo}-darwin-arm64.tar.gz`,
+                            size: 14_500_000,
+                            downloadCount: 6210,
+                            browserDownloadUrl: `https://github.com/${repoMeta.fullName}/releases`,
+                            contentType: 'application/gzip',
+                            createdAt: daysAgoIso(4),
+                            updatedAt: daysAgoIso(4),
+                        },
+                    ],
+                    repository: repoMeta,
+                },
+                {
+                    id: repoMeta.id * 10 + 2,
+                    tagName: 'v2.3.1',
+                    name: `${repoMeta.name} v2.3.1`,
+                    body: 'Patch release with bug fixes and dependency updates.',
+                    htmlUrl: `https://github.com/${repoMeta.fullName}/releases`,
+                    publishedAt: daysAgoIso(22),
+                    assets: [],
+                    repository: repoMeta,
+                },
+            ];
         },
         checkRateLimit: async () => ({ resources: { core: { limit: 5000, remaining: 4999, reset: Math.floor(Date.now() / 1000) + 3600 } } }),
 

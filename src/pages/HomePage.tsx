@@ -1,4 +1,4 @@
-import React, { memo, useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import React, { Suspense, lazy, memo, useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useStore } from '../stores/useStore';
 import { useProgressStore } from '../stores/useProgressStore';
@@ -12,7 +12,15 @@ import { getLanguageColor } from '../constants/languages';
 import { formatCompactNumber, getRepoSortTimeInfo } from '../utils/format';
 import { FilterBar, type FilterBarHandle } from './home/components/FilterBar';
 import { EmptyState } from '../components/EmptyState';
-import type { Repository, SortBy, Tag } from '../types';
+import { SkeletonCard } from '../components/Skeleton';
+import type { DetailTab, Repository, SortBy, Tag } from '../types';
+
+const HomeNoteCard = lazy(() =>
+    import('./home/components/HomeNoteCard').then((m) => ({ default: m.HomeNoteCard }))
+);
+const ReleaseUpdatesView = lazy(() =>
+    import('../components/ReleaseUpdatesView').then((m) => ({ default: m.ReleaseUpdatesView }))
+);
 import {
     RefreshCw, ChevronLeft, ChevronRight,
     Star, Sparkles, FileText, Package, SearchX, AlertTriangle, X,
@@ -251,6 +259,36 @@ const ListRepoRowContent = memo<ListRepoRowContentProps>(({
 });
 ListRepoRowContent.displayName = 'ListRepoRowContent';
 
+/** 隔离已订阅视图状态栏统计，避免后台检查版本更新时触发整个 HomePage 重渲染 */
+const SubscribedStatusSummary = memo<{ lang: 'zh' | 'en' }>(({ lang }) => {
+    const releases = useStore((state) => state.releases);
+    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
+    const summary = useMemo(() => {
+        let total = 0;
+        let unread = 0;
+        for (const r of releases) {
+            if (!subscribedRepoIds.has(r.repository.id)) continue;
+            total++;
+            if (!r.isRead) unread++;
+        }
+        return { total, unread };
+    }, [releases, subscribedRepoIds]);
+
+    return (
+        <>
+            <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                {t('updatesCountSummary', lang, { count: summary.total })}
+            </span>
+            {summary.unread > 0 && (
+                <span style={{ fontSize: 12, color: 'var(--color-primary)', fontWeight: 500 }}>
+                    · {t('unreadUpdatesCount', lang, { count: summary.unread })}
+                </span>
+            )}
+        </>
+    );
+});
+SubscribedStatusSummary.displayName = 'SubscribedStatusSummary';
+
 export const HomePage: React.FC = () => {
     const repositories = useStore((state) => state.repositories);
     const token = useStore((state) => state.token);
@@ -267,6 +305,9 @@ export const HomePage: React.FC = () => {
     const setViewMode = useStore((state) => state.setViewMode);
     const noteRepoIds = useStore((state) => state.noteRepoIds);
     const noteContentByRepoId = useStore((state) => state.noteContentByRepoId);
+    const noteByRepoId = useStore((state) => state.noteByRepoId);
+    const setDetailInitialTab = useStore((state) => state.setDetailInitialTab);
+    const setSearchFilter = useStore((state) => state.setSearchFilter);
     const batchAddTag = useStore((state) => state.batchAddTag);
     const batchRemoveTag = useStore((state) => state.batchRemoveTag);
     const batchSetSubscription = useStore((state) => state.batchSetSubscription);
@@ -280,6 +321,8 @@ export const HomePage: React.FC = () => {
     const itemsPerPageSetting = settings.itemsPerPage ?? 20;
     const isShowAllMode = itemsPerPageSetting === 0;
     const itemsPerPage = isShowAllMode ? 20 : itemsPerPageSetting;
+    const isNotedView = searchFilter.smartView === 'noted';
+    const isSubscribedView = searchFilter.smartView === 'subscribed';
 
     const filteredRepos = useMemo(
         () => getFilteredRepos(),
@@ -321,10 +364,10 @@ export const HomePage: React.FC = () => {
     const listVirtualizer = useVirtualizer({
         count: currentRepos.length,
         getScrollElement: () => listContainerRef.current,
-        estimateSize: () => (viewMode === 'card' ? CARD_ROW_ESTIMATE : LIST_ROW_ESTIMATE),
+        estimateSize: () => (isNotedView ? 220 : viewMode === 'card' ? CARD_ROW_ESTIMATE : LIST_ROW_ESTIMATE),
         getItemKey: (index) => currentRepos[index]?.id ?? index,
         overscan: 5,
-        enabled: isShowAllMode,
+        enabled: isShowAllMode && !isSubscribedView,
         initialOffset: restoreOffset,
     });
 
@@ -361,18 +404,6 @@ export const HomePage: React.FC = () => {
         }
     }, [isShowAllMode, filteredRepos.length, currentPageNum, totalPages, setCurrentPageNum]);
 
-    const allLanguages = useMemo(() => {
-        const langCounts = new Map<string, number>();
-        for (const r of repositories) {
-            if (r.language) {
-                langCounts.set(r.language, (langCounts.get(r.language) || 0) + 1);
-            }
-        }
-        return Array.from(langCounts.entries())
-            .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
-            .map(([language]) => language);
-    }, [repositories]);
-
     useEffect(() => {
         if (currentRepos.length === 0) {
             setActiveRepoIndex(null);
@@ -393,10 +424,18 @@ export const HomePage: React.FC = () => {
     }, [isShowAllMode, currentPageNum, setCurrentPageNum]);
 
     useEffect(() => {
-        if (isShowAllMode) {
+        if (isShowAllMode && !isSubscribedView) {
             listVirtualizer.measure();
         }
-    }, [viewMode, isShowAllMode, listVirtualizer]);
+    }, [viewMode, isNotedView, isShowAllMode, isSubscribedView, listVirtualizer]);
+
+    useEffect(() => {
+        if (isSubscribedView && batchMode) {
+            setBatchMode(false);
+            setSelectedIds(new Set());
+            setBatchTagAction(null);
+        }
+    }, [batchMode, isSubscribedView]);
 
     const restorePendingRef = useRef(restoreOffset > 0);
 
@@ -446,13 +485,55 @@ export const HomePage: React.FC = () => {
         const result = await useStore.getState().syncRepositories();
         if (result === 'busy') {
             toast.show(t('syncSkippedBusy', lang));
+            return;
+        }
+        if (result === 'ok') {
+            const { syncStatus: nextStatus, lastSyncSummary } = useProgressStore.getState();
+            if (nextStatus === 'completed' && lastSyncSummary) {
+                const modeLabel = lastSyncSummary.mode === 'full'
+                    ? t('syncModeFullLabel', lang)
+                    : t('syncModeIncrementalLabel', lang);
+                if (lastSyncSummary.added === 0 && lastSyncSummary.removed === 0) {
+                    toast.show(
+                        t('syncSummaryUpToDate', lang, { mode: modeLabel, total: lastSyncSummary.total }),
+                        { type: 'success' }
+                    );
+                } else {
+                    toast.show(
+                        t('syncSummaryChanged', lang, {
+                            mode: modeLabel,
+                            added: lastSyncSummary.added,
+                            removed: lastSyncSummary.removed,
+                            total: lastSyncSummary.total,
+                        }),
+                        { type: 'success', duration: 4000 }
+                    );
+                }
+            }
         }
     }, [lang]);
 
-    const handleRepoClick = useCallback((repo: Repository) => {
-        setSelectedRepoId(repo.id);
+    const openRepoDetail = useCallback((repoId: number, initialTab?: DetailTab) => {
+        setDetailInitialTab(initialTab);
+        setSelectedRepoId(repoId);
         setCurrentPage('detail');
-    }, [setCurrentPage, setSelectedRepoId]);
+    }, [setCurrentPage, setDetailInitialTab, setSelectedRepoId]);
+
+    const handleRepoClick = useCallback((repo: Repository) => {
+        openRepoDetail(repo.id, isNotedView ? 'notes' : undefined);
+    }, [isNotedView, openRepoDetail]);
+
+    const handleOpenNote = useCallback((repo: Repository) => {
+        openRepoDetail(repo.id, 'notes');
+    }, [openRepoDetail]);
+
+    const handleOpenOverview = useCallback((repo: Repository) => {
+        openRepoDetail(repo.id, 'overview');
+    }, [openRepoDetail]);
+
+    const handleClearKeyboardNav = useCallback(() => {
+        setIsKeyboardNavigating(false);
+    }, []);
 
     const handleToggleSelect = useCallback((repo: Repository) => {
         setSelectedIds((prev) => {
@@ -478,6 +559,7 @@ export const HomePage: React.FC = () => {
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (isSubscribedView) return;
             if (shouldIgnoreGlobalKeydown(event)) return;
             if (keyboardArea !== 'list') return;
 
@@ -550,6 +632,7 @@ export const HomePage: React.FC = () => {
         handleRepoClick,
         handleToggleSelect,
         isShowAllMode,
+        isSubscribedView,
         keyboardArea,
         setCurrentPageNum,
         totalPages,
@@ -665,9 +748,7 @@ export const HomePage: React.FC = () => {
                 ref={filterBarRef}
                 lang={lang}
                 repositories={repositories}
-                filteredCount={filteredRepos.length}
                 tags={tags}
-                allLanguages={allLanguages}
                 onRefresh={handleSync}
                 syncStatus={syncStatus}
                 viewMode={viewMode}
@@ -677,7 +758,7 @@ export const HomePage: React.FC = () => {
                 keyboardArea={keyboardArea}
                 onRequestListArea={handleRequestListArea}
                 onRequestToolbarArea={handleRequestToolbarArea}
-                hasListResults={currentRepos.length > 0}
+                hasListResults={!isSubscribedView && currentRepos.length > 0}
             />
 
             {/* 批量整理栏 */}
@@ -775,15 +856,32 @@ export const HomePage: React.FC = () => {
                 </div>
             )}
 
-            {/* 仓库列表 */}
+            {/* 内容列表：已订阅直接展示版本更新；笔记直接展示笔记正文；其余展示项目卡片/列表 */}
+            {isSubscribedView ? (
+                <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', overscrollBehavior: 'contain' }}>
+                    <Suspense
+                        fallback={
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                <SkeletonCard />
+                                <SkeletonCard />
+                                <SkeletonCard />
+                            </div>
+                        }
+                    >
+                        <ReleaseUpdatesView
+                            keyword={searchFilter.keyword}
+                            onOpenRepo={openRepoDetail}
+                            onNavigateAll={() => setSearchFilter({ smartView: 'all' })}
+                        />
+                    </Suspense>
+                </div>
+            ) : (
             <div
                 ref={listContainerRef}
                 className="repo-listbox"
                 onScroll={(e) => { lastScrollTopRef.current = e.currentTarget.scrollTop; }}
-                onMouseMove={() => {
-                    if (isKeyboardNavigating) setIsKeyboardNavigating(false);
-                }}
-                style={{ flex: 1, overflowY: 'auto', padding: viewMode === 'card' ? '14px 20px' : '0' }}
+                onMouseMove={isKeyboardNavigating ? handleClearKeyboardNav : undefined}
+                style={{ flex: 1, overflowY: 'auto', padding: (isNotedView || viewMode === 'card') ? '14px 20px' : '0' }}
                 role="listbox"
                 aria-label={t('repositories', lang)}
                 aria-activedescendant={keyboardArea === 'list' && activeRepo ? `repo-option-${activeRepo.id}` : undefined}
@@ -793,9 +891,23 @@ export const HomePage: React.FC = () => {
                     <EmptyState
                         icon={repositories.length === 0
                             ? <Package size={48} strokeWidth={1.5} />
-                            : <SearchX size={48} strokeWidth={1.5} />}
-                        title={repositories.length === 0 ? t('noRepos', lang) : t('noResults', lang)}
-                        description={repositories.length > 0 ? t('noResultsHint', lang) : undefined}
+                            : isNotedView && noteRepoIds.size === 0
+                                ? <FileText size={48} strokeWidth={1.5} />
+                                : <SearchX size={48} strokeWidth={1.5} />}
+                        title={
+                            repositories.length === 0
+                                ? t('noRepos', lang)
+                                : isNotedView && noteRepoIds.size === 0
+                                    ? t('noNotesYet', lang)
+                                    : t('noResults', lang)
+                        }
+                        description={
+                            repositories.length > 0
+                                ? (isNotedView && noteRepoIds.size === 0
+                                    ? t('noNotesHomeHint', lang)
+                                    : t('noResultsHint', lang))
+                                : undefined
+                        }
                         action={repositories.length === 0 ? (
                             <button className="btn btn-primary" onClick={handleSync}>
                                 <RefreshCw size={14} />
@@ -814,12 +926,12 @@ export const HomePage: React.FC = () => {
                                 <div
                                     key={virtualRow.key}
                                     id={`repo-option-${repo.id}`}
-                                    className={viewMode === 'list' ? `list-row-item${isActive ? ' active' : ''}` : undefined}
+                                    className={!isNotedView && viewMode === 'list' ? `list-row-item${isActive ? ' active' : ''}` : undefined}
                                     role="option"
                                     aria-selected={isActive}
                                     data-index={virtualRow.index}
                                     ref={listVirtualizer.measureElement}
-                                    onClick={viewMode === 'card'
+                                    onClick={isNotedView || viewMode === 'card'
                                         ? undefined
                                         : () => (batchMode ? handleToggleSelect(repo) : handleRepoClick(repo))}
                                     style={{
@@ -828,10 +940,25 @@ export const HomePage: React.FC = () => {
                                         left: 0,
                                         width: '100%',
                                         transform: `translateY(${virtualRow.start}px)`,
-                                        ...(viewMode === 'card' ? { paddingBottom: 12 } : {}),
+                                        ...(isNotedView || viewMode === 'card' ? { paddingBottom: 12 } : {}),
                                     }}
                                 >
-                                    {viewMode === 'card' ? (
+                                    {isNotedView ? (
+                                        <Suspense fallback={<SkeletonCard />}>
+                                            <HomeNoteCard
+                                                repo={repo}
+                                                note={noteByRepoId.get(repo.id)}
+                                                noteContent={noteContentByRepoId.get(repo.id)}
+                                                lang={lang}
+                                                isActive={isActive}
+                                                selectable={batchMode}
+                                                selected={isSelected}
+                                                onToggleSelect={handleToggleSelect}
+                                                onOpenNote={handleOpenNote}
+                                                onOpenOverview={handleOpenOverview}
+                                            />
+                                        </Suspense>
+                                    ) : viewMode === 'card' ? (
                                         <RepositoryCard
                                             repo={repo}
                                             onClick={handleRepoClick}
@@ -839,6 +966,7 @@ export const HomePage: React.FC = () => {
                                             isActive={isActive}
                                             sortBy={searchFilter.sortBy}
                                             hasNote={noteRepoIds.has(repo.id)}
+                                            eagerAvatar={virtualRow.index < 4}
                                             selectable={batchMode}
                                             selected={isSelected}
                                             onToggleSelect={handleToggleSelect}
@@ -859,6 +987,43 @@ export const HomePage: React.FC = () => {
                             );
                         })}
                     </div>
+                ) : isNotedView ? (
+                    <Suspense
+                        fallback={
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                <SkeletonCard />
+                                <SkeletonCard />
+                            </div>
+                        }
+                    >
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                            {currentRepos.map((repo, index) => {
+                                const isActive = isKeyboardNavigating && activeRepoIndex === index;
+                                return (
+                                    <div
+                                        key={repo.id}
+                                        id={`repo-option-${repo.id}`}
+                                        role="option"
+                                        aria-selected={isActive}
+                                        ref={(element) => { itemRefs.current[repo.id] = element; }}
+                                    >
+                                        <HomeNoteCard
+                                            repo={repo}
+                                            note={noteByRepoId.get(repo.id)}
+                                            noteContent={noteContentByRepoId.get(repo.id)}
+                                            lang={lang}
+                                            isActive={isActive}
+                                            selectable={batchMode}
+                                            selected={selectedIds.has(repo.id)}
+                                            onToggleSelect={handleToggleSelect}
+                                            onOpenNote={handleOpenNote}
+                                            onOpenOverview={handleOpenOverview}
+                                        />
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </Suspense>
                 ) : viewMode === 'card' ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                         {currentRepos.map((repo, index) => {
@@ -867,7 +1032,7 @@ export const HomePage: React.FC = () => {
                                 <div
                                     key={repo.id}
                                     id={`repo-option-${repo.id}`}
-                                    className="list-card-cv"
+                                    className={index >= 5 ? 'list-card-cv' : undefined}
                                     role="option"
                                     aria-selected={isActive}
                                     ref={(element) => { itemRefs.current[repo.id] = element; }}
@@ -879,6 +1044,7 @@ export const HomePage: React.FC = () => {
                                         isActive={isActive}
                                         sortBy={searchFilter.sortBy}
                                         hasNote={noteRepoIds.has(repo.id)}
+                                        eagerAvatar={index < 4}
                                         selectable={batchMode}
                                         selected={selectedIds.has(repo.id)}
                                         onToggleSelect={handleToggleSelect}
@@ -895,7 +1061,7 @@ export const HomePage: React.FC = () => {
                                 <div
                                     key={repo.id}
                                     id={`repo-option-${repo.id}`}
-                                    className={`list-row-cv list-row-item${isActive ? ' active' : ''}`}
+                                    className={`${index >= 8 ? 'list-row-cv ' : ''}list-row-item${isActive ? ' active' : ''}`}
                                     role="option"
                                     aria-selected={isActive}
                                     ref={(element) => { itemRefs.current[repo.id] = element; }}
@@ -917,12 +1083,17 @@ export const HomePage: React.FC = () => {
                     </div>
                 )}
             </div>
+            )}
 
             {/* 底部紧凑状态栏（分页 + 键盘提示） */}
             <div className="status-bar">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>{rangeLabel}</span>
-                    {totalPages > 1 && (
+                    {isSubscribedView ? (
+                        <SubscribedStatusSummary lang={lang} />
+                    ) : (
+                        <span style={{ fontVariantNumeric: 'tabular-nums' }}>{rangeLabel}</span>
+                    )}
+                    {!isSubscribedView && totalPages > 1 && (
                         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                             <button
                                 type="button"

@@ -15,16 +15,22 @@
  *   任一页最终失败则整轮同步按原错误语义向上抛出（不吞、不部分返回）。
  */
 
-import type { Repository, StarredReposPage, SyncState } from '../types';
+import type { Repository, StarredReposPage, SyncModeSetting, SyncState } from '../types';
 
 const PER_PAGE = 100;
-const FULL_SYNC_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const FULL_SYNC_DEFAULT_DAYS = 7;
 // 全量同步并发窗口：同时在途的最大页请求数
 const FULL_SYNC_CONCURRENCY = 3;
 // 相邻页请求之间的发车间隔（ms），避免瞬时打满 API 配额
 const PAGE_DISPATCH_INTERVAL_MS = 100;
 
 type SyncMode = 'full' | 'incremental';
+
+export interface SyncOptions {
+    mode?: SyncModeSetting;
+    forceFull?: boolean;
+    fullSyncIntervalDays?: number;
+}
 
 interface SyncResult {
     mode: SyncMode;
@@ -60,9 +66,10 @@ export const githubService = {
         token: string,
         existingRepos: Repository[],
         syncState: SyncState | null,
-        onProgress: (current: number, total: number) => void
+        onProgress: (current: number, total: number) => void,
+        options?: SyncOptions
     ): Promise<SyncResult> {
-        const shouldRunFullSync = shouldPerformFullSync(existingRepos, syncState);
+        const shouldRunFullSync = shouldPerformFullSync(existingRepos, syncState, options);
 
         if (shouldRunFullSync) {
             return syncAllRepos(token, onProgress);
@@ -305,11 +312,20 @@ async function syncIncrementalRepos(
     };
 }
 
-function shouldPerformFullSync(existingRepos: Repository[], syncState: SyncState | null): boolean {
+function shouldPerformFullSync(
+    existingRepos: Repository[],
+    syncState: SyncState | null,
+    options?: SyncOptions
+): boolean {
+    if (options?.forceFull || options?.mode === 'full') return true;
     if (existingRepos.length === 0) return true;
+    if (options?.mode === 'incremental') return false;
     if (!syncState?.latestStarredAt || !syncState.lastFullSyncAt) return true;
 
-    return Date.now() - syncState.lastFullSyncAt >= FULL_SYNC_INTERVAL_MS;
+    const cycleDays = options?.fullSyncIntervalDays && options.fullSyncIntervalDays > 0
+        ? options.fullSyncIntervalDays
+        : FULL_SYNC_DEFAULT_DAYS;
+    return Date.now() - syncState.lastFullSyncAt >= cycleDays * 24 * 60 * 60 * 1000;
 }
 
 function transformPageItems(items: any[]): Repository[] {

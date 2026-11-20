@@ -19,28 +19,29 @@ import { t, type TranslationKey } from '@/locales';
 import { PLATFORM_OPTIONS, PLATFORM_NONE } from '@/constants/platforms';
 import { getTagTextColor } from '@/utils/tagColor';
 import { shouldIgnoreGlobalKeydown } from '@/utils/keyboard';
+import { checkAnalysisNeeded } from '@/utils/analysis';
+import { toast } from '@/components/Toast';
 import type { SortBy, SmartView, Tag as TagType, Repository } from '@/types';
 import {
     ArrowUpDown,
-    Bell,
     CheckSquare,
     Filter,
     LayoutGrid,
     List,
+    Loader2,
     RefreshCw,
     Settings,
+    Sparkles,
     Tags,
     X,
 } from 'lucide-react';
-import { FilterPopover } from './FilterPopover';
+import { FilterPopover, type FilterTab } from './FilterPopover';
 import { SORT_OPTIONS, SortMenu } from './SortMenu';
 
 interface FilterBarProps {
     lang: 'zh' | 'en';
     repositories: Repository[];
-    filteredCount: number;
     tags: TagType[];
-    allLanguages: string[];
     onRefresh: () => void;
     syncStatus: string;
     viewMode: 'card' | 'list';
@@ -77,10 +78,74 @@ const SORT_SHORT_LABEL_KEYS: Record<SortBy, TranslationKey> = {
     pushedAt: 'sortShortPushedAt',
 };
 
+const SubscribedUnreadDot = memo(() => {
+    const releases = useStore((state) => state.releases);
+    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
+    const hasUnread = useMemo(
+        () => releases.some((r) => !r.isRead && subscribedRepoIds.has(r.repository.id)),
+        [releases, subscribedRepoIds]
+    );
+    return hasUnread ? <span className="unread-dot" /> : null;
+});
+SubscribedUnreadDot.displayName = 'SubscribedUnreadDot';
+
+interface AnalyzeToolbarButtonProps {
+    lang: 'zh' | 'en';
+    pendingAnalyze: number;
+    buttonRef: (element: HTMLButtonElement | null) => void;
+    tabIndex: number;
+    onClick: () => void;
+    onMouseEnter: () => void;
+    onFocus: () => void;
+    style: React.CSSProperties;
+}
+
+const AnalyzeToolbarButton = memo<AnalyzeToolbarButtonProps>(({
+    lang,
+    pendingAnalyze,
+    buttonRef,
+    tabIndex,
+    onClick,
+    onMouseEnter,
+    onFocus,
+    style,
+}) => {
+    const isAnalyzing = useProgressStore((state) => state.isAnalyzing);
+    const analyzeProgress = useProgressStore((state) => state.analyzeProgress);
+
+    const title = isAnalyzing
+        ? (analyzeProgress
+            ? `${t('clickToStopAnalysis', lang)} (${analyzeProgress.current}/${analyzeProgress.total})`
+            : t('clickToStopAnalysis', lang))
+        : pendingAnalyze > 0
+            ? t('analyzePendingHint', lang, { count: pendingAnalyze })
+            : t('analyzeNow', lang);
+
+    return (
+        <button
+            ref={buttonRef}
+            type="button"
+            className={`btn btn-filter btn-sm btn-icon-sm${isAnalyzing ? ' active' : ''}`}
+            tabIndex={tabIndex}
+            onClick={onClick}
+            onMouseEnter={onMouseEnter}
+            onFocus={onFocus}
+            title={title}
+            aria-label={title}
+            aria-pressed={isAnalyzing}
+            style={style}
+        >
+            {isAnalyzing
+                ? <Loader2 size={14} className="animate-spin" />
+                : <Sparkles size={14} />}
+        </button>
+    );
+});
+AnalyzeToolbarButton.displayName = 'AnalyzeToolbarButton';
+
 const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     lang,
     repositories,
-    filteredCount,
     tags,
     onRefresh,
     syncStatus,
@@ -100,15 +165,9 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     const addTag = useStore((state) => state.addTag);
     const tagById = useStore((state) => state.tagById);
     const noteRepoIds = useStore((state) => state.noteRepoIds);
-    const subscribedRepoIds = useStore((state) => state.subscribedRepoIds);
-    const releases = useStore((state) => state.releases);
-    const getUnreadCount = useStore((state) => state.getUnreadCount);
-    const releaseCheckStatus = useProgressStore((state) => state.releaseCheckStatus);
-
-    const unreadCount = useMemo(
-        () => getUnreadCount(),
-        [getUnreadCount, releases, subscribedRepoIds]
-    );
+    const token = useStore((state) => state.token);
+    const startAutoAnalyze = useStore((state) => state.startAutoAnalyze);
+    const stopAnalyze = useStore((state) => state.stopAnalyze);
 
     const [showSortMenu, setShowSortMenu] = useState(false);
     const [showFilterPopover, setShowFilterPopover] = useState(false);
@@ -122,14 +181,19 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
     const stats = useMemo(() => {
         const languageCounts = new Map<string, number>();
         const platformCounts = new Map<string, number>();
-        let untagged = 0;
+        let tagged = 0;
         let unanalyzed = 0;
         let noted = 0;
         let subscribed = 0;
+        let pendingAnalyze = 0;
+        let cooldownAnalyze = 0;
 
         for (const repo of repositories) {
-            if (!repo.customTags || repo.customTags.length === 0) untagged++;
+            if (repo.customTags && repo.customTags.length > 0) tagged++;
             if (!repo.analyzedAt || repo.analysisFailed) unanalyzed++;
+            const analysisCheck = checkAnalysisNeeded(repo);
+            if (analysisCheck.needsAnalyze) pendingAnalyze++;
+            else if (analysisCheck.reason === 'failed_cooldown') cooldownAnalyze++;
             if (noteRepoIds.has(repo.id)) noted++;
             if (repo.isSubscribed) subscribed++;
             if (repo.language) {
@@ -147,8 +211,10 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
 
         return {
             total: repositories.length,
-            untagged,
+            tagged,
             unanalyzed,
+            pendingAnalyze,
+            cooldownAnalyze,
             noted,
             subscribed,
             sortedLanguages,
@@ -160,11 +226,10 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
 
     const smartViewItems = useMemo<Array<{ id: SmartView; label: string; count: number }>>(() => [
         { id: 'all', label: t('smartViewAll', lang), count: stats.total },
-        { id: 'untagged', label: t('smartViewUntagged', lang), count: stats.untagged },
-        { id: 'unanalyzed', label: t('smartViewUnanalyzed', lang), count: stats.unanalyzed },
+        { id: 'tagged', label: t('smartViewTagged', lang), count: stats.tagged },
         { id: 'noted', label: t('smartViewNoted', lang), count: stats.noted },
         { id: 'subscribed', label: t('smartViewSubscribed', lang), count: stats.subscribed },
-    ], [lang, stats.noted, stats.subscribed, stats.total, stats.unanalyzed, stats.untagged]);
+    ], [lang, stats.noted, stats.subscribed, stats.tagged, stats.total]);
 
     const activeFilterCount =
         searchFilter.languages.length
@@ -185,9 +250,42 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         setSortPreference({ sortOrder: searchFilter.sortOrder === 'asc' ? 'desc' : 'asc' });
     }, [searchFilter.sortOrder, setSortPreference]);
 
-    const handleOpenReleases = useCallback(() => {
-        setCurrentPage('releases');
-    }, [setCurrentPage]);
+    const handleQuickAnalyze = useCallback(async () => {
+        if (useProgressStore.getState().isAnalyzing) {
+            stopAnalyze();
+            toast.show(t('analysisStopped', lang), { type: 'info' });
+            return;
+        }
+        if (!token) {
+            toast.show(t('tokenRequired', lang), { type: 'error' });
+            return;
+        }
+        if (repositories.length === 0) {
+            toast.show(t('syncRequiredHint', lang), { type: 'info' });
+            return;
+        }
+        if (stats.pendingAnalyze === 0) {
+            toast.show(
+                stats.cooldownAnalyze > 0
+                    ? t('noReposToAnalyzeCooldown', lang)
+                    : t('noReposToAnalyze', lang),
+                { type: 'info' }
+            );
+            return;
+        }
+        const res = await startAutoAnalyze(false);
+        if (res === 'busy') {
+            toast.show(t('analyzeDeferredBusy', lang), { type: 'info' });
+        }
+    }, [
+        lang,
+        repositories.length,
+        startAutoAnalyze,
+        stats.cooldownAnalyze,
+        stats.pendingAnalyze,
+        stopAnalyze,
+        token,
+    ]);
 
     const openSortMenu = useCallback(() => {
         const currentSortIndex = SORT_OPTIONS.findIndex((option) => option.value === searchFilter.sortBy);
@@ -230,31 +328,6 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             ),
         },
         {
-            key: 'releases',
-            title: t('releases', lang),
-            action: handleOpenReleases,
-            content: (
-                <span
-                    className="inline-flex items-center gap-1"
-                    style={unreadCount > 0 ? { color: 'var(--color-primary-dark)' } : undefined}
-                >
-                    <Bell
-                        size={14}
-                        className={releaseCheckStatus.checking ? 'animate-spin' : ''}
-                        style={unreadCount > 0 ? { color: 'var(--color-primary)' } : undefined}
-                    />
-                    {unreadCount > 0 ? (
-                        <>
-                            <span style={{ fontSize: 11, fontWeight: 600 }}>{unreadCount}</span>
-                            <span className="unread-dot" />
-                        </>
-                    ) : stats.subscribed > 0 ? (
-                        <span style={{ fontSize: 11 }}>{stats.subscribed}</span>
-                    ) : null}
-                </span>
-            ),
-        },
-        {
             key: 'sort',
             title: t(SORT_OPTIONS.find(s => s.value === searchFilter.sortBy)?.labelKey || 'sortByStars', lang),
             action: () => (showSortMenu ? closeSortMenu() : openSortMenu()),
@@ -267,6 +340,15 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                     </span>
                 </>
             ),
+        },
+        {
+            key: 'analyze',
+            title: stats.pendingAnalyze > 0
+                ? t('analyzePendingHint', lang, { count: stats.pendingAnalyze })
+                : t('analyzeNow', lang),
+            action: handleQuickAnalyze,
+            iconOnly: true,
+            content: <Sparkles size={14} />,
         },
         {
             key: 'tags',
@@ -309,23 +391,21 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         activeFilterCount,
         batchMode,
         closeSortMenu,
-        handleOpenReleases,
+        handleQuickAnalyze,
         hasFacetFilter,
         lang,
         onRefresh,
         onToggleBatchMode,
         onViewModeToggle,
         openSortMenu,
-        releaseCheckStatus.checking,
         searchFilter.sortBy,
         searchFilter.sortOrder,
         setCurrentPage,
         showFilterPopover,
         showSortMenu,
-        stats.subscribed,
+        stats.pendingAnalyze,
         syncStatus,
         toggleFilterPopover,
-        unreadCount,
         viewMode,
     ]);
 
@@ -475,11 +555,61 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             languages: [],
             customTags: [],
             platforms: [],
+            invertFilter: false,
             hasNotes: null,
             hasAlias: null,
             hasReleases: null,
         });
     }, [setSearchFilter]);
+
+    const toggleInvertFilter = useCallback(() => {
+        setSearchFilter({ invertFilter: !searchFilter.invertFilter });
+    }, [searchFilter.invertFilter, setSearchFilter]);
+
+    const handleInvertTab = useCallback((tab: FilterTab, candidateLanguages?: string[]) => {
+        if (tab === 'languages') {
+            const pool = candidateLanguages ?? stats.sortedLanguages.map(([name]) => name);
+            const poolSet = new Set(pool);
+            const selectedSet = new Set(searchFilter.languages);
+            const keptOutsidePool = searchFilter.languages.filter((l) => !poolSet.has(l));
+            const invertedPool = pool.filter((l) => !selectedSet.has(l));
+            setSearchFilter({ languages: [...keptOutsidePool, ...invertedPool] });
+            return;
+        }
+        if (tab === 'tags') {
+            const selectedSet = new Set(searchFilter.customTags);
+            const next = tags.map((tag) => tag.id).filter((id) => !selectedSet.has(id));
+            setSearchFilter({ customTags: next });
+            return;
+        }
+        if (tab === 'platforms') {
+            const availableIds: string[] = [];
+            if (stats.unanalyzed > 0) availableIds.push(PLATFORM_NONE);
+            for (const p of PLATFORM_OPTIONS) {
+                if ((stats.platformCounts.get(p.id) || 0) > 0) availableIds.push(p.id);
+            }
+            const selectedSet = new Set(searchFilter.platforms);
+            setSearchFilter({ platforms: availableIds.filter((id) => !selectedSet.has(id)) });
+            return;
+        }
+        setSearchFilter({
+            hasNotes: searchFilter.hasNotes === true ? null : true,
+            hasAlias: searchFilter.hasAlias === true ? null : true,
+            hasReleases: searchFilter.hasReleases === true ? null : true,
+        });
+    }, [
+        searchFilter.customTags,
+        searchFilter.hasAlias,
+        searchFilter.hasNotes,
+        searchFilter.hasReleases,
+        searchFilter.languages,
+        searchFilter.platforms,
+        setSearchFilter,
+        stats.platformCounts,
+        stats.sortedLanguages,
+        stats.unanalyzed,
+        tags,
+    ]);
 
     const handleQuickCreateTag = useCallback((name: string) => {
         const color = QUICK_TAG_COLORS[tags.length % QUICK_TAG_COLORS.length];
@@ -540,6 +670,7 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                             >
                                 <span>{item.label}</span>
                                 <span className="text-[11px] opacity-70">{item.count}</span>
+                                {item.id === 'subscribed' && <SubscribedUnreadDot />}
                             </button>
                         );
                     })}
@@ -551,13 +682,31 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                     aria-label={t('repositories', lang)}
                 >
                     {toolbarControls.map((control, index) => {
-                        const divider = control.key === 'tags' ? (
+                        const divider = control.key === 'analyze' ? (
                             <span
                                 key="toolbar-divider"
                                 className="w-px h-4 bg-[var(--color-border)] mx-0.5 shrink-0"
                                 aria-hidden="true"
                             />
                         ) : null;
+                        if (control.key === 'analyze') {
+                            return (
+                                <React.Fragment key={control.key}>
+                                    {divider}
+                                    <AnalyzeToolbarButton
+                                        lang={lang}
+                                        pendingAnalyze={stats.pendingAnalyze}
+                                        buttonRef={(element) => { buttonRefs.current[index] = element; }}
+                                        tabIndex={activeControlIndex === index ? 0 : -1}
+                                        onClick={control.action}
+                                        onMouseEnter={() => activateControl(index)}
+                                        onFocus={() => activateControl(index)}
+                                        style={getToolbarButtonStyle(index)}
+                                    />
+                                </React.Fragment>
+                            );
+                        }
+
                         const button = (
                             <button
                                 key={control.key}
@@ -598,6 +747,8 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                                             onTogglePlatform={togglePlatform}
                                             onToggleUnanalyzedPlatform={toggleUnanalyzedPlatform}
                                             onToggleStatus={toggleStatus}
+                                            onToggleInvertFilter={toggleInvertFilter}
+                                            onInvertTab={handleInvertTab}
                                             onQuickCreateTag={handleQuickCreateTag}
                                             onManageTags={handleManageTags}
                                             onClearAll={handleClearAllFilters}
@@ -639,6 +790,18 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
             {/* 激活筛选条件胶囊条 */}
             {hasFacetFilter && (
                 <div className="active-filter-strip">
+                    {searchFilter.invertFilter && (
+                        <button
+                            type="button"
+                            className="badge badge-warning shrink-0"
+                            style={{ cursor: 'pointer', border: 'none' }}
+                            onClick={toggleInvertFilter}
+                            title={t('filterModeInclude', lang)}
+                        >
+                            <span>{t('filterExcludeBadge', lang)}</span>
+                            <X size={11} />
+                        </button>
+                    )}
                     {searchFilter.languages.map((langItem) => (
                         <button
                             key={`lang:${langItem}`}

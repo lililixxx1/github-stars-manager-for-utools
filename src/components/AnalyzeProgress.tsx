@@ -20,7 +20,7 @@ export const AnalyzeProgress: React.FC = () => {
     return (
         <div style={{
             position: 'fixed',
-            bottom: 16,
+            bottom: 44,
             right: 16,
             background: 'var(--color-surface)',
             border: '1px solid var(--color-border)',

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { memo, useCallback, useEffect, useRef } from 'react';
 import {
     parseMarkdownToHtml,
     resolveMarkdownImageUrl,
@@ -173,7 +173,7 @@ interface MarkdownViewProps {
     className?: string;
 }
 
-export const MarkdownView: React.FC<MarkdownViewProps> = ({ content, repoFullName, className }) => {
+export const MarkdownView = memo<MarkdownViewProps>(({ content, repoFullName, className }) => {
     const containerRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
@@ -265,4 +265,6 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content, repoFullNam
             onClick={handleClick}
         />
     );
-};
+});
+
+MarkdownView.displayName = 'MarkdownView';

@@ -33,9 +33,10 @@ export const TagChip = React.forwardRef<HTMLButtonElement, TagChipProps>((
     <button
         ref={ref}
         type="button"
-        className="chip"
+        className={`chip${selected ? ' tag-chip-selected' : ''}`}
         style={{
             ...style,
+            ['--tag-solid-bg' as string]: tag.color || 'var(--color-primary)',
             borderColor: tag.color || 'var(--color-border)',
             background: selected ? (tag.color || 'var(--color-primary)') : 'transparent',
             // 未选中文字走安全换算（light 深色变体 / dark 原色，未知色回退文字主色），描边保留原色

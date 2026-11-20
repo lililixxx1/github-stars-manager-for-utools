@@ -96,10 +96,8 @@ export const createFilterBySmartView = (
     if (!smartView || smartView === 'all') return (repos) => repos;
 
     switch (smartView) {
-        case 'untagged':
-            return (repos) => repos.filter(repo => !repo.customTags || repo.customTags.length === 0);
-        case 'unanalyzed':
-            return (repos) => repos.filter(repo => !repo.analyzedAt || !!repo.analysisFailed);
+        case 'tagged':
+            return (repos) => repos.filter(repo => Boolean(repo.customTags && repo.customTags.length > 0));
         case 'noted':
             return (repos) => repos.filter(repo => context.hasNote(repo.id));
         case 'subscribed':

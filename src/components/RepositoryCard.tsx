@@ -15,6 +15,7 @@ interface RepositoryCardProps {
     isActive?: boolean;
     sortBy?: SortBy;
     hasNote?: boolean;
+    eagerAvatar?: boolean;
     selectable?: boolean;
     selected?: boolean;
     onToggleSelect?: (repo: Repository) => void;
@@ -30,6 +31,7 @@ export const RepositoryCard = memo<RepositoryCardProps>(({
     isActive = false,
     sortBy = 'stars',
     hasNote = false,
+    eagerAvatar = false,
     selectable = false,
     selected = false,
     onToggleSelect,
@@ -138,6 +140,7 @@ export const RepositoryCard = memo<RepositoryCardProps>(({
                         secondaryName={repo.alias ? repo.fullName : undefined}
                         stars={repo.stargazersCount}
                         forks={repo.forksCount}
+                        eager={eagerAvatar}
                     >
                         <p style={{
                             fontSize: 13,

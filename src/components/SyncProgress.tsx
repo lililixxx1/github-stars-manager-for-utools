@@ -1,6 +1,7 @@
 import React from 'react';
 import { Check } from 'lucide-react';
 import { t } from '../locales';
+import { useProgressStore } from '../stores/useProgressStore';
 
 interface SyncProgressProps {
     current: number;
@@ -10,6 +11,8 @@ interface SyncProgressProps {
 }
 
 export const SyncProgress: React.FC<SyncProgressProps> = ({ current, total, status, language }) => {
+    const lastSyncSummary = useProgressStore((state) => state.lastSyncSummary);
+
     // 过程进度条只管 syncing/completed；error 由 HomePage 可关闭横幅单源展示（B4）
     if (status === 'idle' || status === 'error') return null;
 
@@ -20,6 +23,19 @@ export const SyncProgress: React.FC<SyncProgressProps> = ({ current, total, stat
         : current > 0
             ? t('syncScannedCount', language, { count: current })
             : '...';
+    const completedTitle = lastSyncSummary
+        ? (lastSyncSummary.added === 0 && lastSyncSummary.removed === 0
+            ? t('syncSummaryUpToDate', language, {
+                mode: lastSyncSummary.mode === 'full' ? t('syncModeFullLabel', language) : t('syncModeIncrementalLabel', language),
+                total: lastSyncSummary.total,
+            })
+            : t('syncSummaryChanged', language, {
+                mode: lastSyncSummary.mode === 'full' ? t('syncModeFullLabel', language) : t('syncModeIncrementalLabel', language),
+                added: lastSyncSummary.added,
+                removed: lastSyncSummary.removed,
+                total: lastSyncSummary.total,
+            }))
+        : t('syncComplete', language);
 
     return (
         <div style={{
@@ -31,7 +47,7 @@ export const SyncProgress: React.FC<SyncProgressProps> = ({ current, total, stat
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
                 <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
                     {status === 'syncing' && t('syncing', language)}
-                    {status === 'completed' && t('syncComplete', language)}
+                    {status === 'completed' && completedTitle}
                 </span>
                 <span style={{ fontSize: 12, color: 'var(--color-text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     {status === 'syncing' && syncingText}

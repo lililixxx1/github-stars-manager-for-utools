@@ -22,6 +22,7 @@ export * from './utils/format';
 export * from './utils/analysis';
 export * from './utils/backup';
 export * from './utils/markdownUrl';
+export { normalizeRepoRelease } from './services/releaseService';
 export { i18n, t } from './locales';
 `;
 
@@ -63,6 +64,7 @@ const {
     resolveMarkdownSrcset,
     sanitizeHtmlDimension,
     slugifyHeading,
+    normalizeRepoRelease,
     i18n,
     t,
 } = mod.exports;
@@ -186,10 +188,9 @@ test('U1 parseSearchKeyword 分离前缀过滤与关键词', () => {
 });
 
 // 2. 智能视图筛选
-test('U2 createFilterBySmartView 覆盖全部 6 种视图', () => {
+test('U2 createFilterBySmartView 覆盖 5 种智能视图', () => {
     strictEqual(createFilterBySmartView('all', noteCtx)(sampleRepos).length, 3);
-    deepStrictEqual(createFilterBySmartView('untagged', noteCtx)(sampleRepos).map((r) => r.id), [2, 3]);
-    deepStrictEqual(createFilterBySmartView('unanalyzed', noteCtx)(sampleRepos).map((r) => r.id), [2, 3]);
+    deepStrictEqual(createFilterBySmartView('tagged', noteCtx)(sampleRepos).map((r) => r.id), [1]);
     deepStrictEqual(createFilterBySmartView('noted', noteCtx)(sampleRepos).map((r) => r.id), [2]);
     deepStrictEqual(createFilterBySmartView('subscribed', noteCtx)(sampleRepos).map((r) => r.id), [1]);
     deepStrictEqual(createFilterBySmartView('recent', noteCtx)(sampleRepos).map((r) => r.id), [1, 3]);
@@ -318,6 +319,62 @@ test('U8 markdownUrl 支持 GFM + HTML 解析与相对 URL 安全补全', () => 
     ok(html.includes('<h1>Tinta</h1>'));
     ok(html.includes('<table>'));
     ok(html.includes('type="checkbox"'));
+});
+
+// 9. 反选 / 排除模式筛选
+test('U9 invertFilter 排除匹配仓库且空筛选不误杀', () => {
+    const excludeLang = createFilteredReposPipeline({
+        ...baseFilter,
+        languages: ['TypeScript'],
+        invertFilter: true,
+        sortBy: 'stars',
+        sortOrder: 'desc',
+    }, noteCtx)(sampleRepos);
+    deepStrictEqual(excludeLang.map((r) => r.id), [2, 3]);
+
+    const excludeTagged = createFilteredReposPipeline({
+        ...baseFilter,
+        customTags: ['tag-1'],
+        invertFilter: true,
+    }, noteCtx)(sampleRepos);
+    deepStrictEqual(excludeTagged.map((r) => r.id), [2, 3]);
+
+    const emptyFacetsWithInvert = createFilteredReposPipeline({
+        ...baseFilter,
+        invertFilter: true,
+    }, noteCtx)(sampleRepos);
+    strictEqual(emptyFacetsWithInvert.length, 3);
+});
+
+// 10. normalizeRepoRelease 字段标准化
+test('U10 normalizeRepoRelease 标准化 GitHub 原始 Release 字段与资产', () => {
+    const normalized = normalizeRepoRelease({
+        id: 77,
+        tag_name: 'v1.2.3',
+        name: '',
+        body: 'Release notes',
+        html_url: 'https://github.com/astral-sh/uv/releases/tag/v1.2.3',
+        published_at: '2026-01-01T00:00:00Z',
+        prerelease: true,
+        assets: [{
+            id: 5,
+            name: 'uv-win-x64.zip',
+            size: 1024,
+            download_count: 42,
+            browser_download_url: 'https://example.com/uv.zip',
+            content_type: 'application/zip',
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+        }],
+    }, { id: 2, fullName: 'astral-sh/uv', name: 'uv' });
+
+    strictEqual(normalized.tagName, 'v1.2.3');
+    strictEqual(normalized.name, 'v1.2.3');
+    strictEqual(normalized.htmlUrl, 'https://github.com/astral-sh/uv/releases/tag/v1.2.3');
+    strictEqual(normalized.prerelease, true);
+    strictEqual(normalized.repository.fullName, 'astral-sh/uv');
+    strictEqual(normalized.assets[0].downloadCount, 42);
+    strictEqual(normalized.assets[0].browserDownloadUrl, 'https://example.com/uv.zip');
 });
 
 console.log(`\n===== 单元测试结果: ${passed} 通过 / ${failed} 失败 =====`);

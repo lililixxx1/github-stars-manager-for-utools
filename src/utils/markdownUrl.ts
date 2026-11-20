@@ -17,15 +17,41 @@ function normalizeCandidateUrl(rawUrl: string): string | null {
     return trimmed;
 }
 
+const MARKDOWN_HTML_CACHE_MAX = 50;
+const MARKDOWN_CACHE_MAX_LEN = 200_000;
+const markdownHtmlCache = new Map<string, string>();
+
 /**
- * 将 Markdown 文本（含 GFM 表格、任务列表与内嵌 HTML）解析为原始 HTML 字符串
+ * 将 Markdown 文本（含 GFM 表格、任务列表与内嵌 HTML）解析为原始 HTML 字符串（带 50 条 LRU 缓存）
  */
 export function parseMarkdownToHtml(markdown: string): string {
-    return marked.parse(markdown, {
+    if (!markdown) return '';
+    if (markdown.length <= MARKDOWN_CACHE_MAX_LEN) {
+        const cached = markdownHtmlCache.get(markdown);
+        if (cached !== undefined) {
+            markdownHtmlCache.delete(markdown);
+            markdownHtmlCache.set(markdown, cached);
+            return cached;
+        }
+    }
+
+    const html = marked.parse(markdown, {
         gfm: true,
         breaks: false,
         async: false,
     }) as string;
+
+    if (markdown.length <= MARKDOWN_CACHE_MAX_LEN) {
+        if (markdownHtmlCache.size >= MARKDOWN_HTML_CACHE_MAX) {
+            const oldestKey = markdownHtmlCache.keys().next().value;
+            if (oldestKey !== undefined) {
+                markdownHtmlCache.delete(oldestKey);
+            }
+        }
+        markdownHtmlCache.set(markdown, html);
+    }
+
+    return html;
 }
 
 /**
