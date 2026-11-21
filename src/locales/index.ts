@@ -303,11 +303,9 @@ export const i18n = {
         filterTabStatus: '状态',
         statusFilterSubscribed: '已订阅版本',
         quickCreateTagPlaceholder: '输入新标签名回车创建...',
-        filterInvert: '反选',
         filterModeInclude: '包含',
         filterModeExclude: '排除',
         filterExcludeBadge: '排除以下',
-        filterInvertTitle: '反选当前分类下的选项',
 
         // 一键 AI 分析与笔记/详情页 Release
         noReposToAnalyze: '所有仓库均已完成 AI 分析',
@@ -763,11 +761,9 @@ export const i18n = {
         filterTabStatus: 'Status',
         statusFilterSubscribed: 'Subscribed Releases',
         quickCreateTagPlaceholder: 'New tag name, press Enter...',
-        filterInvert: 'Invert',
         filterModeInclude: 'Include',
         filterModeExclude: 'Exclude',
         filterExcludeBadge: 'Excluding',
-        filterInvertTitle: 'Invert options in current tab',
 
         // Quick AI Analyze, Notes Home View & Detail Release Tab
         noReposToAnalyze: 'All repositories are already analyzed',

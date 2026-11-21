@@ -35,7 +35,7 @@ import {
     Tags,
     X,
 } from 'lucide-react';
-import { FilterPopover, type FilterTab } from './FilterPopover';
+import { FilterPopover } from './FilterPopover';
 import { SORT_OPTIONS, SortMenu } from './SortMenu';
 
 interface FilterBarProps {
@@ -566,51 +566,6 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
         setSearchFilter({ invertFilter: !searchFilter.invertFilter });
     }, [searchFilter.invertFilter, setSearchFilter]);
 
-    const handleInvertTab = useCallback((tab: FilterTab, candidateLanguages?: string[]) => {
-        if (tab === 'languages') {
-            const pool = candidateLanguages ?? stats.sortedLanguages.map(([name]) => name);
-            const poolSet = new Set(pool);
-            const selectedSet = new Set(searchFilter.languages);
-            const keptOutsidePool = searchFilter.languages.filter((l) => !poolSet.has(l));
-            const invertedPool = pool.filter((l) => !selectedSet.has(l));
-            setSearchFilter({ languages: [...keptOutsidePool, ...invertedPool] });
-            return;
-        }
-        if (tab === 'tags') {
-            const selectedSet = new Set(searchFilter.customTags);
-            const next = tags.map((tag) => tag.id).filter((id) => !selectedSet.has(id));
-            setSearchFilter({ customTags: next });
-            return;
-        }
-        if (tab === 'platforms') {
-            const availableIds: string[] = [];
-            if (stats.unanalyzed > 0) availableIds.push(PLATFORM_NONE);
-            for (const p of PLATFORM_OPTIONS) {
-                if ((stats.platformCounts.get(p.id) || 0) > 0) availableIds.push(p.id);
-            }
-            const selectedSet = new Set(searchFilter.platforms);
-            setSearchFilter({ platforms: availableIds.filter((id) => !selectedSet.has(id)) });
-            return;
-        }
-        setSearchFilter({
-            hasNotes: searchFilter.hasNotes === true ? null : true,
-            hasAlias: searchFilter.hasAlias === true ? null : true,
-            hasReleases: searchFilter.hasReleases === true ? null : true,
-        });
-    }, [
-        searchFilter.customTags,
-        searchFilter.hasAlias,
-        searchFilter.hasNotes,
-        searchFilter.hasReleases,
-        searchFilter.languages,
-        searchFilter.platforms,
-        setSearchFilter,
-        stats.platformCounts,
-        stats.sortedLanguages,
-        stats.unanalyzed,
-        tags,
-    ]);
-
     const handleQuickCreateTag = useCallback((name: string) => {
         const color = QUICK_TAG_COLORS[tags.length % QUICK_TAG_COLORS.length];
         const created = addTag({ name, color, icon: '🏷️', order: tags.length });
@@ -748,7 +703,6 @@ const FilterBarComponent = forwardRef<FilterBarHandle, FilterBarProps>(({
                                             onToggleUnanalyzedPlatform={toggleUnanalyzedPlatform}
                                             onToggleStatus={toggleStatus}
                                             onToggleInvertFilter={toggleInvertFilter}
-                                            onInvertTab={handleInvertTab}
                                             onQuickCreateTag={handleQuickCreateTag}
                                             onManageTags={handleManageTags}
                                             onClearAll={handleClearAllFilters}

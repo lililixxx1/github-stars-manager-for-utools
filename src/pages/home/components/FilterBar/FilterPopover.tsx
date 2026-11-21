@@ -1,5 +1,5 @@
 import React, { memo, useDeferredValue, useMemo, useState } from 'react';
-import { ArrowLeftRight, Edit3, Search } from 'lucide-react';
+import { Edit3, Search } from 'lucide-react';
 import { t } from '@/locales';
 import { PLATFORM_OPTIONS, PLATFORM_NONE } from '@/constants/platforms';
 import { getPlatformIcon } from '@/constants/platformIcons';
@@ -7,7 +7,7 @@ import { getLanguageColor } from '@/constants/languages';
 import type { SearchFilter, Tag as TagType } from '@/types';
 import { TagChip } from '@/components/TagChip';
 
-export type FilterTab = 'languages' | 'tags' | 'platforms' | 'status';
+type FilterTab = 'languages' | 'tags' | 'platforms' | 'status';
 
 interface FilterPopoverProps {
     lang: 'zh' | 'en';
@@ -25,7 +25,6 @@ interface FilterPopoverProps {
     onToggleUnanalyzedPlatform: () => void;
     onToggleStatus: (key: 'hasNotes' | 'hasAlias' | 'hasReleases') => void;
     onToggleInvertFilter: () => void;
-    onInvertTab: (tab: FilterTab, candidateLanguages?: string[]) => void;
     onQuickCreateTag: (name: string) => void;
     onManageTags: () => void;
     onClearAll: () => void;
@@ -47,7 +46,6 @@ export const FilterPopover = memo<FilterPopoverProps>(({
     onToggleUnanalyzedPlatform,
     onToggleStatus,
     onToggleInvertFilter,
-    onInvertTab,
     onQuickCreateTag,
     onManageTags,
     onClearAll,
@@ -287,35 +285,16 @@ export const FilterPopover = memo<FilterPopoverProps>(({
                     </button>
                 </div>
 
-                <div className="flex items-center gap-1">
+                {(hasFacetFilter || searchFilter.invertFilter) && (
                     <button
                         type="button"
                         className="btn btn-ghost btn-sm"
-                        title={t('filterInvertTitle', lang)}
-                        onClick={() =>
-                            onInvertTab(
-                                filterTab,
-                                filterTab === 'languages'
-                                    ? filteredLanguages.map(([name]) => name)
-                                    : undefined
-                            )
-                        }
+                        style={{ color: 'var(--color-primary)' }}
+                        onClick={onClearAll}
                     >
-                        <ArrowLeftRight size={12} />
-                        {t('filterInvert', lang)}
+                        {t('clearFilter', lang)}
                     </button>
-
-                    {(hasFacetFilter || searchFilter.invertFilter) && (
-                        <button
-                            type="button"
-                            className="btn btn-ghost btn-sm"
-                            style={{ color: 'var(--color-primary)' }}
-                            onClick={onClearAll}
-                        >
-                            {t('clearFilter', lang)}
-                        </button>
-                    )}
-                </div>
+                )}
             </div>
         </div>
     );
